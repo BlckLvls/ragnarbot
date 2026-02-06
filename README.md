@@ -70,8 +70,7 @@ pip install ragnarbot-ai
 
 > [!TIP]
 > Set your API key in `~/.ragnarbot/config.json`.
-> Get API keys: [OpenRouter](https://openrouter.ai/keys) (LLM) · [Brave Search](https://brave.com/search/api/) (optional, for web search)
-> You can also change the model to `minimax/minimax-m2` for lower cost.
+> Get API keys: [Anthropic](https://console.anthropic.com/keys) (LLM) · [Brave Search](https://brave.com/search/api/) (optional, for web search)
 
 **1. Initialize**
 
@@ -84,8 +83,8 @@ ragnarbot onboard
 ```json
 {
   "providers": {
-    "openrouter": {
-      "apiKey": "sk-or-v1-xxx"
+    "anthropic": {
+      "apiKey": "sk-ant-xxx"
     }
   },
   "agents": {
@@ -112,52 +111,13 @@ ragnarbot agent -m "What is 2+2?"
 
 That's it! You have a working AI assistant in 2 minutes.
 
-## 🖥️ Local Models (vLLM)
-
-Run ragnarbot with your own local models using vLLM or any OpenAI-compatible server.
-
-**1. Start your vLLM server**
-
-```bash
-vllm serve meta-llama/Llama-3.1-8B-Instruct --port 8000
-```
-
-**2. Configure** (`~/.ragnarbot/config.json`)
-
-```json
-{
-  "providers": {
-    "vllm": {
-      "apiKey": "dummy",
-      "apiBase": "http://localhost:8000/v1"
-    }
-  },
-  "agents": {
-    "defaults": {
-      "model": "meta-llama/Llama-3.1-8B-Instruct"
-    }
-  }
-}
-```
-
-**3. Chat**
-
-```bash
-ragnarbot agent -m "Hello from my local LLM!"
-```
-
-> [!TIP]
-> The `apiKey` can be any non-empty string for local servers that don't require authentication.
-
 ## 💬 Chat Apps
 
-Talk to your ragnarbot through Telegram, WhatsApp, or Feishu — anytime, anywhere.
+Talk to your ragnarbot through Telegram — anytime, anywhere.
 
 | Channel | Setup |
 |---------|-------|
 | **Telegram** | Easy (just a token) |
-| **WhatsApp** | Medium (scan QR) |
-| **Feishu** | Medium (app credentials) |
 
 <details>
 <summary><b>Telegram</b> (Recommended)</summary>
@@ -191,92 +151,6 @@ ragnarbot gateway
 
 </details>
 
-<details>
-<summary><b>WhatsApp</b></summary>
-
-Requires **Node.js ≥18**.
-
-**1. Link device**
-
-```bash
-ragnarbot channels login
-# Scan QR with WhatsApp → Settings → Linked Devices
-```
-
-**2. Configure**
-
-```json
-{
-  "channels": {
-    "whatsapp": {
-      "enabled": true,
-      "allowFrom": ["+1234567890"]
-    }
-  }
-}
-```
-
-**3. Run** (two terminals)
-
-```bash
-# Terminal 1
-ragnarbot channels login
-
-# Terminal 2
-ragnarbot gateway
-```
-
-</details>
-
-<details>
-<summary><b>Feishu (飞书)</b></summary>
-
-Uses **WebSocket** long connection — no public IP required.
-
-```bash
-pip install ragnarbot-ai[feishu]
-```
-
-**1. Create a Feishu bot**
-- Visit [Feishu Open Platform](https://open.feishu.cn/app)
-- Create a new app → Enable **Bot** capability
-- **Permissions**: Add `im:message` (send messages)
-- **Events**: Add `im.message.receive_v1` (receive messages)
-  - Select **Long Connection** mode (requires running ragnarbot first to establish connection)
-- Get **App ID** and **App Secret** from "Credentials & Basic Info"
-- Publish the app
-
-**2. Configure**
-
-```json
-{
-  "channels": {
-    "feishu": {
-      "enabled": true,
-      "appId": "cli_xxx",
-      "appSecret": "xxx",
-      "encryptKey": "",
-      "verificationToken": "",
-      "allowFrom": []
-    }
-  }
-}
-```
-
-> `encryptKey` and `verificationToken` are optional for Long Connection mode.
-> `allowFrom`: Leave empty to allow all users, or add `["ou_xxx"]` to restrict access.
-
-**3. Run**
-
-```bash
-ragnarbot gateway
-```
-
-> [!TIP]
-> Feishu uses WebSocket to receive messages — no webhook or public IP needed!
-
-</details>
-
 ## ⚙️ Configuration
 
 Config file: `~/.ragnarbot/config.json`
@@ -284,16 +158,13 @@ Config file: `~/.ragnarbot/config.json`
 ### Providers
 
 > [!NOTE]
-> Groq provides free voice transcription via Whisper. If configured, Telegram voice messages will be automatically transcribed.
+> Groq provides free voice transcription via Whisper. If configured under `transcription`, Telegram voice messages will be automatically transcribed.
 
 | Provider | Purpose | Get API Key |
 |----------|---------|-------------|
-| `openrouter` | LLM (recommended, access to all models) | [openrouter.ai](https://openrouter.ai) |
-| `anthropic` | LLM (Claude direct) | [console.anthropic.com](https://console.anthropic.com) |
-| `openai` | LLM (GPT direct) | [platform.openai.com](https://platform.openai.com) |
-| `deepseek` | LLM (DeepSeek direct) | [platform.deepseek.com](https://platform.deepseek.com) |
-| `groq` | LLM + **Voice transcription** (Whisper) | [console.groq.com](https://console.groq.com) |
-| `gemini` | LLM (Gemini direct) | [aistudio.google.com](https://aistudio.google.com) |
+| `anthropic` | LLM (Claude) | [console.anthropic.com](https://console.anthropic.com) |
+| `openai` | LLM (GPT) | [platform.openai.com](https://platform.openai.com) |
+| `gemini` | LLM (Gemini) | [aistudio.google.com](https://aistudio.google.com) |
 
 
 <details>
@@ -307,29 +178,18 @@ Config file: `~/.ragnarbot/config.json`
     }
   },
   "providers": {
-    "openrouter": {
-      "apiKey": "sk-or-v1-xxx"
-    },
-    "groq": {
-      "apiKey": "gsk_xxx"
+    "anthropic": {
+      "apiKey": "sk-ant-xxx"
     }
+  },
+  "transcription": {
+    "apiKey": "gsk_xxx"
   },
   "channels": {
     "telegram": {
       "enabled": true,
       "token": "123456:ABC...",
       "allowFrom": ["123456789"]
-    },
-    "whatsapp": {
-      "enabled": false
-    },
-    "feishu": {
-      "enabled": false,
-      "appId": "cli_xxx",
-      "appSecret": "xxx",
-      "encryptKey": "",
-      "verificationToken": "",
-      "allowFrom": []
     }
   },
   "tools": {
@@ -353,7 +213,6 @@ Config file: `~/.ragnarbot/config.json`
 | `ragnarbot agent` | Interactive chat mode |
 | `ragnarbot gateway` | Start the gateway |
 | `ragnarbot status` | Show status |
-| `ragnarbot channels login` | Link WhatsApp (scan QR) |
 | `ragnarbot channels status` | Show channel status |
 
 <details>
@@ -390,7 +249,7 @@ docker run -v ~/.ragnarbot:/root/.ragnarbot --rm ragnarbot onboard
 # Edit config on host to add API keys
 vim ~/.ragnarbot/config.json
 
-# Run gateway (connects to Telegram/WhatsApp)
+# Run gateway (connects to Telegram)
 docker run -v ~/.ragnarbot:/root/.ragnarbot -p 18790:18790 ragnarbot gateway
 
 # Or run a single command
@@ -410,11 +269,11 @@ ragnarbot/
 │   ├── subagent.py #    Background task execution
 │   └── tools/      #    Built-in tools (incl. spawn)
 ├── skills/         # 🎯 Bundled skills (github, weather, tmux...)
-├── channels/       # 📱 WhatsApp integration
+├── channels/       # 📱 Telegram integration
 ├── bus/            # 🚌 Message routing
 ├── cron/           # ⏰ Scheduled tasks
 ├── heartbeat/      # 💓 Proactive wake-up
-├── providers/      # 🤖 LLM providers (OpenRouter, etc.)
+├── providers/      # 🤖 LLM providers (Anthropic, OpenAI, Gemini)
 ├── session/        # 💬 Conversation sessions
 ├── config/         # ⚙️ Configuration
 └── cli/            # 🖥️ Commands
