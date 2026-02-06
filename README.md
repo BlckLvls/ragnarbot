@@ -1,76 +1,28 @@
 <div align="center">
-  <img src="ragnarbot_logo.png" alt="ragnarbot" width="500">
-  <h1>ragnarbot: Ultra-Lightweight Personal AI Assistant</h1>
-  <p>
-    <img src="https://img.shields.io/badge/python-≥3.11-blue" alt="Python">
-    <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
-  </p>
+  <img src="ragnarbot_logo.jpg" alt="ragnarbot" width="500">
 </div>
 
-🤖 **ragnarbot** is an **ultra-lightweight** personal AI assistant inspired by [Clawdbot](https://github.com/openclaw/openclaw)
+<p align="center">
+  <em>Async-first personal AI assistant. Lightweight, extensible, runs anywhere.</em>
+</p>
 
-⚡️ Delivers core agent functionality in just **~4,000** lines of code — **99% smaller** than Clawdbot's 430k+ lines.
+---
 
-## Key Features of ragnarbot:
+## Install
 
-🪶 **Ultra-Lightweight**: Just ~4,000 lines of code — 99% smaller than Clawdbot - core functionality.
-
-🔬 **Research-Ready**: Clean, readable code that's easy to understand, modify, and extend for research.
-
-⚡️ **Lightning Fast**: Minimal footprint means faster startup, lower resource usage, and quicker iterations.
-
-💎 **Easy-to-Use**: One-click to depoly and you're ready to go.
-
-## ✨ Features
-
-<table align="center">
-  <tr align="center">
-    <th><p align="center">📈 24/7 Real-Time Market Analysis</p></th>
-    <th><p align="center">🚀 Full-Stack Software Engineer</p></th>
-    <th><p align="center">📅 Smart Daily Routine Manager</p></th>
-    <th><p align="center">📚 Personal Knowledge Assistant</p></th>
-  </tr>
-  <tr>
-    <td align="center"><p align="center"><img src="case/search.gif" width="180" height="400"></p></td>
-    <td align="center"><p align="center"><img src="case/code.gif" width="180" height="400"></p></td>
-    <td align="center"><p align="center"><img src="case/scedule.gif" width="180" height="400"></p></td>
-    <td align="center"><p align="center"><img src="case/memory.gif" width="180" height="400"></p></td>
-  </tr>
-  <tr>
-    <td align="center">Discovery • Insights • Trends</td>
-    <td align="center">Develop • Deploy • Scale</td>
-    <td align="center">Schedule • Automate • Organize</td>
-    <td align="center">Learn • Memory • Reasoning</td>
-  </tr>
-</table>
-
-## 📦 Install
-
-**Install from source** (latest features, recommended for development)
+Install [uv](https://github.com/astral-sh/uv) if you don't have it:
 
 ```bash
-git clone https://github.com/BlckLvls/ragnarbot.git
-cd ragnarbot
-pip install -e .
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-**Install with [uv](https://github.com/astral-sh/uv)** (stable, fast)
+Then install ragnarbot:
 
 ```bash
 uv tool install ragnarbot-ai
 ```
 
-**Install from PyPI** (stable)
-
-```bash
-pip install ragnarbot-ai
-```
-
-## 🚀 Quick Start
-
-> [!TIP]
-> Set your API key in `~/.ragnarbot/config.json`.
-> Get API keys: [Anthropic](https://console.anthropic.com/keys) (LLM) · [Brave Search](https://brave.com/search/api/) (optional, for web search)
+## Quick Start
 
 **1. Initialize**
 
@@ -78,7 +30,9 @@ pip install ragnarbot-ai
 ragnarbot onboard
 ```
 
-**2. Configure** (`~/.ragnarbot/config.json`)
+**2. Configure**
+
+Add your API key to `~/.ragnarbot/config.json`:
 
 ```json
 {
@@ -86,48 +40,37 @@ ragnarbot onboard
     "anthropic": {
       "apiKey": "sk-ant-xxx"
     }
-  },
-  "agents": {
-    "defaults": {
-      "model": "anthropic/claude-opus-4-5"
-    }
-  },
-  "tools": {
-    "web": {
-      "search": {
-        "apiKey": "BSA-xxx"
-      }
-    }
   }
 }
 ```
 
+Get an API key from [Anthropic](https://console.anthropic.com/keys), [OpenAI](https://platform.openai.com/api-keys), or [Google AI Studio](https://aistudio.google.com/apikey).
 
 **3. Chat**
 
 ```bash
-ragnarbot agent -m "What is 2+2?"
+ragnarbot agent -m "What can you do?"
 ```
 
-That's it! You have a working AI assistant in 2 minutes.
+Or start an interactive session:
 
-## 💬 Chat Apps
+```bash
+ragnarbot agent
+```
 
-Talk to your ragnarbot through Telegram — anytime, anywhere.
+## Telegram
 
-| Channel | Setup |
-|---------|-------|
-| **Telegram** | Easy (just a token) |
+ragnarbot is designed to work through Telegram. Set up a bot, point it at your instance, and you have a personal AI assistant in your pocket.
 
-<details>
-<summary><b>Telegram</b> (Recommended)</summary>
+**Create a bot**
 
-**1. Create a bot**
-- Open Telegram, search `@BotFather`
-- Send `/newbot`, follow prompts
-- Copy the token
+Open Telegram, find `@BotFather`, send `/newbot`, and follow the prompts. Copy the token.
 
-**2. Configure**
+**Get your user ID**
+
+Message `@userinfobot` on Telegram to get your numeric user ID.
+
+**Add to config**
 
 ```json
 {
@@ -141,145 +84,100 @@ Talk to your ragnarbot through Telegram — anytime, anywhere.
 }
 ```
 
-> Get your user ID from `@userinfobot` on Telegram.
-
-**3. Run**
+**Run the gateway**
 
 ```bash
 ragnarbot gateway
 ```
 
-</details>
+Your bot is live. Message it from Telegram.
 
-## ⚙️ Configuration
+## Configuration
 
-Config file: `~/.ragnarbot/config.json`
+All configuration lives in `~/.ragnarbot/config.json`. Keys are camelCase.
 
 ### Providers
 
-> [!NOTE]
-> Groq provides free voice transcription via Whisper. If configured under `transcription`, Telegram voice messages will be automatically transcribed.
+Only one provider is required. ragnarbot uses [LiteLLM](https://github.com/BerriAI/litellm) under the hood, so any model string LiteLLM supports will work.
 
-| Provider | Purpose | Get API Key |
-|----------|---------|-------------|
-| `anthropic` | LLM (Claude) | [console.anthropic.com](https://console.anthropic.com) |
-| `openai` | LLM (GPT) | [platform.openai.com](https://platform.openai.com) |
-| `gemini` | LLM (Gemini) | [aistudio.google.com](https://aistudio.google.com) |
+| Provider | Config key | Models | API Key |
+|----------|-----------|--------|---------|
+| Anthropic | `providers.anthropic` | `anthropic/claude-*` | [console.anthropic.com](https://console.anthropic.com) |
+| OpenAI | `providers.openai` | `openai/gpt-*` | [platform.openai.com](https://platform.openai.com) |
+| Gemini | `providers.gemini` | `gemini/*` | [aistudio.google.com](https://aistudio.google.com) |
 
+Set the default model under `agents.defaults.model`.
 
-<details>
-<summary><b>Full config example</b></summary>
+### Transcription
+
+Voice messages in Telegram are automatically transcribed when a Groq API key is configured. Groq provides free access to Whisper.
 
 ```json
 {
-  "agents": {
-    "defaults": {
-      "model": "anthropic/claude-opus-4-5"
-    }
-  },
-  "providers": {
-    "anthropic": {
-      "apiKey": "sk-ant-xxx"
-    }
-  },
   "transcription": {
     "apiKey": "gsk_xxx"
-  },
-  "channels": {
-    "telegram": {
-      "enabled": true,
-      "token": "123456:ABC...",
-      "allowFrom": ["123456789"]
-    }
-  },
+  }
+}
+```
+
+Get a key at [console.groq.com](https://console.groq.com).
+
+### Web Search
+
+ragnarbot can search the web via the Brave Search API.
+
+```json
+{
   "tools": {
     "web": {
       "search": {
-        "apiKey": "BSA..."
+        "apiKey": "BSA-xxx"
       }
     }
   }
 }
 ```
 
-</details>
+Get a key at [brave.com/search/api](https://brave.com/search/api/).
 
 ## CLI Reference
 
 | Command | Description |
 |---------|-------------|
-| `ragnarbot onboard` | Initialize config & workspace |
-| `ragnarbot agent -m "..."` | Chat with the agent |
-| `ragnarbot agent` | Interactive chat mode |
-| `ragnarbot gateway` | Start the gateway |
-| `ragnarbot status` | Show status |
+| `ragnarbot onboard` | Initialize config and workspace |
+| `ragnarbot agent -m "..."` | Send a single message |
+| `ragnarbot agent` | Interactive chat session |
+| `ragnarbot gateway` | Start gateway (Telegram + cron + heartbeat) |
+| `ragnarbot status` | Show configuration status |
 | `ragnarbot channels status` | Show channel status |
+| `ragnarbot cron list` | List scheduled jobs |
+| `ragnarbot cron add` | Add a scheduled job |
+| `ragnarbot cron remove <id>` | Remove a scheduled job |
 
-<details>
-<summary><b>Scheduled Tasks (Cron)</b></summary>
+## Architecture
 
-```bash
-# Add a job
-ragnarbot cron add --name "daily" --message "Good morning!" --cron "0 9 * * *"
-ragnarbot cron add --name "hourly" --message "Check status" --every 3600
-
-# List jobs
-ragnarbot cron list
-
-# Remove a job
-ragnarbot cron remove <job_id>
-```
-
-</details>
-
-## 🐳 Docker
-
-> [!TIP]
-> The `-v ~/.ragnarbot:/root/.ragnarbot` flag mounts your local config directory into the container, so your config and workspace persist across container restarts.
-
-Build and run ragnarbot in a container:
-
-```bash
-# Build the image
-docker build -t ragnarbot .
-
-# Initialize config (first time only)
-docker run -v ~/.ragnarbot:/root/.ragnarbot --rm ragnarbot onboard
-
-# Edit config on host to add API keys
-vim ~/.ragnarbot/config.json
-
-# Run gateway (connects to Telegram)
-docker run -v ~/.ragnarbot:/root/.ragnarbot -p 18790:18790 ragnarbot gateway
-
-# Or run a single command
-docker run -v ~/.ragnarbot:/root/.ragnarbot --rm ragnarbot agent -m "Hello!"
-docker run -v ~/.ragnarbot:/root/.ragnarbot --rm ragnarbot status
-```
-
-## 📁 Project Structure
+ragnarbot is async-first and built around a simple message-passing architecture:
 
 ```
-ragnarbot/
-├── agent/          # 🧠 Core agent logic
-│   ├── loop.py     #    Agent loop (LLM ↔ tool execution)
-│   ├── context.py  #    Prompt builder
-│   ├── memory.py   #    Persistent memory
-│   ├── skills.py   #    Skills loader
-│   ├── subagent.py #    Background task execution
-│   └── tools/      #    Built-in tools (incl. spawn)
-├── skills/         # 🎯 Bundled skills (github, weather, tmux...)
-├── channels/       # 📱 Telegram integration
-├── bus/            # 🚌 Message routing
-├── cron/           # ⏰ Scheduled tasks
-├── heartbeat/      # 💓 Proactive wake-up
-├── providers/      # 🤖 LLM providers (Anthropic, OpenAI, Gemini)
-├── session/        # 💬 Conversation sessions
-├── config/         # ⚙️ Configuration
-└── cli/            # 🖥️ Commands
+Telegram --> MessageBus --> AgentLoop --> LLM --> Tools
+                                  \                /
+                                   \-- Sessions --/
 ```
 
+**MessageBus** decouples channels from agent logic using async queues. Channels publish inbound messages; the agent publishes responses back.
 
-<p align="center">
-  <sub>ragnarbot is for educational, research, and technical exchange purposes only</sub>
-</p>
+**AgentLoop** consumes messages, builds context (system prompt, conversation history, skills), calls the LLM, and executes tool calls in a loop. It also exposes a `process_direct()` path for CLI usage and cron jobs.
+
+**Tools** are registered in a `ToolRegistry` and exposed to the LLM as OpenAI-compatible function calls. Built-in tools include file operations, shell execution, web search, cron management, and sub-agent spawning.
+
+**Skills** are markdown files with YAML frontmatter. Skills marked `always: true` are included in every prompt; others appear as summaries the agent can load on demand.
+
+**Sessions** persist conversation history as JSONL files under `~/.ragnarbot/sessions/`.
+
+## License
+
+MIT
+
+---
+
+<sub>Based on [nanobot](https://github.com/HKUDS/nanobot)</sub>
