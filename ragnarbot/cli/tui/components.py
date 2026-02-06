@@ -13,7 +13,7 @@ class QuitOnboardingError(Exception):
 
 def clear_screen(console: Console) -> None:
     """Clear terminal screen."""
-    console.print("\033[2J\033[H", end="")
+    console.clear()
 
 
 def draw_header(console: Console, title: str, subtitle: str = "") -> None:
