@@ -19,13 +19,13 @@ class LiteLLMProvider(LLMProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        api_base: str | None = None,
-        default_model: str = "anthropic/claude-opus-4-5"
+        default_model: str = "anthropic/claude-opus-4-5",
+        oauth_token: str | None = None,
     ):
-        super().__init__(api_key, api_base)
+        super().__init__(api_key, oauth_token)
         self.default_model = default_model
 
-        # Configure LiteLLM based on provider
+        # Configure LiteLLM env vars based on provider
         if api_key:
             if "anthropic" in default_model:
                 os.environ.setdefault("ANTHROPIC_API_KEY", api_key)
@@ -33,9 +33,6 @@ class LiteLLMProvider(LLMProvider):
                 os.environ.setdefault("OPENAI_API_KEY", api_key)
             elif "gemini" in default_model.lower():
                 os.environ.setdefault("GEMINI_API_KEY", api_key)
-
-        if api_base:
-            litellm.api_base = api_base
 
         # Disable LiteLLM logging noise
         litellm.suppress_debug_info = True
@@ -73,15 +70,11 @@ class LiteLLMProvider(LLMProvider):
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
-        
-        # Pass api_base directly for custom endpoints (vLLM, etc.)
-        if self.api_base:
-            kwargs["api_base"] = self.api_base
-        
+
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
-        
+
         try:
             response = await acompletion(**kwargs)
             return self._parse_response(response)

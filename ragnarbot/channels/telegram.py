@@ -85,25 +85,32 @@ class TelegramChannel(BaseChannel):
     
     name = "telegram"
     
-    def __init__(self, config: TelegramConfig, bus: MessageBus, groq_api_key: str = ""):
+    def __init__(
+        self,
+        config: TelegramConfig,
+        bus: MessageBus,
+        bot_token: str = "",
+        groq_api_key: str = "",
+    ):
         super().__init__(config, bus)
         self.config: TelegramConfig = config
+        self.bot_token = bot_token
         self.groq_api_key = groq_api_key
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
     
     async def start(self) -> None:
         """Start the Telegram bot with long polling."""
-        if not self.config.token:
+        if not self.bot_token:
             logger.error("Telegram bot token not configured")
             return
-        
+
         self._running = True
-        
+
         # Build the application
         self._app = (
             Application.builder()
-            .token(self.config.token)
+            .token(self.bot_token)
             .build()
         )
         

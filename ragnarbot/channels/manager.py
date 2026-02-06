@@ -5,6 +5,7 @@ from typing import Any
 
 from loguru import logger
 
+from ragnarbot.auth.credentials import Credentials
 from ragnarbot.bus.events import OutboundMessage
 from ragnarbot.bus.queue import MessageBus
 from ragnarbot.channels.base import BaseChannel
@@ -14,24 +15,25 @@ from ragnarbot.config.schema import Config
 class ChannelManager:
     """
     Manages chat channels and coordinates message routing.
-    
+
     Responsibilities:
     - Initialize enabled channels (Telegram)
     - Start/stop channels
     - Route outbound messages
     """
-    
-    def __init__(self, config: Config, bus: MessageBus):
+
+    def __init__(self, config: Config, bus: MessageBus, credentials: Credentials | None = None):
         self.config = config
         self.bus = bus
+        self.credentials = credentials or Credentials()
         self.channels: dict[str, BaseChannel] = {}
         self._dispatch_task: asyncio.Task | None = None
-        
+
         self._init_channels()
-    
+
     def _init_channels(self) -> None:
         """Initialize channels based on config."""
-        
+
         # Telegram channel
         if self.config.channels.telegram.enabled:
             try:
@@ -39,7 +41,8 @@ class ChannelManager:
                 self.channels["telegram"] = TelegramChannel(
                     self.config.channels.telegram,
                     self.bus,
-                    groq_api_key=self.config.transcription.api_key,
+                    bot_token=self.credentials.channels.telegram.bot_token,
+                    groq_api_key=self.credentials.services.transcription.api_key,
                 )
                 logger.info("Telegram channel enabled")
             except ImportError as e:

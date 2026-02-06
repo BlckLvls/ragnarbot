@@ -18,6 +18,61 @@ app = typer.Typer(
 console = Console()
 
 
+def _resolve_provider_auth(config, creds):
+    """Resolve API key and OAuth token from credentials for the active provider.
+
+    Returns (api_key, oauth_token, provider_name).
+    """
+    model = config.agents.defaults.model
+    provider_name = model.split("/")[0] if "/" in model else "anthropic"
+    auth_method = config.agents.defaults.auth_method
+
+    provider_creds = getattr(creds.providers, provider_name, None)
+    oauth_token = None
+    api_key = None
+
+    if provider_creds:
+        if auth_method == "oauth" and provider_creds.oauth_key:
+            oauth_token = provider_creds.oauth_key
+        elif provider_creds.api_key:
+            api_key = provider_creds.api_key
+
+    return api_key, oauth_token, provider_name
+
+
+def _validate_auth(config, creds):
+    """Validate auth configuration before provider creation.
+
+    Returns error message string or None if OK.
+    """
+    from ragnarbot.config.schema import OAUTH_SUPPORTED_PROVIDERS
+
+    model = config.agents.defaults.model
+    provider_name = model.split("/")[0] if "/" in model else "anthropic"
+    auth_method = config.agents.defaults.auth_method
+
+    if auth_method not in ("api_key", "oauth"):
+        return f"Unknown auth method: {auth_method}"
+
+    if auth_method == "oauth" and provider_name not in OAUTH_SUPPORTED_PROVIDERS:
+        return (
+            f"OAuth is not supported for provider '{provider_name}'. "
+            f"Supported: {', '.join(OAUTH_SUPPORTED_PROVIDERS)}"
+        )
+
+    provider_creds = getattr(creds.providers, provider_name, None)
+    if not provider_creds:
+        return f"No credentials configured for provider '{provider_name}'"
+
+    if auth_method == "api_key" and not provider_creds.api_key:
+        return f"No API key configured for '{provider_name}'. Set it in ~/.ragnarbot/credentials.json"
+
+    if auth_method == "oauth" and not provider_creds.oauth_key:
+        return f"No OAuth token for '{provider_name}'. Run: claude setup-token"
+
+    return None
+
+
 def version_callback(value: bool):
     if value:
         console.print(f"{__logo__} ragnarbot v{__version__}")
@@ -44,9 +99,11 @@ def onboard():
     """Initialize ragnarbot configuration and workspace."""
     from ragnarbot.config.loader import get_config_path, save_config
     from ragnarbot.config.schema import Config
+    from ragnarbot.auth.credentials import Credentials, get_credentials_path, save_credentials
     from ragnarbot.utils.helpers import get_workspace_path
 
     config_path = get_config_path()
+    creds_path = get_credentials_path()
 
     if config_path.exists():
         console.print(f"[yellow]Config already exists at {config_path}[/yellow]")
@@ -58,6 +115,11 @@ def onboard():
     save_config(config)
     console.print(f"[green]✓[/green] Created config at {config_path}")
 
+    # Create default credentials
+    if not creds_path.exists():
+        save_credentials(Credentials(), creds_path)
+        console.print(f"[green]✓[/green] Created credentials at {creds_path}")
+
     # Create workspace
     workspace = get_workspace_path()
     console.print(f"[green]✓[/green] Created workspace at {workspace}")
@@ -67,7 +129,7 @@ def onboard():
 
     console.print(f"\n{__logo__} ragnarbot is ready!")
     console.print("\nNext steps:")
-    console.print("  1. Add your API key to [cyan]~/.ragnarbot/config.json[/cyan]")
+    console.print("  1. Add your API key to [cyan]~/.ragnarbot/credentials.json[/cyan]")
     console.print("     Get one at: https://console.anthropic.com/keys")
     console.print("  2. Chat: [cyan]ragnarbot agent -m \"Hello!\"[/cyan]")
     console.print("\n[dim]Want Telegram? See: https://github.com/BlckLvls/ragnarbot#-chat-apps[/dim]")
@@ -159,6 +221,7 @@ def gateway(
 ):
     """Start the ragnarbot gateway."""
     from ragnarbot.config.loader import load_config, get_data_dir
+    from ragnarbot.auth.credentials import load_credentials
     from ragnarbot.bus.queue import MessageBus
     from ragnarbot.providers.litellm_provider import LiteLLMProvider
     from ragnarbot.agent.loop import AgentLoop
@@ -174,24 +237,33 @@ def gateway(
     console.print(f"{__logo__} Starting ragnarbot gateway on port {port}...")
 
     config = load_config()
+    creds = load_credentials()
 
     # Create components
     bus = MessageBus()
 
-    # Create provider
-    api_key = config.get_api_key()
-    api_base = config.get_api_base()
-
-    if not api_key:
-        console.print("[red]Error: No API key configured.[/red]")
-        console.print("Set one in ~/.ragnarbot/config.json under providers.anthropic.apiKey")
+    # Validate auth configuration
+    error = _validate_auth(config, creds)
+    if error:
+        console.print(f"[red]Error: {error}[/red]")
         raise typer.Exit(1)
 
-    provider = LiteLLMProvider(
-        api_key=api_key,
-        api_base=api_base,
-        default_model=config.agents.defaults.model
-    )
+    api_key, oauth_token, provider_name = _resolve_provider_auth(config, creds)
+
+    if provider_name == "anthropic" and oauth_token:
+        from ragnarbot.providers.anthropic_provider import AnthropicProvider
+        provider = AnthropicProvider(
+            oauth_token=oauth_token,
+            default_model=config.agents.defaults.model,
+        )
+    else:
+        provider = LiteLLMProvider(
+            api_key=api_key,
+            default_model=config.agents.defaults.model,
+        )
+
+    # Service credentials
+    brave_api_key = creds.services.web_search.api_key or None
 
     # Create cron service first (callback set after agent creation)
     cron_store_path = get_data_dir() / "cron" / "jobs.json"
@@ -204,7 +276,7 @@ def gateway(
         workspace=config.workspace_path,
         model=config.agents.defaults.model,
         max_iterations=config.agents.defaults.max_tool_iterations,
-        brave_api_key=config.tools.web.search.api_key or None,
+        brave_api_key=brave_api_key,
         exec_config=config.tools.exec,
         cron_service=cron,
     )
@@ -241,7 +313,7 @@ def gateway(
     )
 
     # Create channel manager
-    channels = ChannelManager(config, bus)
+    channels = ChannelManager(config, bus, creds)
 
     if channels.enabled_channels:
         console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
@@ -286,31 +358,42 @@ def agent(
 ):
     """Interact with the agent directly."""
     from ragnarbot.config.loader import load_config
+    from ragnarbot.auth.credentials import load_credentials
     from ragnarbot.bus.queue import MessageBus
     from ragnarbot.providers.litellm_provider import LiteLLMProvider
     from ragnarbot.agent.loop import AgentLoop
 
     config = load_config()
+    creds = load_credentials()
 
-    api_key = config.get_api_key()
-    api_base = config.get_api_base()
-
-    if not api_key:
-        console.print("[red]Error: No API key configured.[/red]")
+    error = _validate_auth(config, creds)
+    if error:
+        console.print(f"[red]Error: {error}[/red]")
         raise typer.Exit(1)
 
+    api_key, oauth_token, provider_name = _resolve_provider_auth(config, creds)
+
     bus = MessageBus()
-    provider = LiteLLMProvider(
-        api_key=api_key,
-        api_base=api_base,
-        default_model=config.agents.defaults.model
-    )
+
+    if provider_name == "anthropic" and oauth_token:
+        from ragnarbot.providers.anthropic_provider import AnthropicProvider
+        provider = AnthropicProvider(
+            oauth_token=oauth_token,
+            default_model=config.agents.defaults.model,
+        )
+    else:
+        provider = LiteLLMProvider(
+            api_key=api_key,
+            default_model=config.agents.defaults.model,
+        )
+
+    brave_api_key = creds.services.web_search.api_key or None
 
     agent_loop = AgentLoop(
         bus=bus,
         provider=provider,
         workspace=config.workspace_path,
-        brave_api_key=config.tools.web.search.api_key or None,
+        brave_api_key=brave_api_key,
         exec_config=config.tools.exec,
     )
 
@@ -354,8 +437,10 @@ app.add_typer(channels_app, name="channels")
 def channels_status():
     """Show channel status."""
     from ragnarbot.config.loader import load_config
+    from ragnarbot.auth.credentials import load_credentials
 
     config = load_config()
+    creds = load_credentials()
 
     table = Table(title="Channel Status")
     table.add_column("Channel", style="cyan")
@@ -364,7 +449,8 @@ def channels_status():
 
     # Telegram
     tg = config.channels.telegram
-    tg_config = f"token: {tg.token[:10]}..." if tg.token else "[dim]not configured[/dim]"
+    tg_token = creds.channels.telegram.bot_token
+    tg_config = f"token: {tg_token[:10]}..." if tg_token else "[dim]not configured[/dim]"
     table.add_row(
         "Telegram",
         "✓" if tg.enabled else "✗",
@@ -541,27 +627,41 @@ def cron_run(
 def status():
     """Show ragnarbot status."""
     from ragnarbot.config.loader import load_config, get_config_path
+    from ragnarbot.auth.credentials import load_credentials, get_credentials_path
 
     config_path = get_config_path()
+    creds_path = get_credentials_path()
     config = load_config()
+    creds = load_credentials()
     workspace = config.workspace_path
 
     console.print(f"{__logo__} ragnarbot Status\n")
 
     console.print(f"Config: {config_path} {'[green]✓[/green]' if config_path.exists() else '[red]✗[/red]'}")
+    console.print(
+        f"Credentials: {creds_path} {'[green]✓[/green]' if creds_path.exists() else '[red]✗[/red]'}"
+    )
     console.print(f"Workspace: {workspace} {'[green]✓[/green]' if workspace.exists() else '[red]✗[/red]'}")
 
     if config_path.exists():
         console.print(f"Model: {config.agents.defaults.model}")
 
-        # Check API keys
-        has_anthropic = bool(config.providers.anthropic.api_key)
-        has_openai = bool(config.providers.openai.api_key)
-        has_gemini = bool(config.providers.gemini.api_key)
+        auth_method = config.agents.defaults.auth_method
+        provider_name = (
+            config.agents.defaults.model.split("/")[0]
+            if "/" in config.agents.defaults.model
+            else "anthropic"
+        )
 
-        console.print(f"Anthropic API: {'[green]✓[/green]' if has_anthropic else '[dim]not set[/dim]'}")
-        console.print(f"OpenAI API: {'[green]✓[/green]' if has_openai else '[dim]not set[/dim]'}")
-        console.print(f"Gemini API: {'[green]✓[/green]' if has_gemini else '[dim]not set[/dim]'}")
+        for name in ("anthropic", "openai", "gemini"):
+            pc = getattr(creds.providers, name)
+            if name == provider_name and auth_method == "oauth" and pc.oauth_key:
+                auth_info = "[green]oauth[/green]"
+            elif pc.api_key:
+                auth_info = "[green]api_key[/green]"
+            else:
+                auth_info = "[dim]not set[/dim]"
+            console.print(f"{name.capitalize()}: {auth_info}")
 
 
 if __name__ == "__main__":
