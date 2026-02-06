@@ -1,4 +1,4 @@
-"""Voice transcription provider using Groq."""
+"""Standalone voice transcription tool using Groq Whisper."""
 
 import os
 from pathlib import Path
@@ -10,9 +10,11 @@ from loguru import logger
 
 class GroqTranscriptionProvider:
     """
-    Voice transcription provider using Groq's Whisper API.
-    
-    Groq offers extremely fast transcription with a generous free tier.
+    Standalone voice transcription tool using Groq's Whisper API.
+
+    This is not an LLM provider — it provides speech-to-text transcription
+    for voice messages. Groq offers extremely fast transcription with a
+    generous free tier.
     """
     
     def __init__(self, api_key: str | None = None):
