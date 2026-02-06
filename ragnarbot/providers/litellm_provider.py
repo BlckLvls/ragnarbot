@@ -8,6 +8,33 @@ from litellm import acompletion
 
 from ragnarbot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
+# Workaround for LiteLLM bug #19618: get_anthropic_headers() always emits
+# x-api-key, but Anthropic OAuth tokens only work via Authorization: Bearer.
+# When both headers are present, x-api-key takes precedence and fails (401).
+# This patch removes x-api-key when the api_key is an OAuth token (sk-ant-oat*),
+# letting the Authorization: Bearer header handle auth instead.
+_OAUTH_PREFIX = "sk-ant-oat"
+_oauth_patch_applied = False
+
+
+def _apply_oauth_header_patch():
+    global _oauth_patch_applied
+    if _oauth_patch_applied:
+        return
+    _oauth_patch_applied = True
+
+    from litellm.llms.anthropic.common_utils import AnthropicModelInfo
+
+    _original = AnthropicModelInfo.get_anthropic_headers
+
+    def _patched(self, api_key, **kwargs):
+        headers = _original(self, api_key=api_key, **kwargs)
+        if isinstance(api_key, str) and api_key.startswith(_OAUTH_PREFIX):
+            headers.pop("x-api-key", None)
+        return headers
+
+    AnthropicModelInfo.get_anthropic_headers = _patched
+
 
 class LiteLLMProvider(LLMProvider):
     """
@@ -26,7 +53,7 @@ class LiteLLMProvider(LLMProvider):
         super().__init__(api_key, api_base, oauth_token)
         self.default_model = default_model
 
-        # Configure LiteLLM based on provider (skip for OAuth)
+        # Configure LiteLLM env vars (not needed for OAuth — handled per-request)
         if api_key and not oauth_token:
             if "anthropic" in default_model:
                 os.environ.setdefault("ANTHROPIC_API_KEY", api_key)
@@ -34,6 +61,9 @@ class LiteLLMProvider(LLMProvider):
                 os.environ.setdefault("OPENAI_API_KEY", api_key)
             elif "gemini" in default_model.lower():
                 os.environ.setdefault("GEMINI_API_KEY", api_key)
+
+        if oauth_token:
+            _apply_oauth_header_patch()
 
         if api_base:
             litellm.api_base = api_base
@@ -83,13 +113,16 @@ class LiteLLMProvider(LLMProvider):
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
-        # Inject OAuth headers for Anthropic
+        # OAuth for Anthropic: Authorization: Bearer + beta header.
+        # api_key kwarg passes LiteLLM's early validation.
+        # Our _apply_oauth_header_patch removes the conflicting x-api-key
+        # that LiteLLM always adds (bug #19618).
         if self.oauth_token and "anthropic" in model:
             await self._maybe_refresh_token()
+            kwargs["api_key"] = self.oauth_token
             kwargs["extra_headers"] = {
                 "Authorization": f"Bearer {self.oauth_token}",
                 "anthropic-beta": "oauth-2025-04-20",
-                "anthropic-dangerous-direct-browser-access": "true",
             }
 
         try:
