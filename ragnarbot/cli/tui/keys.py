@@ -40,7 +40,11 @@ def read_key() -> tuple[Key, str]:
 
     Returns (Key, char_value) where char_value is the actual character
     for Key.CHAR events, empty string otherwise.
+
+    Uses os.read() on the raw fd to avoid Python's buffered I/O
+    swallowing escape sequence bytes.
     """
+    import os
     import select
     import termios
     import tty
@@ -49,21 +53,19 @@ def read_key() -> tuple[Key, str]:
     old_settings = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
-        ch = sys.stdin.read(1)
+        b = os.read(fd, 1)
+        ch = b.decode("utf-8", errors="replace")
 
         if ch == "\x1b":
-            # Could be ESC or start of arrow sequence
-            # Wait briefly to see if more chars follow
-            if select.select([sys.stdin], [], [], 0.05)[0]:
-                ch2 = sys.stdin.read(1)
-                if ch2 == "[":
-                    ch3 = sys.stdin.read(1)
-                    if ch3 == "A":
-                        return (Key.UP, "")
-                    elif ch3 == "B":
-                        return (Key.DOWN, "")
-                    # Consume any remaining sequence chars
-                    return (Key.ESC, "")
+            # Could be ESC or start of arrow/escape sequence
+            # Wait briefly to see if more bytes follow on the fd
+            if select.select([fd], [], [], 0.05)[0]:
+                seq = os.read(fd, 2)
+                if seq == b"[A":
+                    return (Key.UP, "")
+                elif seq == b"[B":
+                    return (Key.DOWN, "")
+                # Unknown escape sequence — consume and treat as ESC
                 return (Key.ESC, "")
             return (Key.ESC, "")
 
