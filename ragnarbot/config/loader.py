@@ -1,7 +1,6 @@
 """Configuration loading utilities."""
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -23,9 +22,6 @@ def load_config(config_path: Path | None = None) -> Config:
     """
     Load configuration from file or create default.
 
-    Automatically migrates credentials from config.json to credentials.json
-    on first load if credentials.json doesn't exist yet.
-
     Args:
         config_path: Optional path to config file. Uses default if not provided.
 
@@ -36,13 +32,6 @@ def load_config(config_path: Path | None = None) -> Config:
 
     if path.exists():
         try:
-            # Auto-migrate credentials on first load
-            from ragnarbot.auth.credentials import get_credentials_path
-            creds_path = get_credentials_path()
-            if not creds_path.exists():
-                migrate_credentials_from_config(path, creds_path)
-
-            # Read config (possibly cleaned by migration)
             with open(path) as f:
                 data = json.load(f)
 
@@ -53,83 +42,6 @@ def load_config(config_path: Path | None = None) -> Config:
 
     return Config()
 
-
-def migrate_credentials_from_config(config_path: Path, creds_path: Path) -> None:
-    """Move secrets from old config.json to credentials.json, strip from config.
-
-    Called automatically when credentials.json doesn't exist but config.json
-    may contain api keys from the old format.
-    """
-    try:
-        with open(config_path) as f:
-            raw = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return
-
-    data = convert_keys(raw)
-    creds_data: dict[str, Any] = {"providers": {}, "services": {}, "channels": {}}
-    changed = False
-
-    # Extract provider api keys
-    providers = data.get("providers", {})
-    for name in ("anthropic", "openai", "gemini"):
-        provider = providers.get(name, {})
-        api_key = provider.get("api_key", "")
-        if api_key:
-            creds_data["providers"][name] = {"auth_method": "api_key", "api_key": api_key}
-            changed = True
-
-    # Extract transcription api key
-    transcription = data.get("transcription", {})
-    trans_key = transcription.get("api_key", "")
-    if trans_key:
-        creds_data["services"]["transcription"] = {"api_key": trans_key}
-        changed = True
-
-    # Extract web search api key
-    tools = data.get("tools", {})
-    web = tools.get("web", {})
-    search = web.get("search", {})
-    search_key = search.get("api_key", "")
-    if search_key:
-        creds_data["services"]["web_search"] = {"api_key": search_key}
-        changed = True
-
-    # Extract telegram bot token
-    channels = data.get("channels", {})
-    telegram = channels.get("telegram", {})
-    tg_token = telegram.get("token", "")
-    if tg_token:
-        creds_data["channels"]["telegram"] = {"bot_token": tg_token}
-        changed = True
-
-    # Always strip removed fields from config.json (transcription, secrets)
-    config_dirty = False
-    for name in ("anthropic", "openai", "gemini"):
-        provider = raw.get("providers", {}).get(name, {})
-        if provider.pop("apiKey", None) is not None or provider.pop("api_key", None) is not None:
-            config_dirty = True
-    if raw.pop("transcription", None) is not None:
-        config_dirty = True
-    search_raw = raw.get("tools", {}).get("web", {}).get("search", {})
-    if search_raw.pop("apiKey", None) is not None or search_raw.pop("api_key", None) is not None:
-        config_dirty = True
-    telegram_raw = raw.get("channels", {}).get("telegram", {})
-    if telegram_raw.pop("token", None) is not None:
-        config_dirty = True
-
-    if config_dirty:
-        with open(config_path, "w") as f:
-            json.dump(raw, f, indent=2)
-
-    # Write credentials.json if there were actual secrets to migrate
-    if changed:
-        creds_path.parent.mkdir(parents=True, exist_ok=True)
-        camel_creds = convert_to_camel(creds_data)
-        with open(creds_path, "w") as f:
-            json.dump(camel_creds, f, indent=2)
-        os.chmod(creds_path, 0o600)
-        print(f"Migrated credentials to {creds_path}")
 
 
 def save_config(config: Config, config_path: Path | None = None) -> None:

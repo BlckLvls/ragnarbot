@@ -16,7 +16,6 @@ class OAuthCredentials(BaseModel):
 
 class ProviderCredentials(BaseModel):
     """Credentials for a single LLM provider."""
-    auth_method: str = "api_key"  # "api_key" | "oauth"
     api_key: str = ""
     oauth: OAuthCredentials = Field(default_factory=OAuthCredentials)
 

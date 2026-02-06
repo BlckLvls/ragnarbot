@@ -32,22 +32,16 @@ class AnthropicProvider(LLMProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        api_base: str | None = None,
         default_model: str = "claude-opus-4-6",
         oauth_token: str | None = None,
     ):
-        super().__init__(api_key, api_base, oauth_token)
+        super().__init__(api_key, oauth_token)
         self.default_model = default_model
-        self._base_url = api_base
         self.client = self._build_client(api_key, oauth_token)
 
     def _build_client(
         self, api_key: str | None = None, oauth_token: str | None = None,
     ) -> AsyncAnthropic:
-        kwargs: dict[str, Any] = {}
-        if self._base_url:
-            kwargs["base_url"] = self._base_url
-
         if oauth_token:
             # Remove ANTHROPIC_API_KEY from env — if both headers are sent the API returns 401.
             os.environ.pop("ANTHROPIC_API_KEY", None)
@@ -55,13 +49,12 @@ class AnthropicProvider(LLMProvider):
                 api_key=None,
                 auth_token=oauth_token,
                 default_headers=_OAUTH_HEADERS,
-                **kwargs,
             )
 
         if api_key:
-            return AsyncAnthropic(api_key=api_key, **kwargs)
+            return AsyncAnthropic(api_key=api_key)
 
-        return AsyncAnthropic(**kwargs)
+        return AsyncAnthropic()
 
     async def chat(
         self,

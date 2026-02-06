@@ -6,7 +6,6 @@ import stat
 
 from ragnarbot.auth.credentials import (
     Credentials,
-    ProviderCredentials,
     load_credentials,
     save_credentials,
 )
@@ -16,7 +15,6 @@ def test_default_credentials():
     """Default credentials have empty values."""
     creds = Credentials()
     assert creds.providers.anthropic.api_key == ""
-    assert creds.providers.anthropic.auth_method == "api_key"
     assert creds.providers.anthropic.oauth.access_token == ""
     assert creds.services.transcription.api_key == ""
     assert creds.channels.telegram.bot_token == ""
@@ -27,7 +25,6 @@ def test_save_load_round_trip(tmp_path):
     path = tmp_path / "credentials.json"
 
     creds = Credentials()
-    creds.providers.anthropic.auth_method = "oauth"
     creds.providers.anthropic.oauth.access_token = "sk-ant-oat-test"
     creds.providers.openai.api_key = "sk-openai-test"
     creds.services.web_search.api_key = "brave-key"
@@ -36,7 +33,6 @@ def test_save_load_round_trip(tmp_path):
     save_credentials(creds, path)
     loaded = load_credentials(path)
 
-    assert loaded.providers.anthropic.auth_method == "oauth"
     assert loaded.providers.anthropic.oauth.access_token == "sk-ant-oat-test"
     assert loaded.providers.openai.api_key == "sk-openai-test"
     assert loaded.services.web_search.api_key == "brave-key"
@@ -57,7 +53,6 @@ def test_camel_case_serialization(tmp_path):
     path = tmp_path / "credentials.json"
 
     creds = Credentials()
-    creds.providers.anthropic.auth_method = "oauth"
     creds.providers.anthropic.oauth.access_token = "tok"
     creds.services.web_search.api_key = "key"
     creds.channels.telegram.bot_token = "bot"
@@ -69,7 +64,6 @@ def test_camel_case_serialization(tmp_path):
 
     # Top-level keys should be camelCase
     assert "providers" in raw
-    assert "authMethod" in raw["providers"]["anthropic"]
     assert "accessToken" in raw["providers"]["anthropic"]["oauth"]
     assert "webSearch" in raw["services"]
     assert "botToken" in raw["channels"]["telegram"]

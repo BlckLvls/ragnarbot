@@ -17,6 +17,9 @@ class ChannelsConfig(BaseModel):
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
 
 
+OAUTH_SUPPORTED_PROVIDERS = {"anthropic"}
+
+
 class AgentDefaults(BaseModel):
     """Default agent configuration."""
     workspace: str = "~/.ragnarbot/workspace"
@@ -24,23 +27,13 @@ class AgentDefaults(BaseModel):
     max_tokens: int = 8192
     temperature: float = 0.7
     max_tool_iterations: int = 20
+    auth_method: str = "api_key"
 
 
 class AgentsConfig(BaseModel):
     """Agent configuration."""
     defaults: AgentDefaults = Field(default_factory=AgentDefaults)
 
-
-class ProviderConfig(BaseModel):
-    """LLM provider configuration."""
-    api_base: str | None = None
-
-
-class ProvidersConfig(BaseModel):
-    """Configuration for LLM providers."""
-    anthropic: ProviderConfig = Field(default_factory=ProviderConfig)
-    openai: ProviderConfig = Field(default_factory=ProviderConfig)
-    gemini: ProviderConfig = Field(default_factory=ProviderConfig)
 
 
 class GatewayConfig(BaseModel):
@@ -75,21 +68,13 @@ class Config(BaseSettings):
     """Root configuration for ragnarbot."""
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
-    providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
-    
+
     @property
     def workspace_path(self) -> Path:
         """Get expanded workspace path."""
         return Path(self.agents.defaults.workspace).expanduser()
-
-    def get_api_base(self) -> str | None:
-        """Get API base URL if a provider has a custom base configured."""
-        for provider in [self.providers.anthropic, self.providers.openai, self.providers.gemini]:
-            if provider.api_base:
-                return provider.api_base
-        return None
     
     class Config:
         env_prefix = "RAGNARBOT_"

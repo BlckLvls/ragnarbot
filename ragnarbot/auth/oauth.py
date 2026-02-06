@@ -35,7 +35,7 @@ async def ensure_valid_token(creds: "Credentials") -> str | None:  # noqa: F821
     from ragnarbot.auth.credentials import save_credentials
 
     provider = creds.providers.anthropic
-    if provider.auth_method != "oauth" or not provider.oauth.access_token:
+    if not provider.oauth.access_token:
         return None
 
     # If no expiry set or not expired yet, return current token
