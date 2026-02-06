@@ -20,13 +20,14 @@ class LiteLLMProvider(LLMProvider):
         self,
         api_key: str | None = None,
         api_base: str | None = None,
-        default_model: str = "anthropic/claude-opus-4-5"
+        default_model: str = "anthropic/claude-opus-4-5",
+        oauth_token: str | None = None,
     ):
-        super().__init__(api_key, api_base)
+        super().__init__(api_key, api_base, oauth_token)
         self.default_model = default_model
 
-        # Configure LiteLLM based on provider
-        if api_key:
+        # Configure LiteLLM based on provider (skip for OAuth)
+        if api_key and not oauth_token:
             if "anthropic" in default_model:
                 os.environ.setdefault("ANTHROPIC_API_KEY", api_key)
             elif "openai" in default_model or "gpt" in default_model:
@@ -81,7 +82,16 @@ class LiteLLMProvider(LLMProvider):
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
-        
+
+        # Inject OAuth headers for Anthropic
+        if self.oauth_token and "anthropic" in model:
+            await self._maybe_refresh_token()
+            kwargs["extra_headers"] = {
+                "Authorization": f"Bearer {self.oauth_token}",
+                "anthropic-beta": "oauth-2025-04-20",
+                "anthropic-dangerous-direct-browser-access": "true",
+            }
+
         try:
             response = await acompletion(**kwargs)
             return self._parse_response(response)
@@ -130,6 +140,20 @@ class LiteLLMProvider(LLMProvider):
             usage=usage,
         )
     
+    async def _maybe_refresh_token(self) -> None:
+        """Refresh OAuth token if expired."""
+        if not self.oauth_token:
+            return
+        try:
+            from ragnarbot.auth.credentials import load_credentials
+            from ragnarbot.auth.oauth import ensure_valid_token
+            creds = load_credentials()
+            new_token = await ensure_valid_token(creds)
+            if new_token:
+                self.oauth_token = new_token
+        except Exception:
+            pass  # Keep existing token on failure
+
     def get_default_model(self) -> str:
         """Get the default model."""
         return self.default_model
