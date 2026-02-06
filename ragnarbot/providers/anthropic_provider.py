@@ -69,10 +69,6 @@ class AnthropicProvider(LLMProvider):
         if model.startswith("anthropic/"):
             model = model[len("anthropic/"):]
 
-        # Refresh OAuth token if needed
-        if self.oauth_token:
-            await self._maybe_refresh_token()
-
         # Convert messages from OpenAI format to Anthropic format
         system_prompt, anthropic_messages = self._convert_messages(messages)
 
@@ -112,17 +108,6 @@ class AnthropicProvider(LLMProvider):
         if system_prompt:
             blocks.append({"type": "text", "text": system_prompt})
         return blocks
-
-    async def _maybe_refresh_token(self) -> None:
-        """Refresh OAuth token if expired."""
-        from ragnarbot.auth.credentials import load_credentials
-        from ragnarbot.auth.oauth import ensure_valid_token
-
-        creds = load_credentials()
-        new_token = await ensure_valid_token(creds)
-        if new_token and new_token != self.oauth_token:
-            self.oauth_token = new_token
-            self.client = self._build_client(oauth_token=new_token)
 
     @staticmethod
     def _convert_messages(
