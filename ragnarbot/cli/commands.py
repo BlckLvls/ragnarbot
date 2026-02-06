@@ -202,7 +202,7 @@ def gateway(
     bus = MessageBus()
 
     # Resolve provider auth from credentials
-    api_key, oauth_token, _ = _resolve_provider_auth(config, creds)
+    api_key, oauth_token, provider_name = _resolve_provider_auth(config, creds)
     api_base = config.get_api_base()
 
     if not api_key and not oauth_token:
@@ -210,12 +210,20 @@ def gateway(
         console.print("Set credentials in ~/.ragnarbot/credentials.json")
         raise typer.Exit(1)
 
-    provider = LiteLLMProvider(
-        api_key=api_key,
-        api_base=api_base,
-        default_model=config.agents.defaults.model,
-        oauth_token=oauth_token,
-    )
+    if provider_name == "anthropic" and oauth_token:
+        from ragnarbot.providers.anthropic_provider import AnthropicProvider
+        provider = AnthropicProvider(
+            oauth_token=oauth_token,
+            api_base=api_base,
+            default_model=config.agents.defaults.model,
+        )
+    else:
+        provider = LiteLLMProvider(
+            api_key=api_key,
+            api_base=api_base,
+            default_model=config.agents.defaults.model,
+            oauth_token=oauth_token,
+        )
 
     # Service credentials
     brave_api_key = creds.services.web_search.api_key or None
@@ -321,7 +329,7 @@ def agent(
     config = load_config()
     creds = load_credentials()
 
-    api_key, oauth_token, _ = _resolve_provider_auth(config, creds)
+    api_key, oauth_token, provider_name = _resolve_provider_auth(config, creds)
     api_base = config.get_api_base()
 
     if not api_key and not oauth_token:
@@ -330,12 +338,21 @@ def agent(
         raise typer.Exit(1)
 
     bus = MessageBus()
-    provider = LiteLLMProvider(
-        api_key=api_key,
-        api_base=api_base,
-        default_model=config.agents.defaults.model,
-        oauth_token=oauth_token,
-    )
+
+    if provider_name == "anthropic" and oauth_token:
+        from ragnarbot.providers.anthropic_provider import AnthropicProvider
+        provider = AnthropicProvider(
+            oauth_token=oauth_token,
+            api_base=api_base,
+            default_model=config.agents.defaults.model,
+        )
+    else:
+        provider = LiteLLMProvider(
+            api_key=api_key,
+            api_base=api_base,
+            default_model=config.agents.defaults.model,
+            oauth_token=oauth_token,
+        )
 
     brave_api_key = creds.services.web_search.api_key or None
 
