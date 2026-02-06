@@ -25,18 +25,52 @@ def _resolve_provider_auth(config, creds):
     """
     model = config.agents.defaults.model
     provider_name = model.split("/")[0] if "/" in model else "anthropic"
+    auth_method = config.agents.defaults.auth_method
 
     provider_creds = getattr(creds.providers, provider_name, None)
     oauth_token = None
     api_key = None
 
     if provider_creds:
-        if provider_creds.auth_method == "oauth" and provider_creds.oauth.access_token:
+        if auth_method == "oauth" and provider_creds.oauth.access_token:
             oauth_token = provider_creds.oauth.access_token
         elif provider_creds.api_key:
             api_key = provider_creds.api_key
 
     return api_key, oauth_token, provider_name
+
+
+def _validate_auth(config, creds):
+    """Validate auth configuration before provider creation.
+
+    Returns error message string or None if OK.
+    """
+    from ragnarbot.config.schema import OAUTH_SUPPORTED_PROVIDERS
+
+    model = config.agents.defaults.model
+    provider_name = model.split("/")[0] if "/" in model else "anthropic"
+    auth_method = config.agents.defaults.auth_method
+
+    if auth_method not in ("api_key", "oauth"):
+        return f"Unknown auth method: {auth_method}"
+
+    if auth_method == "oauth" and provider_name not in OAUTH_SUPPORTED_PROVIDERS:
+        return (
+            f"OAuth is not supported for provider '{provider_name}'. "
+            f"Supported: {', '.join(OAUTH_SUPPORTED_PROVIDERS)}"
+        )
+
+    provider_creds = getattr(creds.providers, provider_name, None)
+    if not provider_creds:
+        return f"No credentials configured for provider '{provider_name}'"
+
+    if auth_method == "api_key" and not provider_creds.api_key:
+        return f"No API key configured for '{provider_name}'. Set it in ~/.ragnarbot/credentials.json"
+
+    if auth_method == "oauth" and not provider_creds.oauth.access_token:
+        return f"No OAuth token for '{provider_name}'. Run: claude setup-token"
+
+    return None
 
 
 def version_callback(value: bool):
@@ -65,9 +99,11 @@ def onboard():
     """Initialize ragnarbot configuration and workspace."""
     from ragnarbot.config.loader import get_config_path, save_config
     from ragnarbot.config.schema import Config
+    from ragnarbot.auth.credentials import Credentials, get_credentials_path, save_credentials
     from ragnarbot.utils.helpers import get_workspace_path
 
     config_path = get_config_path()
+    creds_path = get_credentials_path()
 
     if config_path.exists():
         console.print(f"[yellow]Config already exists at {config_path}[/yellow]")
@@ -78,6 +114,11 @@ def onboard():
     config = Config()
     save_config(config)
     console.print(f"[green]✓[/green] Created config at {config_path}")
+
+    # Create default credentials
+    if not creds_path.exists():
+        save_credentials(Credentials(), creds_path)
+        console.print(f"[green]✓[/green] Created credentials at {creds_path}")
 
     # Create workspace
     workspace = get_workspace_path()
@@ -201,28 +242,24 @@ def gateway(
     # Create components
     bus = MessageBus()
 
-    # Resolve provider auth from credentials
-    api_key, oauth_token, provider_name = _resolve_provider_auth(config, creds)
-    api_base = config.get_api_base()
-
-    if not api_key and not oauth_token:
-        console.print("[red]Error: No API key or OAuth token configured.[/red]")
-        console.print("Set credentials in ~/.ragnarbot/credentials.json")
+    # Validate auth configuration
+    error = _validate_auth(config, creds)
+    if error:
+        console.print(f"[red]Error: {error}[/red]")
         raise typer.Exit(1)
+
+    api_key, oauth_token, provider_name = _resolve_provider_auth(config, creds)
 
     if provider_name == "anthropic" and oauth_token:
         from ragnarbot.providers.anthropic_provider import AnthropicProvider
         provider = AnthropicProvider(
             oauth_token=oauth_token,
-            api_base=api_base,
             default_model=config.agents.defaults.model,
         )
     else:
         provider = LiteLLMProvider(
             api_key=api_key,
-            api_base=api_base,
             default_model=config.agents.defaults.model,
-            oauth_token=oauth_token,
         )
 
     # Service credentials
@@ -329,13 +366,12 @@ def agent(
     config = load_config()
     creds = load_credentials()
 
-    api_key, oauth_token, provider_name = _resolve_provider_auth(config, creds)
-    api_base = config.get_api_base()
-
-    if not api_key and not oauth_token:
-        console.print("[red]Error: No API key or OAuth token configured.[/red]")
-        console.print("Set credentials in ~/.ragnarbot/credentials.json")
+    error = _validate_auth(config, creds)
+    if error:
+        console.print(f"[red]Error: {error}[/red]")
         raise typer.Exit(1)
+
+    api_key, oauth_token, provider_name = _resolve_provider_auth(config, creds)
 
     bus = MessageBus()
 
@@ -343,15 +379,12 @@ def agent(
         from ragnarbot.providers.anthropic_provider import AnthropicProvider
         provider = AnthropicProvider(
             oauth_token=oauth_token,
-            api_base=api_base,
             default_model=config.agents.defaults.model,
         )
     else:
         provider = LiteLLMProvider(
             api_key=api_key,
-            api_base=api_base,
             default_model=config.agents.defaults.model,
-            oauth_token=oauth_token,
         )
 
     brave_api_key = creds.services.web_search.api_key or None
@@ -613,10 +646,16 @@ def status():
     if config_path.exists():
         console.print(f"Model: {config.agents.defaults.model}")
 
-        # Show auth status per provider from credentials
+        auth_method = config.agents.defaults.auth_method
+        provider_name = (
+            config.agents.defaults.model.split("/")[0]
+            if "/" in config.agents.defaults.model
+            else "anthropic"
+        )
+
         for name in ("anthropic", "openai", "gemini"):
             pc = getattr(creds.providers, name)
-            if pc.auth_method == "oauth" and pc.oauth.access_token:
+            if name == provider_name and auth_method == "oauth" and pc.oauth.access_token:
                 auth_info = "[green]oauth[/green]"
             elif pc.api_key:
                 auth_info = "[green]api_key[/green]"
