@@ -1,10 +1,25 @@
 """Anthropic SDK provider for OAuth token support."""
 
+import os
 from typing import Any
 
 from anthropic import AsyncAnthropic
 
 from ragnarbot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+
+# Headers required by Anthropic API for OAuth token authentication.
+_OAUTH_HEADERS = {
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-beta": (
+        "claude-code-20250219,oauth-2025-04-20,"
+        "fine-grained-tool-streaming-2025-05-14,"
+        "interleaved-thinking-2025-05-14"
+    ),
+    "user-agent": "claude-cli/2.1.2 (external, cli)",
+    "x-app": "cli",
+}
+
+_CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude."
 
 
 class AnthropicProvider(LLMProvider):
@@ -23,17 +38,30 @@ class AnthropicProvider(LLMProvider):
     ):
         super().__init__(api_key, api_base, oauth_token)
         self.default_model = default_model
+        self._base_url = api_base
+        self.client = self._build_client(api_key, oauth_token)
 
+    def _build_client(
+        self, api_key: str | None = None, oauth_token: str | None = None,
+    ) -> AsyncAnthropic:
         kwargs: dict[str, Any] = {}
-        if api_base:
-            kwargs["base_url"] = api_base
+        if self._base_url:
+            kwargs["base_url"] = self._base_url
 
         if oauth_token:
-            self.client = AsyncAnthropic(auth_token=oauth_token, **kwargs)
-        elif api_key:
-            self.client = AsyncAnthropic(api_key=api_key, **kwargs)
-        else:
-            self.client = AsyncAnthropic(**kwargs)
+            # Remove ANTHROPIC_API_KEY from env — if both headers are sent the API returns 401.
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            return AsyncAnthropic(
+                api_key=None,
+                auth_token=oauth_token,
+                default_headers=_OAUTH_HEADERS,
+                **kwargs,
+            )
+
+        if api_key:
+            return AsyncAnthropic(api_key=api_key, **kwargs)
+
+        return AsyncAnthropic(**kwargs)
 
     async def chat(
         self,
@@ -62,8 +90,8 @@ class AnthropicProvider(LLMProvider):
             "temperature": temperature,
         }
 
-        if system_prompt:
-            kwargs["system"] = system_prompt
+        if system_prompt or self.oauth_token:
+            kwargs["system"] = self._build_system(system_prompt)
 
         if tools:
             kwargs["tools"] = self._convert_tools(tools)
@@ -80,6 +108,18 @@ class AnthropicProvider(LLMProvider):
     def get_default_model(self) -> str:
         return self.default_model
 
+    def _build_system(self, system_prompt: str | None) -> list[dict[str, str]]:
+        """Build system param as list of text blocks.
+
+        When using OAuth, the Claude Code identity block is prepended.
+        """
+        blocks: list[dict[str, str]] = []
+        if self.oauth_token:
+            blocks.append({"type": "text", "text": _CLAUDE_CODE_IDENTITY})
+        if system_prompt:
+            blocks.append({"type": "text", "text": system_prompt})
+        return blocks
+
     async def _maybe_refresh_token(self) -> None:
         """Refresh OAuth token if expired."""
         from ragnarbot.auth.credentials import load_credentials
@@ -89,7 +129,7 @@ class AnthropicProvider(LLMProvider):
         new_token = await ensure_valid_token(creds)
         if new_token and new_token != self.oauth_token:
             self.oauth_token = new_token
-            self.client = AsyncAnthropic(auth_token=new_token)
+            self.client = self._build_client(oauth_token=new_token)
 
     @staticmethod
     def _convert_messages(
