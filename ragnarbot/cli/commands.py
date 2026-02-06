@@ -443,7 +443,7 @@ def cron_add(
     at: str = typer.Option(None, "--at", help="Run once at time (ISO format)"),
     deliver: bool = typer.Option(False, "--deliver", "-d", help="Deliver response to channel"),
     to: str = typer.Option(None, "--to", help="Recipient for delivery"),
-    channel: str = typer.Option(None, "--channel", help="Channel for delivery (e.g. 'telegram', 'whatsapp')"),
+    channel: str = typer.Option(None, "--channel", help="Channel for delivery (e.g. 'telegram')"),
 ):
     """Add a scheduled job."""
     from ragnarbot.config.loader import get_data_dir

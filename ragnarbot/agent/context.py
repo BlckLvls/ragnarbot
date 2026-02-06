@@ -94,7 +94,7 @@ Your workspace is at: {workspace_path}
 - Custom skills: {workspace_path}/skills/{{skill-name}}/SKILL.md
 
 IMPORTANT: When responding to direct questions or conversations, reply directly with your text response.
-Only use the 'message' tool when you need to send a message to a specific chat channel (like WhatsApp).
+Only use the 'message' tool when you need to send a message to a specific chat channel.
 For normal conversation, just respond with text - do not call the message tool.
 
 Always be helpful, accurate, and concise. When using tools, explain what you're doing.
@@ -129,7 +129,7 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
             current_message: The new user message.
             skill_names: Optional skills to include.
             media: Optional list of local file paths for images/media.
-            channel: Current channel (telegram, feishu, etc.).
+            channel: Current channel (e.g. telegram).
             chat_id: Current chat/user ID.
 
         Returns:
