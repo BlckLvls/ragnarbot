@@ -3,6 +3,7 @@
 import asyncio
 import re
 
+import telegram
 from loguru import logger
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
@@ -101,6 +102,7 @@ class TelegramChannel(BaseChannel):
         self.media_manager = media_manager
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
+        self._typing_tasks: dict[int, asyncio.Task] = {}
     
     async def start(self) -> None:
         """Start the Telegram bot with long polling."""
@@ -179,10 +181,29 @@ class TelegramChannel(BaseChannel):
         if not self._app:
             logger.warning("Telegram bot not running")
             return
-        
+
         try:
-            # chat_id should be the Telegram chat ID (integer)
             chat_id = int(msg.chat_id)
+        except ValueError:
+            logger.error(f"Invalid chat_id: {msg.chat_id}")
+            return
+
+        # Typing signal — start background typing loop and return early
+        if msg.metadata.get("chat_action") == "typing":
+            if chat_id not in self._typing_tasks:
+                self._typing_tasks[chat_id] = asyncio.create_task(
+                    self._typing_loop(chat_id)
+                )
+            return
+
+        # Intermediate message — send text but keep typing active
+        is_intermediate = msg.metadata.get("intermediate", False)
+
+        # Final message — stop typing first
+        if not is_intermediate:
+            self._stop_typing(chat_id)
+
+        try:
             # Convert markdown to Telegram HTML (skip if already raw HTML)
             if msg.metadata.get("raw_html"):
                 html_content = msg.content
@@ -193,19 +214,35 @@ class TelegramChannel(BaseChannel):
                 text=html_content,
                 parse_mode="HTML"
             )
-        except ValueError:
-            logger.error(f"Invalid chat_id: {msg.chat_id}")
         except Exception as e:
             # Fallback to plain text if HTML parsing fails
             logger.warning(f"HTML parse failed, falling back to plain text: {e}")
             try:
                 await self._app.bot.send_message(
-                    chat_id=int(msg.chat_id),
+                    chat_id=chat_id,
                     text=msg.content
                 )
             except Exception as e2:
                 logger.error(f"Error sending Telegram message: {e2}")
     
+    async def _typing_loop(self, chat_id: int) -> None:
+        """Send typing action every 4s until cancelled."""
+        try:
+            while True:
+                await self._app.bot.send_chat_action(
+                    chat_id=chat_id,
+                    action=telegram.constants.ChatAction.TYPING,
+                )
+                await asyncio.sleep(4)
+        except asyncio.CancelledError:
+            pass
+
+    def _stop_typing(self, chat_id: int) -> None:
+        """Cancel the typing loop for a chat."""
+        task = self._typing_tasks.pop(chat_id, None)
+        if task:
+            task.cancel()
+
     async def _on_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""
         if not update.message or not update.effective_user:

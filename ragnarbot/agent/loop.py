@@ -225,6 +225,14 @@ class AgentLoop:
             f"Processing batch of {len(batch)} message(s) from {msg.channel}:{msg.sender_id}"
         )
 
+        # Signal typing indicator to the channel
+        await self.bus.publish_outbound(OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content="",
+            metadata={"chat_action": "typing"},
+        ))
+
         # Get or create session
         session = self.sessions.get_or_create(msg.session_key)
 
@@ -449,7 +457,7 @@ class AgentLoop:
         the response back to the correct destination.
         """
         logger.info(f"Processing system message from {msg.sender_id}")
-        
+
         # Parse origin from chat_id (format: "channel:chat_id")
         if ":" in msg.chat_id:
             parts = msg.chat_id.split(":", 1)
@@ -460,10 +468,18 @@ class AgentLoop:
             origin_channel = "cli"
             origin_chat_id = msg.chat_id
         
+        # Signal typing indicator to the channel
+        await self.bus.publish_outbound(OutboundMessage(
+            channel=origin_channel,
+            chat_id=origin_chat_id,
+            content="",
+            metadata={"chat_action": "typing"},
+        ))
+
         # Use the origin session for context
         session_key = f"{origin_channel}:{origin_chat_id}"
         session = self.sessions.get_or_create(session_key)
-        
+
         # Update tool contexts
         message_tool = self.tools.get("message")
         if isinstance(message_tool, MessageTool):
