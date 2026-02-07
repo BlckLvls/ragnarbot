@@ -8,6 +8,7 @@ from loguru import logger
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
+from ragnarbot.auth.grants import PendingGrantStore
 from ragnarbot.bus.events import MediaAttachment, OutboundMessage
 from ragnarbot.bus.queue import MessageBus
 from ragnarbot.channels.base import BaseChannel
@@ -103,6 +104,7 @@ class TelegramChannel(BaseChannel):
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
         self._typing_tasks: dict[int, asyncio.Task] = {}
+        self._grants = PendingGrantStore()
     
     async def start(self) -> None:
         """Start the Telegram bot with long polling."""
@@ -139,9 +141,14 @@ class TelegramChannel(BaseChannel):
         await self._app.initialize()
         await self._app.start()
         
-        # Get bot info
+        # Get bot info and set commands
         bot_info = await self._app.bot.get_me()
         logger.info(f"Telegram bot @{bot_info.username} connected")
+
+        from telegram import BotCommand
+        await self._app.bot.set_my_commands([
+            BotCommand("new", "Start a new conversation"),
+        ])
         
         # Register media download callback
         if self.media_manager:
@@ -243,14 +250,48 @@ class TelegramChannel(BaseChannel):
         if task:
             task.cancel()
 
+    async def _on_unauthorized(
+        self, sender_id: str, chat_id: str, metadata: dict
+    ) -> None:
+        """Send access grant prompt to unauthorized users."""
+        # Extract numeric user_id from composite sender_id (e.g. "123456|username")
+        user_id = sender_id.split("|")[0]
+        await self._handle_unauthorized_user(user_id, chat_id)
+
+    async def _handle_unauthorized_user(self, user_id: str, chat_id: str) -> None:
+        """Generate a grant code and send the access prompt."""
+        code = self._grants.get_or_create(user_id, chat_id)
+        html = (
+            "<b>Access Verification</b>\n\n"
+            "To grant access to this bot, run the following command in your terminal:\n\n"
+            f"<code>ragnarbot telegram grant-access {code}</code>"
+        )
+        if self._app:
+            try:
+                await self._app.bot.send_message(
+                    chat_id=int(chat_id),
+                    text=html,
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                logger.error(f"Failed to send access prompt: {e}")
+
     async def _on_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""
         if not update.message or not update.effective_user:
             return
-        
+
         user = update.effective_user
+        sender_id = str(user.id)
+        if user.username:
+            sender_id = f"{sender_id}|{user.username}"
+
+        if not self.is_allowed(sender_id):
+            await self._handle_unauthorized_user(str(user.id), str(update.message.chat_id))
+            return
+
         await update.message.reply_text(
-            f"👋 Hi {user.first_name}! I'm ragnarbot.\n\n"
+            f"Hi {user.first_name}! I'm ragnarbot.\n\n"
             "Send me a message and I'll respond!"
         )
     

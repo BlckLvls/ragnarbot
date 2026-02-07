@@ -1,6 +1,7 @@
 """CLI commands for ragnarbot."""
 
 import asyncio
+import os
 from pathlib import Path
 
 import typer
@@ -311,13 +312,42 @@ def gateway_main(
 
     console.print("[green]✓[/green] Heartbeat: every 30m")
 
+    pid_path = Path.home() / ".ragnarbot" / "gateway.pid"
+
     async def run():
+        # Write PID file
+        pid_path.parent.mkdir(parents=True, exist_ok=True)
+        pid_path.write_text(str(os.getpid()))
+
+        # SIGUSR1 handler for config reload
+        reload_event = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        import signal
+        try:
+            loop.add_signal_handler(signal.SIGUSR1, reload_event.set)
+        except NotImplementedError:
+            pass  # Windows — signal handler not supported
+
+        async def _config_reloader():
+            while True:
+                await reload_event.wait()
+                reload_event.clear()
+                try:
+                    new_config = load_config()
+                    for ch in channels.channels.values():
+                        ch.config = getattr(new_config.channels, ch.name, ch.config)
+                    console.print("[green]✓[/green] Config reloaded (SIGUSR1)")
+                except Exception as e:
+                    console.print(f"[red]Config reload failed: {e}[/red]")
+
         try:
             await cron.start()
             await heartbeat.start()
             await asyncio.gather(
                 agent.run(),
                 channels.start_all(),
+                _config_reloader(),
             )
         except KeyboardInterrupt:
             console.print("\nShutting down...")
@@ -325,6 +355,8 @@ def gateway_main(
             cron.stop()
             agent.stop()
             await channels.stop_all()
+        finally:
+            pid_path.unlink(missing_ok=True)
 
     asyncio.run(run())
 
@@ -476,6 +508,96 @@ def gateway_status():
     if info.log_path:
         console.print(f"Logs:         {info.log_path}")
 
+
+
+# ============================================================================
+# Telegram Commands
+# ============================================================================
+
+telegram_app = typer.Typer(help="Telegram channel management")
+app.add_typer(telegram_app, name="telegram")
+
+
+@telegram_app.command("grant-access")
+def telegram_grant_access(
+    code: str = typer.Argument(..., help="Access code shown to the user"),
+):
+    """Grant bot access to a Telegram user via an access code."""
+    from ragnarbot.auth.credentials import load_credentials
+    from ragnarbot.auth.grants import PendingGrantStore
+    from ragnarbot.config.loader import load_config, save_config
+
+    store = PendingGrantStore()
+    grant = store.validate(code)
+    if not grant:
+        console.print("[red]Error: Invalid or expired access code.[/red]")
+        raise typer.Exit(1)
+
+    config = load_config()
+    creds = load_credentials()
+
+    # Add user_id to allow_from if not already present
+    allow_from = config.channels.telegram.allow_from
+    if grant.user_id in allow_from:
+        console.print(f"[yellow]User {grant.user_id} is already in the allow list.[/yellow]")
+    else:
+        allow_from.append(grant.user_id)
+        save_config(config)
+        console.print(f"[green]✓[/green] Added user {grant.user_id} to allow list.")
+
+    # Remove used grant code
+    store.remove(code)
+
+    # Send confirmation to user via Telegram
+    bot_token = creds.channels.telegram.bot_token
+    if bot_token:
+        import asyncio
+
+        async def _send_confirmation():
+            from telegram import Bot, BotCommand
+            bot = Bot(token=bot_token)
+            async with bot:
+                await bot.send_message(
+                    chat_id=int(grant.chat_id),
+                    text=(
+                        "<b>Access Granted</b>\n\n"
+                        "This account has been successfully added to the bot."
+                    ),
+                    parse_mode="HTML",
+                )
+                await bot.set_my_commands([
+                    BotCommand("new", "Start a new conversation"),
+                ])
+
+        try:
+            asyncio.run(_send_confirmation())
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not send confirmation via Telegram: {e}[/yellow]")
+    else:
+        console.print("[yellow]No bot token configured — skipping Telegram notification.[/yellow]")
+
+    # Signal running gateway to reload config
+    _signal_gateway_reload()
+
+
+def _signal_gateway_reload() -> None:
+    """Try to signal the running gateway to reload its config."""
+    import signal
+
+    pid_path = Path.home() / ".ragnarbot" / "gateway.pid"
+    if not pid_path.exists():
+        console.print("[dim]Gateway not running (no PID file). Restart to apply changes.[/dim]")
+        return
+
+    try:
+        pid = int(pid_path.read_text().strip())
+        import os
+        os.kill(pid, signal.SIGUSR1)
+        console.print("[green]✓[/green] Signaled gateway to reload config.")
+    except ProcessLookupError:
+        console.print("[dim]Stale PID file. Restart gateway to apply changes.[/dim]")
+    except (ValueError, OSError) as e:
+        console.print(f"[dim]Could not signal gateway: {e}. Restart to apply changes.[/dim]")
 
 
 # ============================================================================

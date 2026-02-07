@@ -104,6 +104,7 @@ class BaseChannel(ABC):
             metadata: Optional channel-specific metadata.
         """
         if not self.is_allowed(sender_id):
+            await self._on_unauthorized(sender_id, chat_id, metadata or {})
             return
 
         msg = InboundMessage(
@@ -118,6 +119,15 @@ class BaseChannel(ABC):
 
         await self.bus.publish_inbound(msg)
     
+    async def _on_unauthorized(
+        self, sender_id: str, chat_id: str, metadata: dict[str, Any]
+    ) -> None:
+        """Hook called when an unauthorized user sends a message.
+
+        Override in subclasses to implement custom behavior (e.g. access grant flow).
+        Default is a no-op.
+        """
+
     @property
     def is_running(self) -> bool:
         """Check if the channel is running."""
