@@ -237,6 +237,30 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
             return text
         return images + [{"type": "text", "text": text}]
     
+    def build_user_message(
+        self,
+        content: str,
+        media: list[str] | None = None,
+        media_refs: list[dict[str, str]] | None = None,
+        session_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Build a standalone user message dict (for appending extra batch items).
+
+        Args:
+            content: The user message text (already prefixed).
+            media: Optional legacy media file paths.
+            media_refs: Optional photo references from MediaManager.
+            session_key: Session key for resolving media_refs paths.
+
+        Returns:
+            A dict with role="user" and the assembled content.
+        """
+        user_content = self._build_user_content(
+            content, media=media, media_refs=media_refs,
+            session_key=session_key, media_base=self._media_base_dir(),
+        )
+        return {"role": "user", "content": user_content}
+
     def add_tool_result(
         self,
         messages: list[dict[str, Any]],

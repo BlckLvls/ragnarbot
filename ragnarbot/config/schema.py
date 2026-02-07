@@ -30,6 +30,7 @@ class AgentDefaults(BaseModel):
     max_tool_iterations: int = 20
     auth_method: str = "api_key"
     stream_steps: bool = True  # Send intermediate messages to user during tool-call loops
+    debounce_seconds: float = 0.5  # Batch rapid-fire messages into a single LLM turn
 
 
 class AgentsConfig(BaseModel):
