@@ -15,10 +15,12 @@ from ragnarbot.agent.tools.registry import ToolRegistry
 from ragnarbot.agent.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
 from ragnarbot.agent.tools.shell import ExecTool
 from ragnarbot.agent.tools.web import WebSearchTool, WebFetchTool
+from ragnarbot.agent.tools.media import DownloadFileTool
 from ragnarbot.agent.tools.message import MessageTool
 from ragnarbot.agent.tools.spawn import SpawnTool
 from ragnarbot.agent.tools.cron import CronTool
 from ragnarbot.agent.subagent import SubagentManager
+from ragnarbot.media.manager import MediaManager
 from ragnarbot.session.manager import SessionManager
 
 
@@ -45,6 +47,7 @@ class AgentLoop:
         exec_config: "ExecToolConfig | None" = None,
         cron_service: "CronService | None" = None,
         stream_steps: bool = False,
+        media_manager: MediaManager | None = None,
     ):
         from ragnarbot.config.schema import ExecToolConfig
         from ragnarbot.cron.service import CronService
@@ -57,7 +60,8 @@ class AgentLoop:
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.stream_steps = stream_steps
-        
+        self.media_manager = media_manager
+
         self.context = ContextBuilder(workspace)
         self.sessions = SessionManager(workspace)
         self.tools = ToolRegistry()
@@ -69,7 +73,7 @@ class AgentLoop:
             brave_api_key=brave_api_key,
             exec_config=self.exec_config,
         )
-        
+
         self._running = False
         self._register_default_tools()
     
@@ -103,6 +107,10 @@ class AgentLoop:
         # Cron tool (for scheduling)
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
+
+        # Download file tool (for lazy file downloads)
+        if self.media_manager:
+            self.tools.register(DownloadFileTool(self.media_manager))
     
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
@@ -176,15 +184,28 @@ class AgentLoop:
         message_tool = self.tools.get("message")
         if isinstance(message_tool, MessageTool):
             message_tool.set_context(msg.channel, msg.chat_id)
-        
+
         spawn_tool = self.tools.get("spawn")
         if isinstance(spawn_tool, SpawnTool):
             spawn_tool.set_context(msg.channel, msg.chat_id)
-        
+
         cron_tool = self.tools.get("cron")
         if isinstance(cron_tool, CronTool):
             cron_tool.set_context(msg.channel, msg.chat_id)
-        
+
+        download_tool = self.tools.get("download_file")
+        if isinstance(download_tool, DownloadFileTool):
+            download_tool.set_context(msg.channel, session.key)
+
+        # Process attachments — save photos to disk, build media_refs
+        media_refs: list[dict[str, str]] = []
+        if self.media_manager:
+            for att in msg.attachments:
+                if att.type == "photo" and att.data:
+                    ext = _ext_from_mime(att.mime_type)
+                    filename = await self.media_manager.save_photo(session.key, att.data, ext)
+                    media_refs.append({"type": "photo", "filename": filename})
+
         # Build prefix tags for the current message (timestamp + reply/forward context)
         from datetime import datetime as _dt
         from ragnarbot.session.manager import _build_message_prefix
@@ -201,6 +222,8 @@ class AgentLoop:
             history=session.get_history(),
             current_message=prefixed_content,
             media=msg.media if msg.media else None,
+            media_refs=media_refs or None,
+            session_key=session.key if media_refs else None,
             channel=msg.channel,
             chat_id=msg.chat_id,
             session_metadata=session.metadata,
@@ -280,6 +303,7 @@ class AgentLoop:
                 extras["name"] = m["name"]
             # First message (user) gets enriched metadata from the inbound message.
             # Save original content (not prefixed) so get_history() doesn't double-prefix.
+            # Attach media_refs so history can re-encode photos later.
             user_meta = None
             if i == 0:
                 user_meta = {
@@ -287,6 +311,8 @@ class AgentLoop:
                     for k in ("message_id", "reply_to", "forwarded_from")
                     if k in msg.metadata
                 }
+                if media_refs:
+                    extras["media_refs"] = media_refs
             content = msg.content if i == 0 else m.get("content")
             session.add_message(m["role"], content, msg_metadata=user_meta, **extras)
         self.sessions.save(session)
@@ -483,3 +509,14 @@ class AgentLoop:
         
         response = await self._process_message(msg)
         return response.content if response else ""
+
+
+def _ext_from_mime(mime_type: str) -> str:
+    """Extract a short extension from a MIME type."""
+    mapping = {
+        "image/jpeg": "jpg",
+        "image/png": "png",
+        "image/gif": "gif",
+        "image/webp": "webp",
+    }
+    return mapping.get(mime_type, "jpg")

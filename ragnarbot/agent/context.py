@@ -138,6 +138,8 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
         current_message: str,
         skill_names: list[str] | None = None,
         media: list[str] | None = None,
+        media_refs: list[dict[str, str]] | None = None,
+        session_key: str | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
         session_metadata: dict | None = None,
@@ -149,14 +151,16 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
             history: Previous conversation messages.
             current_message: The new user message.
             skill_names: Optional skills to include.
-            media: Optional list of local file paths for images/media.
+            media: Optional list of local file paths for images/media (voice/audio).
+            media_refs: Optional photo references saved by MediaManager.
+            session_key: Session key for resolving media_refs paths.
             channel: Current channel (e.g. telegram).
             chat_id: Current chat/user ID.
 
         Returns:
             List of messages including system prompt.
         """
-        messages = []
+        messages: list[dict[str, Any]] = []
 
         # System prompt
         system_prompt = self.build_system_prompt(
@@ -166,29 +170,69 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
             system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
         messages.append({"role": "system", "content": system_prompt})
 
-        # History
-        messages.extend(history)
+        # History (resolve media_refs for past photos)
+        media_base = self._media_base_dir()
+        for h_msg in history:
+            h_refs = h_msg.pop("media_refs", None)
+            if h_refs and session_key and h_msg.get("role") == "user":
+                h_msg["content"] = self._build_user_content(
+                    h_msg.get("content", ""), media_refs=h_refs,
+                    session_key=session_key, media_base=media_base,
+                )
+            messages.append(h_msg)
 
         # Current message (with optional image attachments)
-        user_content = self._build_user_content(current_message, media)
+        user_content = self._build_user_content(
+            current_message, media=media, media_refs=media_refs,
+            session_key=session_key, media_base=media_base,
+        )
         messages.append({"role": "user", "content": user_content})
 
         return messages
 
-    def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
-        """Build user message content with optional base64-encoded images."""
-        if not media:
-            return text
-        
-        images = []
-        for path in media:
-            p = Path(path)
-            mime, _ = mimetypes.guess_type(path)
-            if not p.is_file() or not mime or not mime.startswith("image/"):
-                continue
-            b64 = base64.b64encode(p.read_bytes()).decode()
-            images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
-        
+    def _media_base_dir(self) -> Path:
+        """Return the base media directory."""
+        return Path.home() / ".ragnarbot" / "media"
+
+    def _build_user_content(
+        self,
+        text: str,
+        media: list[str] | None = None,
+        media_refs: list[dict[str, str]] | None = None,
+        session_key: str | None = None,
+        media_base: Path | None = None,
+    ) -> str | list[dict[str, Any]]:
+        """Build user message content with optional base64-encoded images.
+
+        Supports two image sources:
+        - ``media``: legacy file paths (voice/audio or old-style images)
+        - ``media_refs``: new per-session photo references from MediaManager
+        """
+        images: list[dict[str, Any]] = []
+
+        # Legacy: base64-encode from file paths
+        if media:
+            for path in media:
+                p = Path(path)
+                mime, _ = mimetypes.guess_type(path)
+                if not p.is_file() or not mime or not mime.startswith("image/"):
+                    continue
+                b64 = base64.b64encode(p.read_bytes()).decode()
+                images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+
+        # New: lazy base64-encode from media_refs
+        if media_refs and session_key and media_base:
+            for ref in media_refs:
+                if ref.get("type") != "photo":
+                    continue
+                photo_path = media_base / session_key / "photos" / ref["filename"]
+                if not photo_path.is_file():
+                    continue
+                mime, _ = mimetypes.guess_type(str(photo_path))
+                mime = mime or "image/jpeg"
+                b64 = base64.b64encode(photo_path.read_bytes()).decode()
+                images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+
         if not images:
             return text
         return images + [{"type": "text", "text": text}]

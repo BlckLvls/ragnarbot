@@ -93,6 +93,8 @@ class Session:
                 msg["tool_call_id"] = m["tool_call_id"]
             if "name" in m:
                 msg["name"] = m["name"]
+            if "media_refs" in m:
+                msg["media_refs"] = m["media_refs"]
             result.append(msg)
         return result
 
