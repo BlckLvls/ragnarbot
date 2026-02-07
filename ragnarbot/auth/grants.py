@@ -2,6 +2,7 @@
 
 import json
 import secrets
+import string
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -48,8 +49,9 @@ class PendingGrantStore:
                 self._save(data)
                 return code
 
-        # Generate new code
-        code = secrets.token_hex(4)
+        # Generate new code (mixed-case alphanumeric)
+        alphabet = string.ascii_letters + string.digits
+        code = ''.join(secrets.choice(alphabet) for _ in range(8))
         data[code] = {"user_id": user_id, "chat_id": chat_id}
         self._save(data)
         return code
