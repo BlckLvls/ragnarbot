@@ -223,7 +223,7 @@ class AgentLoop:
             current_message=prefixed_content,
             media=msg.media if msg.media else None,
             media_refs=media_refs or None,
-            session_key=session.key if media_refs else None,
+            session_key=session.key,
             channel=msg.channel,
             chat_id=msg.chat_id,
             session_metadata=session.metadata,
