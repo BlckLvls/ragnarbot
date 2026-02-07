@@ -24,7 +24,12 @@ class ContextBuilder:
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
     
-    def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
+    def build_system_prompt(
+        self,
+        skill_names: list[str] | None = None,
+        session_metadata: dict | None = None,
+        channel: str | None = None,
+    ) -> str:
         """
         Build the system prompt from bootstrap files, memory, and skills.
         
@@ -49,6 +54,21 @@ class ContextBuilder:
         if memory:
             parts.append(f"# Memory\n\n{memory}")
         
+        # Telegram context
+        if channel == "telegram" and session_metadata and "user_data" in session_metadata:
+            from ragnarbot.prompts.telegram import TELEGRAM_CONTEXT
+
+            user_data = session_metadata["user_data"]
+            full_name = " ".join(
+                filter(None, [user_data.get("first_name"), user_data.get("last_name")])
+            )
+            telegram_section = TELEGRAM_CONTEXT.format(
+                full_name=full_name or "Unknown",
+                username=user_data.get("username") or "N/A",
+                user_id=user_data.get("user_id") or "N/A",
+            )
+            parts.append(telegram_section)
+
         # Skills - progressive loading
         # 1. Always-loaded skills: include full content
         always_skills = self.skills.get_always_skills()
@@ -120,6 +140,7 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
         media: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
+        session_metadata: dict | None = None,
     ) -> list[dict[str, Any]]:
         """
         Build the complete message list for an LLM call.
@@ -138,7 +159,9 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
         messages = []
 
         # System prompt
-        system_prompt = self.build_system_prompt(skill_names)
+        system_prompt = self.build_system_prompt(
+            skill_names, session_metadata=session_metadata, channel=channel
+        )
         if channel and chat_id:
             system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
         messages.append({"role": "system", "content": system_prompt})

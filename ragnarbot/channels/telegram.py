@@ -226,6 +226,7 @@ class TelegramChannel(BaseChannel):
                 "user_id": user.id,
                 "username": user.username,
                 "first_name": user.first_name,
+                "last_name": user.last_name,
             }
         )
 
@@ -312,18 +313,44 @@ class TelegramChannel(BaseChannel):
         logger.debug(f"Telegram message from {sender_id}: {content[:50]}...")
         
         # Forward to the message bus
+        metadata = {
+            "message_id": message.message_id,
+            "user_id": user.id,
+            "username": user.username,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "is_group": message.chat.type != "private",
+        }
+
+        if message.reply_to_message:
+            reply_data = {"message_id": message.reply_to_message.message_id}
+            if message.reply_to_message.from_user:
+                reply_user = message.reply_to_message.from_user
+                reply_data.update({
+                    "user_id": reply_user.id,
+                    "username": reply_user.username,
+                    "first_name": reply_user.first_name,
+                    "last_name": reply_user.last_name,
+                })
+            metadata["reply_to"] = reply_data
+
+        if message.forward_origin:
+            from telegram import MessageOriginUser
+            if isinstance(message.forward_origin, MessageOriginUser):
+                fwd_user = message.forward_origin.sender_user
+                metadata["forwarded_from"] = {
+                    "user_id": fwd_user.id,
+                    "username": fwd_user.username,
+                    "first_name": fwd_user.first_name,
+                    "last_name": fwd_user.last_name,
+                }
+
         await self._handle_message(
             sender_id=sender_id,
             chat_id=str(chat_id),
             content=content,
             media=media_paths,
-            metadata={
-                "message_id": message.message_id,
-                "user_id": user.id,
-                "username": user.username,
-                "first_name": user.first_name,
-                "is_group": message.chat.type != "private"
-            }
+            metadata=metadata,
         )
     
     def _get_extension(self, media_type: str, mime_type: str | None) -> str:

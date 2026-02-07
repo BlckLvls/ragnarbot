@@ -33,12 +33,17 @@ class Session:
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def add_message(self, role: str, content: str | None, **kwargs: Any) -> None:
+    def add_message(
+        self, role: str, content: str | None, msg_metadata: dict | None = None, **kwargs: Any
+    ) -> None:
         """Add a message to the session."""
+        meta: dict[str, Any] = {"timestamp": datetime.now().isoformat()}
+        if msg_metadata:
+            meta.update(msg_metadata)
         msg = {
             "role": role,
             "content": content or "",
-            "metadata": {"timestamp": datetime.now().isoformat()},
+            "metadata": meta,
             **kwargs
         }
         self.messages.append(msg)
@@ -51,6 +56,9 @@ class Session:
         Returns full LLM-compatible messages (with tool_calls, tool_call_id, name)
         and ensures truncation happens at a user-message boundary to avoid
         orphaned tool_calls without results.
+
+        User and assistant messages get auto-generated prefix tags with timestamp
+        and message context (reply_to, forwarded_from) when metadata is available.
 
         Args:
             max_messages: Maximum messages to return.
@@ -69,7 +77,16 @@ class Session:
 
         result = []
         for m in recent[start:]:
-            msg: dict[str, Any] = {"role": m["role"], "content": m.get("content") or ""}
+            content = m.get("content") or ""
+            role = m["role"]
+
+            # Prepend context tags for user/assistant messages
+            if role in ("user", "assistant") and m.get("metadata"):
+                prefix = _build_message_prefix(m["metadata"])
+                if prefix:
+                    content = prefix + content
+
+            msg: dict[str, Any] = {"role": role, "content": content}
             if "tool_calls" in m:
                 msg["tool_calls"] = m["tool_calls"]
             if "tool_call_id" in m:
@@ -83,6 +100,79 @@ class Session:
         """Clear all messages in the session."""
         self.messages = []
         self.updated_at = datetime.now()
+
+
+def _format_user_ref(data: dict) -> str:
+    """Format a user reference from metadata dict.
+
+    Output: ``@username (FullName)`` or just ``FullName`` or ``user_id:XXXX``.
+    """
+    full_name = " ".join(filter(None, [data.get("first_name"), data.get("last_name")]))
+    username = data.get("username")
+    if username and full_name:
+        return f"@{username} ({full_name})"
+    if username:
+        return f"@{username}"
+    if full_name:
+        return full_name
+    user_id = data.get("user_id")
+    if user_id:
+        return f"user_id:{user_id}"
+    return "unknown"
+
+
+def _build_message_prefix(metadata: dict) -> str:
+    """Build context-tag prefix for a message from its metadata.
+
+    Returns a string like::
+
+        [2026-02-07 14:32 msgID:1234]
+        [reply_to msgID:5678 from:@johndoe (John Doe)]
+
+    Or empty string when no useful metadata is present.
+    """
+    lines = []
+
+    # Timestamp line
+    ts_raw = metadata.get("timestamp")
+    if ts_raw:
+        try:
+            dt = datetime.fromisoformat(ts_raw)
+            ts_str = dt.strftime("%Y-%m-%d %H:%M")
+        except (ValueError, TypeError):
+            ts_str = None
+    else:
+        ts_str = None
+
+    msg_id = metadata.get("message_id")
+    if ts_str or msg_id:
+        parts = []
+        if ts_str:
+            parts.append(ts_str)
+        if msg_id:
+            parts.append(f"msgID:{msg_id}")
+        lines.append(f"[{' '.join(parts)}]")
+
+    # Reply context
+    reply = metadata.get("reply_to")
+    if reply and isinstance(reply, dict):
+        ref = _format_user_ref(reply)
+        reply_msg_id = reply.get("message_id")
+        if reply_msg_id:
+            lines.append(f"[reply_to msgID:{reply_msg_id} from:{ref}]")
+        else:
+            lines.append(f"[reply_to from:{ref}]")
+
+    # Forward context
+    fwd = metadata.get("forwarded_from")
+    if fwd and isinstance(fwd, dict):
+        ref = _format_user_ref(fwd)
+        lines.append(f"[forwarded_from:{ref}]")
+
+    if not lines:
+        return ""
+
+    return "\n".join(lines) + "\n"
 
 
 class SessionManager:

@@ -162,7 +162,16 @@ class AgentLoop:
 
         # Get or create session
         session = self.sessions.get_or_create(msg.session_key)
-        
+
+        # Store user data in session metadata (telegram only, first time)
+        if msg.channel == "telegram" and "user_data" not in session.metadata:
+            session.metadata["user_data"] = {
+                "user_id": msg.metadata.get("user_id"),
+                "username": msg.metadata.get("username"),
+                "first_name": msg.metadata.get("first_name"),
+                "last_name": msg.metadata.get("last_name"),
+            }
+
         # Update tool contexts
         message_tool = self.tools.get("message")
         if isinstance(message_tool, MessageTool):
@@ -176,13 +185,25 @@ class AgentLoop:
         if isinstance(cron_tool, CronTool):
             cron_tool.set_context(msg.channel, msg.chat_id)
         
+        # Build prefix tags for the current message (timestamp + reply/forward context)
+        from datetime import datetime as _dt
+        from ragnarbot.session.manager import _build_message_prefix
+
+        current_meta = {"timestamp": _dt.now().isoformat()}
+        for k in ("message_id", "reply_to", "forwarded_from"):
+            if k in msg.metadata:
+                current_meta[k] = msg.metadata[k]
+        prefix = _build_message_prefix(current_meta)
+        prefixed_content = prefix + msg.content if prefix else msg.content
+
         # Build initial messages (use get_history for LLM-formatted messages)
         messages = self.context.build_messages(
             history=session.get_history(),
-            current_message=msg.content,
+            current_message=prefixed_content,
             media=msg.media if msg.media else None,
             channel=msg.channel,
             chat_id=msg.chat_id,
+            session_metadata=session.metadata,
         )
 
         # Track where new messages start (the current user message)
@@ -249,7 +270,7 @@ class AgentLoop:
         messages.append({"role": "assistant", "content": final_content})
 
         # Save ALL new messages to session (user, intermediate assistant+tool_calls, tool results, final)
-        for m in messages[new_start:]:
+        for i, m in enumerate(messages[new_start:]):
             extras = {}
             if "tool_calls" in m:
                 extras["tool_calls"] = m["tool_calls"]
@@ -257,7 +278,17 @@ class AgentLoop:
                 extras["tool_call_id"] = m["tool_call_id"]
             if "name" in m:
                 extras["name"] = m["name"]
-            session.add_message(m["role"], m.get("content"), **extras)
+            # First message (user) gets enriched metadata from the inbound message.
+            # Save original content (not prefixed) so get_history() doesn't double-prefix.
+            user_meta = None
+            if i == 0:
+                user_meta = {
+                    k: msg.metadata[k]
+                    for k in ("message_id", "reply_to", "forwarded_from")
+                    if k in msg.metadata
+                }
+            content = msg.content if i == 0 else m.get("content")
+            session.add_message(m["role"], content, msg_metadata=user_meta, **extras)
         self.sessions.save(session)
 
         return OutboundMessage(
@@ -275,7 +306,17 @@ class AgentLoop:
 
     def _handle_new_chat(self, msg: InboundMessage) -> OutboundMessage:
         """Create a new chat session and return a confirmation message."""
-        self.sessions.create_new(msg.session_key)
+        session = self.sessions.create_new(msg.session_key)
+
+        if msg.channel == "telegram":
+            session.metadata["user_data"] = {
+                "user_id": msg.metadata.get("user_id"),
+                "username": msg.metadata.get("username"),
+                "first_name": msg.metadata.get("first_name"),
+                "last_name": msg.metadata.get("last_name"),
+            }
+            self.sessions.save(session)
+
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
@@ -325,6 +366,7 @@ class AgentLoop:
             current_message=msg.content,
             channel=origin_channel,
             chat_id=origin_chat_id,
+            session_metadata=session.metadata,
         )
 
         # Track where new messages start
@@ -389,7 +431,7 @@ class AgentLoop:
         messages[new_start]["content"] = f"[System: {msg.sender_id}] {msg.content}"
 
         # Save ALL new messages to session
-        for m in messages[new_start:]:
+        for i, m in enumerate(messages[new_start:]):
             extras = {}
             if "tool_calls" in m:
                 extras["tool_calls"] = m["tool_calls"]
@@ -397,7 +439,14 @@ class AgentLoop:
                 extras["tool_call_id"] = m["tool_call_id"]
             if "name" in m:
                 extras["name"] = m["name"]
-            session.add_message(m["role"], m.get("content"), **extras)
+            user_meta = None
+            if i == 0:
+                user_meta = {
+                    k: msg.metadata[k]
+                    for k in ("message_id", "reply_to", "forwarded_from")
+                    if k in msg.metadata
+                }
+            session.add_message(m["role"], m.get("content"), msg_metadata=user_meta, **extras)
         self.sessions.save(session)
 
         return OutboundMessage(
