@@ -14,7 +14,7 @@ def provider_screen(console: Console) -> int | None:
         console,
         "Choose your LLM provider",
         options,
-        subtitle="Step 1 of 5",
+        subtitle="Step 1 of 6",
         back_label="Quit",
     )
 
@@ -29,7 +29,7 @@ def auth_method_screen(console: Console, provider_id: str) -> int | None:
         console,
         "Choose authentication method",
         options,
-        subtitle=f"Step 2 of 5 — {get_provider(provider_id)['name']}",
+        subtitle=f"Step 2 of 6 — {get_provider(provider_id)['name']}",
     )
 
 
@@ -52,7 +52,7 @@ def token_input_screen(
         prompt,
         hint=hint,
         secret=False,
-        subtitle=f"Step 3 of 5 — {provider['name']}",
+        subtitle=f"Step 3 of 6 — {provider['name']}",
     )
 
 
@@ -65,7 +65,7 @@ def model_screen(console: Console, provider_id: str) -> int | None:
         console,
         "Choose your default model",
         options,
-        subtitle=f"Step 4 of 5 — {provider['name']}",
+        subtitle=f"Step 4 of 6 — {provider['name']}",
     )
 
 
@@ -83,7 +83,7 @@ def telegram_screen(console: Console) -> str | None:
             "  Press Enter with empty input to skip"
         ),
         allow_empty=True,
-        subtitle="Step 5 of 5 — Optional",
+        subtitle="Step 5 of 6 — Optional",
     )
 
     if token is None or token == "":
@@ -114,7 +114,7 @@ def _validate_telegram_token(console: Console, token: str) -> str | None:
                     f"Name: [bold]{bot_name}[/bold]",
                     f"Username: @{bot_username}",
                 ],
-                subtitle="Step 5 of 5",
+                subtitle="Step 5 of 6",
             )
             return token
         else:
@@ -128,7 +128,7 @@ def _validate_telegram_token(console: Console, token: str) -> str | None:
                     "",
                     "Press Enter to try again, or Esc to skip.",
                 ],
-                subtitle="Step 5 of 5",
+                subtitle="Step 5 of 6",
             )
             return None
     except httpx.RequestError as e:
@@ -142,9 +142,40 @@ def _validate_telegram_token(console: Console, token: str) -> str | None:
                 "",
                 "Press Enter to try again, or Esc to skip.",
             ],
-            subtitle="Step 5 of 5",
+            subtitle="Step 5 of 6",
         )
         return None
+
+
+def daemon_screen(console: Console) -> int | None:
+    """Auto-start daemon setup. Returns 0 (yes) or 1 (no), None for back."""
+    import sys
+
+    if sys.platform not in ("darwin", "linux"):
+        info_screen(
+            console,
+            "Auto-start not available",
+            [
+                "[yellow]Daemon management is not supported on this platform.[/yellow]",
+                "",
+                "You can run the gateway manually with:",
+                "  [cyan]ragnarbot gateway[/cyan]",
+            ],
+            subtitle="Step 6 of 6",
+        )
+        return 1  # "no" — continue without daemon
+
+    platform_name = "launchd" if sys.platform == "darwin" else "systemd"
+    options = [
+        ("Yes, enable auto-start", f"Starts on boot, auto-restarts on crash (uses {platform_name})"),
+        ("No, I'll start manually", "Use 'ragnarbot gateway' when needed"),
+    ]
+    return select_menu(
+        console,
+        "Enable auto-start?",
+        options,
+        subtitle="Step 6 of 6",
+    )
 
 
 def summary_screen(
@@ -153,15 +184,17 @@ def summary_screen(
     auth_method: str,
     model_name: str,
     telegram_configured: bool,
+    enable_daemon: bool = False,
 ) -> bool:
     """Show summary of configured values. Returns True on Enter."""
     lines = [
         "[bold]Configuration summary:[/bold]",
         "",
-        f"  Provider:  [cyan]{provider_name}[/cyan]",
-        f"  Auth:      [cyan]{auth_method}[/cyan]",
-        f"  Model:     [cyan]{model_name}[/cyan]",
-        f"  Telegram:  [cyan]{'Enabled' if telegram_configured else 'Skipped'}[/cyan]",
+        f"  Provider:    [cyan]{provider_name}[/cyan]",
+        f"  Auth:        [cyan]{auth_method}[/cyan]",
+        f"  Model:       [cyan]{model_name}[/cyan]",
+        f"  Telegram:    [cyan]{'Enabled' if telegram_configured else 'Skipped'}[/cyan]",
+        f"  Auto-start:  [cyan]{'Enabled' if enable_daemon else 'Manual'}[/cyan]",
         "",
         "[green]Press Enter to save and finish.[/green]",
     ]

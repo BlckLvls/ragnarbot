@@ -92,6 +92,8 @@ class TestOnboardingFlow:
             (Key.ENTER, ""),         # Confirm key
             (Key.ENTER, ""),         # Select first model (Opus)
             (Key.ENTER, ""),         # Skip telegram (empty enter)
+            (Key.DOWN, ""),          # Navigate to "No" (manual start)
+            (Key.ENTER, ""),         # Select manual start
             (Key.ENTER, ""),         # Confirm summary
         ]
         mock_save_config, mock_save_creds = self._run_with_keys(keys, tmp_path)
@@ -115,6 +117,8 @@ class TestOnboardingFlow:
             (Key.DOWN, ""),         # Navigate to Sonnet
             (Key.ENTER, ""),        # Select Sonnet
             (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Navigate to "No" (manual start)
+            (Key.ENTER, ""),        # Select manual start
             (Key.ENTER, ""),        # Confirm summary
         ]
         mock_save_config, mock_save_creds = self._run_with_keys(keys, tmp_path)
@@ -136,6 +140,8 @@ class TestOnboardingFlow:
             (Key.ENTER, ""),        # Confirm key
             (Key.ENTER, ""),        # Select first model (GPT-5.2)
             (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Navigate to "No" (manual start)
+            (Key.ENTER, ""),        # Select manual start
             (Key.ENTER, ""),        # Confirm summary
         ]
         mock_save_config, mock_save_creds = self._run_with_keys(keys, tmp_path)
@@ -158,6 +164,8 @@ class TestOnboardingFlow:
             (Key.DOWN, ""),         # Navigate to Flash
             (Key.ENTER, ""),        # Select Flash
             (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Navigate to "No" (manual start)
+            (Key.ENTER, ""),        # Select manual start
             (Key.ENTER, ""),        # Confirm summary
         ]
         mock_save_config, mock_save_creds = self._run_with_keys(keys, tmp_path)
@@ -180,6 +188,8 @@ class TestOnboardingFlow:
             (Key.ENTER, ""),        # Confirm key
             (Key.ENTER, ""),        # Select first model
             (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Navigate to "No" (manual start)
+            (Key.ENTER, ""),        # Select manual start
             (Key.ENTER, ""),        # Confirm summary
         ]
         mock_save_config, mock_save_creds = self._run_with_keys(keys, tmp_path)
@@ -246,6 +256,8 @@ class TestTelegramValidation:
             *[(Key.CHAR, c) for c in "123456:ABC-DEF"],
             (Key.ENTER, ""),        # Submit token
             (Key.ENTER, ""),        # Accept bot info screen
+            (Key.DOWN, ""),         # Navigate to "No" (manual start)
+            (Key.ENTER, ""),        # Select manual start
             (Key.ENTER, ""),        # Confirm summary
         ]
 

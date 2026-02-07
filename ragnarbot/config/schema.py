@@ -1,6 +1,7 @@
 """Configuration schema using Pydantic."""
 
 from pathlib import Path
+
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
@@ -36,6 +37,11 @@ class AgentsConfig(BaseModel):
 
 
 
+class DaemonConfig(BaseModel):
+    """Daemon auto-start configuration."""
+    enabled: bool = False
+
+
 class GatewayConfig(BaseModel):
     """Gateway/server configuration."""
     host: str = "0.0.0.0"
@@ -68,6 +74,7 @@ class Config(BaseSettings):
     """Root configuration for ragnarbot."""
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
+    daemon: DaemonConfig = Field(default_factory=DaemonConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
 
@@ -75,7 +82,7 @@ class Config(BaseSettings):
     def workspace_path(self) -> Path:
         """Get expanded workspace path."""
         return Path(self.agents.defaults.workspace).expanduser()
-    
+
     class Config:
         env_prefix = "RAGNARBOT_"
         env_nested_delimiter = "__"

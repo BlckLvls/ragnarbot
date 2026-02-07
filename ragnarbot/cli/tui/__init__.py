@@ -5,6 +5,7 @@ from rich.console import Console
 from ragnarbot.cli.tui.components import QuitOnboardingError, clear_screen
 from ragnarbot.cli.tui.screens import (
     auth_method_screen,
+    daemon_screen,
     model_screen,
     provider_screen,
     summary_screen,
@@ -34,8 +35,9 @@ def _onboarding_loop(console: Console) -> None:
     token: str | None = None
     model_idx: int | None = None
     telegram_token: str | None = None
+    enable_daemon: bool | None = None
 
-    step = 1  # 1=provider, 2=auth, 3=token, 4=model, 5=telegram, 6=summary
+    step = 1  # 1=provider, 2=auth, 3=token, 4=model, 5=telegram, 6=daemon, 7=summary
 
     while True:
         if step == 1:
@@ -85,6 +87,14 @@ def _onboarding_loop(console: Console) -> None:
             step = 6
 
         elif step == 6:
+            daemon_idx = daemon_screen(console)
+            if daemon_idx is None:
+                step = 5
+                continue
+            enable_daemon = daemon_idx == 0
+            step = 7
+
+        elif step == 7:
             provider_id = PROVIDERS[provider_idx]["id"]
             provider = get_provider(provider_id)
             auth_method = "oauth" if auth_idx == 0 else "api_key"
@@ -98,9 +108,10 @@ def _onboarding_loop(console: Console) -> None:
                 auth_method,
                 model["name"],
                 telegram_configured,
+                enable_daemon=enable_daemon,
             )
             if not ok:
-                step = 5
+                step = 6
                 continue
 
             # Save everything
@@ -111,6 +122,7 @@ def _onboarding_loop(console: Console) -> None:
                 token=token,
                 model_id=model["id"],
                 telegram_token=telegram_token if telegram_configured else "",
+                enable_daemon=enable_daemon,
             )
             return
 
@@ -122,6 +134,7 @@ def _save_results(
     token: str,
     model_id: str,
     telegram_token: str,
+    enable_daemon: bool = False,
 ) -> None:
     """Save onboarding results to config and credentials files."""
     from ragnarbot.auth.credentials import (
@@ -144,6 +157,9 @@ def _save_results(
     if telegram_token:
         config.channels.telegram.enabled = True
 
+    # Update daemon
+    config.daemon.enabled = enable_daemon
+
     save_config(config)
 
     # Update credentials (targeted — only touch the selected provider)
@@ -165,6 +181,19 @@ def _save_results(
     from ragnarbot.cli.commands import _create_workspace_templates
     _create_workspace_templates(workspace)
 
+    # Install and start daemon if requested
+    daemon_started = False
+    if enable_daemon:
+        try:
+            from ragnarbot.daemon import get_manager
+            manager = get_manager()
+            manager.install()
+            manager.start()
+            daemon_started = True
+        except Exception as e:
+            console.print(f"\n  [yellow]Warning: Could not start daemon: {e}[/yellow]")
+            console.print("  [yellow]You can start it manually: ragnarbot gateway start[/yellow]")
+
     clear_screen(console)
     console.print()
     console.print("  [green]Configuration saved![/green]")
@@ -173,8 +202,18 @@ def _save_results(
     console.print(f"  Credentials: {get_credentials_path()}")
     console.print(f"  Workspace:   {workspace}")
     console.print()
-    console.print("  [bold]Next steps:[/bold]")
-    console.print("  Chat: [cyan]ragnarbot agent -m \"Hello!\"[/cyan]")
-    if telegram_token:
-        console.print("  Start gateway: [cyan]ragnarbot gateway[/cyan]")
+    if daemon_started:
+        console.print("  [green]Gateway is running![/green]")
+        console.print()
+        console.print("  [bold]Daemon commands:[/bold]")
+        console.print("  [cyan]ragnarbot gateway start[/cyan]    Install and start daemon")
+        console.print("  [cyan]ragnarbot gateway stop[/cyan]     Stop daemon")
+        console.print("  [cyan]ragnarbot gateway restart[/cyan]  Restart daemon")
+        console.print("  [cyan]ragnarbot gateway delete[/cyan]   Remove daemon from system")
+        console.print("  [cyan]ragnarbot gateway status[/cyan]   Show daemon status")
+    else:
+        console.print("  [bold]Next steps:[/bold]")
+        console.print("  Chat: [cyan]ragnarbot agent -m \"Hello!\"[/cyan]")
+        console.print("  Start manually: [cyan]ragnarbot gateway[/cyan]")
+        console.print("  Enable daemon:  [cyan]ragnarbot gateway start[/cyan]")
     console.print()

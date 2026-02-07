@@ -7,7 +7,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from ragnarbot import __version__, __logo__
+from ragnarbot import __logo__, __version__
 
 app = typer.Typer(
     name="ragnarbot",
@@ -179,22 +179,28 @@ This file stores important information that should persist across sessions.
 # Gateway / Server
 # ============================================================================
 
+gateway_app = typer.Typer(help="Manage the ragnarbot gateway", invoke_without_command=True)
+app.add_typer(gateway_app, name="gateway")
 
-@app.command()
-def gateway(
+
+@gateway_app.callback()
+def gateway_main(
+    ctx: typer.Context,
     port: int = typer.Option(18790, "--port", "-p", help="Gateway port"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
-    """Start the ragnarbot gateway."""
-    from ragnarbot.config.loader import load_config, get_data_dir
+    """Start the ragnarbot gateway. Use subcommands to manage the daemon."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from ragnarbot.agent.loop import AgentLoop
     from ragnarbot.auth.credentials import load_credentials
     from ragnarbot.bus.queue import MessageBus
-    from ragnarbot.providers.litellm_provider import LiteLLMProvider
-    from ragnarbot.agent.loop import AgentLoop
     from ragnarbot.channels.manager import ChannelManager
+    from ragnarbot.config.loader import get_data_dir, load_config
     from ragnarbot.cron.service import CronService
     from ragnarbot.cron.types import CronJob
     from ragnarbot.heartbeat.service import HeartbeatService
+    from ragnarbot.providers.litellm_provider import LiteLLMProvider
 
     if verbose:
         import logging
@@ -290,7 +296,7 @@ def gateway(
     if cron_status["jobs"] > 0:
         console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
 
-    console.print(f"[green]✓[/green] Heartbeat: every 30m")
+    console.print("[green]✓[/green] Heartbeat: every 30m")
 
     async def run():
         try:
@@ -310,6 +316,146 @@ def gateway(
     asyncio.run(run())
 
 
+@gateway_app.command("start")
+def gateway_start():
+    """Install and start the gateway daemon."""
+    from ragnarbot.daemon import DaemonError, DaemonStatus, get_manager
+    from ragnarbot.daemon.resolve import UnsupportedPlatformError
+
+    try:
+        manager = get_manager()
+    except UnsupportedPlatformError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+    try:
+        info = manager.status()
+        if info.status == DaemonStatus.RUNNING:
+            console.print(f"[green]Gateway is already running[/green] (PID {info.pid})")
+            return
+
+        if not manager.is_installed():
+            manager.install()
+            console.print("[green]Daemon installed[/green]")
+
+        manager.start()
+        console.print("[green]Gateway started[/green]")
+    except DaemonError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@gateway_app.command("stop")
+def gateway_stop():
+    """Stop the gateway daemon."""
+    from ragnarbot.daemon import DaemonError, DaemonStatus, get_manager
+    from ragnarbot.daemon.resolve import UnsupportedPlatformError
+
+    try:
+        manager = get_manager()
+    except UnsupportedPlatformError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+    if not manager.is_installed():
+        console.print("[yellow]Daemon is not installed[/yellow]")
+        raise typer.Exit(1)
+
+    try:
+        info = manager.status()
+        if info.status != DaemonStatus.RUNNING:
+            console.print("[yellow]Gateway is not running[/yellow]")
+            return
+
+        manager.stop()
+        console.print("[green]Gateway stopped[/green]")
+    except DaemonError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@gateway_app.command("restart")
+def gateway_restart():
+    """Restart the gateway daemon."""
+    from ragnarbot.daemon import DaemonError, get_manager
+    from ragnarbot.daemon.resolve import UnsupportedPlatformError
+
+    try:
+        manager = get_manager()
+    except UnsupportedPlatformError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+    try:
+        if not manager.is_installed():
+            manager.install()
+            console.print("[green]Daemon installed[/green]")
+
+        manager.restart()
+        console.print("[green]Gateway restarted[/green]")
+    except DaemonError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@gateway_app.command("delete")
+def gateway_delete():
+    """Stop and remove the gateway daemon."""
+    from ragnarbot.daemon import DaemonError, DaemonStatus, get_manager
+    from ragnarbot.daemon.resolve import UnsupportedPlatformError
+
+    try:
+        manager = get_manager()
+    except UnsupportedPlatformError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+    if not manager.is_installed():
+        console.print("[yellow]Daemon is not installed[/yellow]")
+        raise typer.Exit(1)
+
+    try:
+        info = manager.status()
+        if info.status == DaemonStatus.RUNNING:
+            manager.stop()
+            console.print("[green]Gateway stopped[/green]")
+
+        manager.uninstall()
+        console.print("[green]Daemon removed[/green]")
+    except DaemonError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@gateway_app.command("status")
+def gateway_status():
+    """Show gateway daemon status."""
+    from ragnarbot.daemon import DaemonStatus, get_manager
+    from ragnarbot.daemon.resolve import UnsupportedPlatformError
+
+    try:
+        manager = get_manager()
+    except UnsupportedPlatformError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+    info = manager.status()
+
+    status_styles = {
+        DaemonStatus.RUNNING: "[green]running[/green]",
+        DaemonStatus.STOPPED: "[yellow]stopped[/yellow]",
+        DaemonStatus.NOT_INSTALLED: "[dim]not installed[/dim]",
+    }
+
+    console.print(f"Status:       {status_styles[info.status]}")
+    if info.pid:
+        console.print(f"PID:          {info.pid}")
+    if info.service_file:
+        console.print(f"Service file: {info.service_file}")
+    if info.log_path:
+        console.print(f"Logs:         {info.log_path}")
+
+
 
 
 # ============================================================================
@@ -323,11 +469,11 @@ def agent(
     session_id: str = typer.Option("cli:default", "--session", "-s", help="Session ID"),
 ):
     """Interact with the agent directly."""
-    from ragnarbot.config.loader import load_config
+    from ragnarbot.agent.loop import AgentLoop
     from ragnarbot.auth.credentials import load_credentials
     from ragnarbot.bus.queue import MessageBus
+    from ragnarbot.config.loader import load_config
     from ragnarbot.providers.litellm_provider import LiteLLMProvider
-    from ragnarbot.agent.loop import AgentLoop
 
     config = load_config()
     creds = load_credentials()
@@ -402,8 +548,8 @@ app.add_typer(channels_app, name="channels")
 @channels_app.command("status")
 def channels_status():
     """Show channel status."""
-    from ragnarbot.config.loader import load_config
     from ragnarbot.auth.credentials import load_credentials
+    from ragnarbot.config.loader import load_config
 
     config = load_config()
     creds = load_credentials()
@@ -579,7 +725,7 @@ def cron_run(
         return await service.run_job(job_id, force=force)
 
     if asyncio.run(run()):
-        console.print(f"[green]✓[/green] Job executed")
+        console.print("[green]✓[/green] Job executed")
     else:
         console.print(f"[red]Failed to run job {job_id}[/red]")
 
@@ -592,8 +738,8 @@ def cron_run(
 @app.command()
 def status():
     """Show ragnarbot status."""
-    from ragnarbot.config.loader import load_config, get_config_path
-    from ragnarbot.auth.credentials import load_credentials, get_credentials_path
+    from ragnarbot.auth.credentials import get_credentials_path, load_credentials
+    from ragnarbot.config.loader import get_config_path, load_config
 
     config_path = get_config_path()
     creds_path = get_credentials_path()
