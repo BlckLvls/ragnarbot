@@ -38,7 +38,7 @@ class Session:
         msg = {
             "role": role,
             "content": content or "",
-            "timestamp": datetime.now().isoformat(),
+            "metadata": {"timestamp": datetime.now().isoformat()},
             **kwargs
         }
         self.messages.append(msg)
