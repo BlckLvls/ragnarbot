@@ -1,17 +1,41 @@
 """Smart config schema migration for ragnarbot."""
 
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import typer
 from rich.console import Console
 
-from ragnarbot.auth.credentials import Credentials
-from ragnarbot.config.loader import convert_keys
+from ragnarbot.auth.credentials import (
+    Credentials,
+    get_credentials_path,
+    save_credentials,
+)
+from ragnarbot.config.loader import (
+    convert_keys,
+    get_config_path,
+    save_config,
+)
 from ragnarbot.config.schema import Config
 
-# Paths that contain sensitive data (warn before removing)
+# Paths that contain sensitive data (mask values in display)
 SENSITIVE_PATHS = {"providers", "api_key", "oauth_key", "bot_token", "api_key_url"}
+
+
+@dataclass
+class MigrationResult:
+    """Structured result from a schema migration."""
+
+    data: dict = field(default_factory=dict)
+    added: dict[str, Any] = field(default_factory=dict)
+    auto_removed: dict[str, Any] = field(default_factory=dict)
+    needs_confirm: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(self.added or self.auto_removed or self.needs_confirm)
 
 
 def _deep_diff(
@@ -61,6 +85,13 @@ def _has_meaningful_data(value: Any) -> bool:
     return True
 
 
+def _mask_value(value: Any) -> str:
+    """Mask a sensitive value for display."""
+    if isinstance(value, str) and len(value) > 8:
+        return value[:4] + "****" + value[-2:]
+    return repr(value)
+
+
 def _set_nested(d: dict, path: str, value: Any) -> None:
     """Set a value at a dotted path in a nested dict."""
     keys = path.split(".")
@@ -79,14 +110,10 @@ def _delete_nested(d: dict, path: str) -> None:
     d.pop(keys[-1], None)
 
 
-def migrate_config(
-    config_path: Path,
-    console: Console | None = None,
-    auto_confirm: bool = False,
-) -> dict:
+def migrate_config(config_path: Path) -> MigrationResult:
     """Migrate an existing config file to the current schema.
 
-    Returns the migrated config as a snake_case dict.
+    Returns a MigrationResult with confirmation removals NOT yet applied to data.
     """
     with open(config_path) as f:
         raw = json.load(f)
@@ -95,43 +122,27 @@ def migrate_config(
     default = Config().model_dump()
     added, removed = _deep_diff(existing, default)
 
+    result = MigrationResult(data=existing, added=dict(added))
+
     # Apply additions (safe — just new defaults)
     for path, value in added.items():
         _set_nested(existing, path, value)
 
     # Handle removals
-    sensitive_removals = {}
     for path, value in removed.items():
-        if _has_meaningful_data(value) and _is_sensitive(path):
-            sensitive_removals[path] = value
+        if _has_meaningful_data(value):
+            result.needs_confirm[path] = value
         else:
+            result.auto_removed[path] = value
             _delete_nested(existing, path)
 
-    if sensitive_removals and console and not auto_confirm:
-        console.print("\n[yellow]Schema migration found removed fields with data:[/yellow]")
-        for path, value in sensitive_removals.items():
-            display = value
-            if isinstance(value, str) and len(value) > 20:
-                display = value[:4] + "****" + value[-4:]
-            console.print(f"  {path}: {display}")
-        console.print("[dim]These fields are no longer in the schema and will be removed.[/dim]")
-        # In interactive mode, we keep them to let the user decide
-        # For onboarding, auto_confirm=True skips this
-    elif sensitive_removals and auto_confirm:
-        for path in sensitive_removals:
-            _delete_nested(existing, path)
-
-    return existing
+    return result
 
 
-def migrate_credentials(
-    creds_path: Path,
-    console: Console | None = None,
-    auto_confirm: bool = False,
-) -> dict:
+def migrate_credentials(creds_path: Path) -> MigrationResult:
     """Migrate an existing credentials file to the current schema.
 
-    Returns the migrated credentials as a snake_case dict.
+    Returns a MigrationResult with confirmation removals NOT yet applied to data.
     """
     with open(creds_path) as f:
         raw = json.load(f)
@@ -140,11 +151,84 @@ def migrate_credentials(
     default = Credentials().model_dump()
     added, removed = _deep_diff(existing, default)
 
+    result = MigrationResult(data=existing, added=dict(added))
+
     for path, value in added.items():
         _set_nested(existing, path, value)
 
     for path, value in removed.items():
-        if not (_has_meaningful_data(value) and _is_sensitive(path)):
+        if _has_meaningful_data(value):
+            result.needs_confirm[path] = value
+        else:
+            result.auto_removed[path] = value
             _delete_nested(existing, path)
 
-    return existing
+    return result
+
+
+def run_startup_migration(console: Console) -> bool:
+    """Run config + credentials migration at gateway startup.
+
+    Returns True to proceed, False to abort.
+    """
+    config_path = get_config_path()
+    creds_path = get_credentials_path()
+
+    config_exists = config_path.exists()
+    creds_exists = creds_path.exists()
+
+    if not config_exists and not creds_exists:
+        return True
+
+    # Collect results
+    config_result = migrate_config(config_path) if config_exists else None
+    creds_result = migrate_credentials(creds_path) if creds_exists else None
+
+    results = [r for r in (config_result, creds_result) if r is not None]
+
+    if not any(r.has_changes for r in results):
+        return True
+
+    # Merge needs_confirm across both files
+    all_confirm: dict[str, Any] = {}
+    for r in results:
+        all_confirm.update(r.needs_confirm)
+
+    # If only safe changes, apply and save silently
+    if not all_confirm:
+        _save_results(config_result, config_path, creds_result, creds_path)
+        return True
+
+    # Prompt for confirmations
+    console.print("\n[yellow]Config migration: the following fields will be removed[/yellow]\n")
+    for path, value in all_confirm.items():
+        display = _mask_value(value) if _is_sensitive(path) else repr(value)
+        console.print(f"  {path}: {display}")
+    console.print()
+
+    if not typer.confirm("Continue?", default=False):
+        return False
+
+    # Apply confirmed removals
+    for r in results:
+        for path in r.needs_confirm:
+            _delete_nested(r.data, path)
+
+    _save_results(config_result, config_path, creds_result, creds_path)
+    return True
+
+
+def _save_results(
+    config_result: MigrationResult | None,
+    config_path: Path,
+    creds_result: MigrationResult | None,
+    creds_path: Path,
+) -> None:
+    """Validate and save migrated config/credentials."""
+    if config_result and config_result.has_changes:
+        config = Config.model_validate(config_result.data)
+        save_config(config, config_path)
+
+    if creds_result and creds_result.has_changes:
+        creds = Credentials.model_validate(creds_result.data)
+        save_credentials(creds, creds_path)

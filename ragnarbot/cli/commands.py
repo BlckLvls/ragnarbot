@@ -209,6 +209,10 @@ def gateway_main(
 
     console.print(f"{__logo__} Starting ragnarbot gateway on port {port}...")
 
+    from ragnarbot.config.migration import run_startup_migration
+    if not run_startup_migration(console):
+        raise typer.Exit(0)
+
     config = load_config()
     creds = load_credentials()
 
@@ -336,6 +340,10 @@ def gateway_start():
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
 
+    from ragnarbot.config.migration import run_startup_migration
+    if not run_startup_migration(console):
+        raise typer.Exit(0)
+
     try:
         info = manager.status()
         if info.status == DaemonStatus.RUNNING:
@@ -393,6 +401,10 @@ def gateway_restart():
     except UnsupportedPlatformError as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
+
+    from ragnarbot.config.migration import run_startup_migration
+    if not run_startup_migration(console):
+        raise typer.Exit(0)
 
     try:
         if not manager.is_installed():
