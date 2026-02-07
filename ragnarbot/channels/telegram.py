@@ -123,9 +123,10 @@ class TelegramChannel(BaseChannel):
             )
         )
         
-        # Add /start command handler
+        # Add command handlers
         from telegram.ext import CommandHandler
         self._app.add_handler(CommandHandler("start", self._on_start))
+        self._app.add_handler(CommandHandler("new", self._on_new))
         
         logger.info("Starting Telegram bot (polling mode)...")
         
@@ -167,8 +168,11 @@ class TelegramChannel(BaseChannel):
         try:
             # chat_id should be the Telegram chat ID (integer)
             chat_id = int(msg.chat_id)
-            # Convert markdown to Telegram HTML
-            html_content = _markdown_to_telegram_html(msg.content)
+            # Convert markdown to Telegram HTML (skip if already raw HTML)
+            if msg.metadata.get("raw_html"):
+                html_content = msg.content
+            else:
+                html_content = _markdown_to_telegram_html(msg.content)
             await self._app.bot.send_message(
                 chat_id=chat_id,
                 text=html_content,
@@ -198,6 +202,33 @@ class TelegramChannel(BaseChannel):
             "Send me a message and I'll respond!"
         )
     
+    async def _on_new(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /new command — create a new chat session."""
+        if not update.message or not update.effective_user:
+            return
+
+        user = update.effective_user
+        chat_id = update.message.chat_id
+
+        sender_id = str(user.id)
+        if user.username:
+            sender_id = f"{sender_id}|{user.username}"
+
+        self._chat_ids[sender_id] = chat_id
+
+        await self._handle_message(
+            sender_id=sender_id,
+            chat_id=str(chat_id),
+            content="/new",
+            metadata={
+                "command": "new_chat",
+                "message_id": update.message.message_id,
+                "user_id": user.id,
+                "username": user.username,
+                "first_name": user.first_name,
+            }
+        )
+
     async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming messages (text, photos, voice, documents)."""
         if not update.message or not update.effective_user:

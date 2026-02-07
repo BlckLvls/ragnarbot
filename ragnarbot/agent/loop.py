@@ -150,9 +150,14 @@ class AgentLoop:
         # The chat_id contains the original "channel:chat_id" to route back to
         if msg.channel == "system":
             return await self._process_system_message(msg)
-        
+
+        # Handle commands (e.g. /new) before LLM processing
+        command = msg.metadata.get("command")
+        if command:
+            return self._handle_command(command, msg)
+
         logger.info(f"Processing message from {msg.channel}:{msg.sender_id}")
-        
+
         # Get or create session
         session = self.sessions.get_or_create(msg.session_key)
         
@@ -237,6 +242,23 @@ class AgentLoop:
             content=final_content
         )
     
+    def _handle_command(self, command: str, msg: InboundMessage) -> OutboundMessage | None:
+        """Dispatch a channel command without calling the LLM."""
+        if command == "new_chat":
+            return self._handle_new_chat(msg)
+        logger.warning(f"Unknown command: {command}")
+        return None
+
+    def _handle_new_chat(self, msg: InboundMessage) -> OutboundMessage:
+        """Create a new chat session and return a confirmation message."""
+        self.sessions.create_new(msg.session_key)
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=f"✨ <b>New chat started</b>\n\n🤖 Model: <code>{self.model}</code>",
+            metadata={"raw_html": True},
+        )
+
     async def _process_system_message(self, msg: InboundMessage) -> OutboundMessage | None:
         """
         Process a system message (e.g., subagent announce).

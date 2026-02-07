@@ -1,7 +1,7 @@
 """Utility functions for ragnarbot."""
 
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 
 def ensure_dir(path: Path) -> Path:
@@ -35,6 +35,16 @@ def get_workspace_path(workspace: str | None = None) -> Path:
 def get_sessions_path() -> Path:
     """Get the sessions storage directory."""
     return ensure_dir(get_data_path() / "sessions")
+
+
+def get_chats_path() -> Path:
+    """Get the chat sessions storage directory."""
+    return ensure_dir(get_sessions_path() / "chats")
+
+
+def get_active_sessions_path() -> Path:
+    """Get the active session pointers directory."""
+    return ensure_dir(get_sessions_path() / "active")
 
 
 def get_memory_path(workspace: Path | None = None) -> Path:
