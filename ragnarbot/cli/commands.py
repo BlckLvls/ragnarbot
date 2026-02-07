@@ -251,6 +251,7 @@ def gateway_main(
         brave_api_key=brave_api_key,
         exec_config=config.tools.exec,
         cron_service=cron,
+        stream_steps=config.agents.defaults.stream_steps,
     )
 
     # Set cron callback (needs agent)
@@ -507,6 +508,7 @@ def agent(
         workspace=config.workspace_path,
         brave_api_key=brave_api_key,
         exec_config=config.tools.exec,
+        stream_steps=config.agents.defaults.stream_steps,
     )
 
     if message:

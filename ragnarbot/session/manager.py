@@ -33,20 +33,24 @@ class Session:
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def add_message(self, role: str, content: str, **kwargs: Any) -> None:
+    def add_message(self, role: str, content: str | None, **kwargs: Any) -> None:
         """Add a message to the session."""
         msg = {
             "role": role,
-            "content": content,
+            "content": content or "",
             "timestamp": datetime.now().isoformat(),
             **kwargs
         }
         self.messages.append(msg)
         self.updated_at = datetime.now()
 
-    def get_history(self, max_messages: int = 50) -> list[dict[str, Any]]:
+    def get_history(self, max_messages: int = 200) -> list[dict[str, Any]]:
         """
         Get message history for LLM context.
+
+        Returns full LLM-compatible messages (with tool_calls, tool_call_id, name)
+        and ensures truncation happens at a user-message boundary to avoid
+        orphaned tool_calls without results.
 
         Args:
             max_messages: Maximum messages to return.
@@ -55,7 +59,25 @@ class Session:
             List of messages in LLM format.
         """
         recent = self.messages[-max_messages:] if len(self.messages) > max_messages else self.messages
-        return [{"role": m["role"], "content": m["content"]} for m in recent]
+
+        # Find safe start — must begin at a "user" message
+        start = 0
+        for i, m in enumerate(recent):
+            if m["role"] == "user":
+                start = i
+                break
+
+        result = []
+        for m in recent[start:]:
+            msg: dict[str, Any] = {"role": m["role"], "content": m.get("content") or ""}
+            if "tool_calls" in m:
+                msg["tool_calls"] = m["tool_calls"]
+            if "tool_call_id" in m:
+                msg["tool_call_id"] = m["tool_call_id"]
+            if "name" in m:
+                msg["name"] = m["name"]
+            result.append(msg)
+        return result
 
     def clear(self) -> None:
         """Clear all messages in the session."""

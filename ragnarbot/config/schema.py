@@ -29,6 +29,7 @@ class AgentDefaults(BaseModel):
     temperature: float = 0.7
     max_tool_iterations: int = 20
     auth_method: str = "api_key"
+    stream_steps: bool = False  # Send intermediate messages to user during tool-call loops
 
 
 class AgentsConfig(BaseModel):

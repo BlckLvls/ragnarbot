@@ -44,6 +44,7 @@ class AgentLoop:
         brave_api_key: str | None = None,
         exec_config: "ExecToolConfig | None" = None,
         cron_service: "CronService | None" = None,
+        stream_steps: bool = False,
     ):
         from ragnarbot.config.schema import ExecToolConfig
         from ragnarbot.cron.service import CronService
@@ -55,6 +56,7 @@ class AgentLoop:
         self.brave_api_key = brave_api_key
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
+        self.stream_steps = stream_steps
         
         self.context = ContextBuilder(workspace)
         self.sessions = SessionManager(workspace)
@@ -182,23 +184,35 @@ class AgentLoop:
             channel=msg.channel,
             chat_id=msg.chat_id,
         )
-        
+
+        # Track where new messages start (the current user message)
+        new_start = len(messages) - 1
+
         # Agent loop
         iteration = 0
         final_content = None
-        
+
         while iteration < self.max_iterations:
             iteration += 1
-            
+
             # Call LLM
             response = await self.provider.chat(
                 messages=messages,
                 tools=self.tools.get_definitions(),
                 model=self.model
             )
-            
+
             # Handle tool calls
             if response.has_tool_calls:
+                # Stream intermediate content to user if enabled
+                if self.stream_steps and response.content:
+                    await self.bus.publish_outbound(OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content=response.content,
+                        metadata={"intermediate": True},
+                    ))
+
                 # Add assistant message with tool calls
                 tool_call_dicts = [
                     {
@@ -214,7 +228,7 @@ class AgentLoop:
                 messages = self.context.add_assistant_message(
                     messages, response.content, tool_call_dicts
                 )
-                
+
                 # Execute tools
                 for tool_call in response.tool_calls:
                     args_str = json.dumps(tool_call.arguments)
@@ -227,15 +241,25 @@ class AgentLoop:
                 # No tool calls, we're done
                 final_content = response.content
                 break
-        
+
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
-        
-        # Save to session
-        session.add_message("user", msg.content)
-        session.add_message("assistant", final_content)
+
+        # Add final assistant message to the messages list
+        messages.append({"role": "assistant", "content": final_content})
+
+        # Save ALL new messages to session (user, intermediate assistant+tool_calls, tool results, final)
+        for m in messages[new_start:]:
+            extras = {}
+            if "tool_calls" in m:
+                extras["tool_calls"] = m["tool_calls"]
+            if "tool_call_id" in m:
+                extras["tool_call_id"] = m["tool_call_id"]
+            if "name" in m:
+                extras["name"] = m["name"]
+            session.add_message(m["role"], m.get("content"), **extras)
         self.sessions.save(session)
-        
+
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
@@ -302,21 +326,33 @@ class AgentLoop:
             channel=origin_channel,
             chat_id=origin_chat_id,
         )
-        
+
+        # Track where new messages start
+        new_start = len(messages) - 1
+
         # Agent loop (limited for announce handling)
         iteration = 0
         final_content = None
-        
+
         while iteration < self.max_iterations:
             iteration += 1
-            
+
             response = await self.provider.chat(
                 messages=messages,
                 tools=self.tools.get_definitions(),
                 model=self.model
             )
-            
+
             if response.has_tool_calls:
+                # Stream intermediate content to user if enabled
+                if self.stream_steps and response.content:
+                    await self.bus.publish_outbound(OutboundMessage(
+                        channel=origin_channel,
+                        chat_id=origin_chat_id,
+                        content=response.content,
+                        metadata={"intermediate": True},
+                    ))
+
                 tool_call_dicts = [
                     {
                         "id": tc.id,
@@ -331,7 +367,7 @@ class AgentLoop:
                 messages = self.context.add_assistant_message(
                     messages, response.content, tool_call_dicts
                 )
-                
+
                 for tool_call in response.tool_calls:
                     args_str = json.dumps(tool_call.arguments)
                     logger.debug(f"Executing tool: {tool_call.name} with arguments: {args_str}")
@@ -342,15 +378,28 @@ class AgentLoop:
             else:
                 final_content = response.content
                 break
-        
+
         if final_content is None:
             final_content = "Background task completed."
-        
-        # Save to session (mark as system message in history)
-        session.add_message("user", f"[System: {msg.sender_id}] {msg.content}")
-        session.add_message("assistant", final_content)
+
+        # Add final assistant message to the messages list
+        messages.append({"role": "assistant", "content": final_content})
+
+        # Override the user message content to mark it as system
+        messages[new_start]["content"] = f"[System: {msg.sender_id}] {msg.content}"
+
+        # Save ALL new messages to session
+        for m in messages[new_start:]:
+            extras = {}
+            if "tool_calls" in m:
+                extras["tool_calls"] = m["tool_calls"]
+            if "tool_call_id" in m:
+                extras["tool_call_id"] = m["tool_call_id"]
+            if "name" in m:
+                extras["name"] = m["name"]
+            session.add_message(m["role"], m.get("content"), **extras)
         self.sessions.save(session)
-        
+
         return OutboundMessage(
             channel=origin_channel,
             chat_id=origin_chat_id,
