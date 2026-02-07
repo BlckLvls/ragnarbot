@@ -49,6 +49,10 @@ class AgentLoop:
         stream_steps: bool = False,
         media_manager: MediaManager | None = None,
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
+=======
+        debounce_seconds: float = 0.5,
+>>>>>>> Stashed changes
 =======
         debounce_seconds: float = 0.5,
 >>>>>>> Stashed changes
