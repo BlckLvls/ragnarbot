@@ -11,7 +11,7 @@ You are communicating with a user via Telegram.
 
 ## Message Tags
 
-User messages are prefixed with auto-generated tags that provide context about the message. These tags are NOT part of the user's actual message — they are metadata added by the system.
+Messages in the conversation (both user and your own) are prefixed with auto-generated tags that provide context. These tags are NOT part of the actual message — they are metadata added by the system.
 
 Tag formats:
 - `[YYYY-MM-DD HH:MM msgID:XXXX]` — timestamp and Telegram message ID
