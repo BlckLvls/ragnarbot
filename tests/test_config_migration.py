@@ -2,17 +2,21 @@
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from ragnarbot.config.migration import (
+    MigrationResult,
     _deep_diff,
+    _delete_nested,
     _has_meaningful_data,
     _is_sensitive,
+    _mask_value,
     _set_nested,
-    _delete_nested,
     migrate_config,
     migrate_credentials,
+    run_startup_migration,
 )
 
 
@@ -74,6 +78,12 @@ class TestHelpers:
         assert _is_sensitive("channels.telegram.bot_token") is True
         assert _is_sensitive("agents.defaults.model") is False
 
+    def test_mask_value_long_string(self):
+        assert _mask_value("sk-test-long-key-123") == "sk-t****23"
+
+    def test_mask_value_short_string(self):
+        assert _mask_value("short") == "'short'"
+
     def test_set_nested(self):
         d = {"a": {"b": 1}}
         _set_nested(d, "a.c", 2)
@@ -101,11 +111,11 @@ class TestMigrateConfig:
         path = tmp_path / "config.json"
         path.write_text(json.dumps(config))
 
-        result = migrate_config(path, auto_confirm=True)
-        # Should have added gateway, channels, tools, etc.
-        assert "gateway" in result
-        assert "channels" in result
-        assert "tools" in result
+        result = migrate_config(path)
+        assert "gateway" in result.data
+        assert "channels" in result.data
+        assert "tools" in result.data
+        assert result.added  # should have added fields
 
     def test_preserves_existing_values(self, tmp_path):
         config = {
@@ -116,23 +126,46 @@ class TestMigrateConfig:
                 }
             }
         }
-        # Write as camelCase (like real config)
         path = tmp_path / "config.json"
         path.write_text(json.dumps(config))
 
-        result = migrate_config(path, auto_confirm=True)
-        assert result["agents"]["defaults"]["model"] == "openai/gpt-5.2"
-        assert result["agents"]["defaults"]["max_tokens"] == 4096
+        result = migrate_config(path)
+        assert result.data["agents"]["defaults"]["model"] == "openai/gpt-5.2"
+        assert result.data["agents"]["defaults"]["max_tokens"] == 4096
 
-    def test_removes_unknown_non_sensitive(self, tmp_path):
+    def test_removes_unknown_empty(self, tmp_path):
         config = {
-            "agents": {"defaults": {"model": "anthropic/claude-opus-4-6", "oldField": "test"}},
+            "agents": {"defaults": {"model": "anthropic/claude-opus-4-6", "oldField": ""}},
         }
         path = tmp_path / "config.json"
         path.write_text(json.dumps(config))
 
-        result = migrate_config(path, auto_confirm=True)
-        assert "old_field" not in result.get("agents", {}).get("defaults", {})
+        result = migrate_config(path)
+        assert "old_field" not in result.data.get("agents", {}).get("defaults", {})
+        assert "agents.defaults.old_field" in result.auto_removed
+
+    def test_meaningful_removal_goes_to_needs_confirm(self, tmp_path):
+        config = {
+            "agents": {"defaults": {"model": "anthropic/claude-opus-4-6", "oldField": "data"}},
+        }
+        path = tmp_path / "config.json"
+        path.write_text(json.dumps(config))
+
+        result = migrate_config(path)
+        assert "agents.defaults.old_field" in result.needs_confirm
+        # The field should still be in data (not yet removed)
+        assert result.data["agents"]["defaults"]["old_field"] == "data"
+
+    def test_no_changes_returns_empty_result(self, tmp_path):
+        from ragnarbot.config.schema import Config
+        from ragnarbot.config.loader import convert_to_camel
+
+        config = Config()
+        path = tmp_path / "config.json"
+        path.write_text(json.dumps(convert_to_camel(config.model_dump()), indent=2))
+
+        result = migrate_config(path)
+        assert not result.has_changes
 
 
 class TestMigrateCredentials:
@@ -141,9 +174,9 @@ class TestMigrateCredentials:
         path = tmp_path / "creds.json"
         path.write_text(json.dumps(creds))
 
-        result = migrate_credentials(path, auto_confirm=True)
-        assert "services" in result
-        assert "channels" in result
+        result = migrate_credentials(path)
+        assert "services" in result.data
+        assert "channels" in result.data
 
     def test_preserves_existing_keys(self, tmp_path):
         creds = {
@@ -158,5 +191,177 @@ class TestMigrateCredentials:
         path = tmp_path / "creds.json"
         path.write_text(json.dumps(creds))
 
-        result = migrate_credentials(path, auto_confirm=True)
-        assert result["providers"]["anthropic"]["api_key"] == "sk-test-123"
+        result = migrate_credentials(path)
+        assert result.data["providers"]["anthropic"]["api_key"] == "sk-test-123"
+
+    def test_meaningful_removal_goes_to_needs_confirm(self, tmp_path):
+        creds = {
+            "providers": {
+                "anthropic": {"apiKey": "sk-test"},
+                "openai": {"apiKey": ""},
+                "gemini": {"apiKey": ""},
+            },
+            "services": {"transcription": {"apiKey": ""}, "webSearch": {"apiKey": ""}},
+            "channels": {"telegram": {"botToken": ""}},
+            "oldSection": {"key": "important-data"},
+        }
+        path = tmp_path / "creds.json"
+        path.write_text(json.dumps(creds))
+
+        result = migrate_credentials(path)
+        assert "old_section" in result.needs_confirm
+
+
+class TestRunStartupMigration:
+    def test_no_files_returns_true(self, tmp_path):
+        from rich.console import Console
+
+        console = Console()
+        with (
+            patch("ragnarbot.config.migration.get_config_path",
+                  return_value=tmp_path / "missing.json"),
+            patch("ragnarbot.config.migration.get_credentials_path",
+                  return_value=tmp_path / "missing_creds.json"),
+        ):
+            assert run_startup_migration(console) is True
+
+    def test_no_changes_returns_true(self, tmp_path):
+        from ragnarbot.config.loader import convert_to_camel
+        from ragnarbot.config.schema import Config
+        from ragnarbot.auth.credentials import Credentials
+        from rich.console import Console
+
+        console = Console()
+
+        config_path = tmp_path / "config.json"
+        config_path.write_text(
+            json.dumps(convert_to_camel(Config().model_dump()), indent=2)
+        )
+
+        creds_path = tmp_path / "creds.json"
+        creds_path.write_text(
+            json.dumps(convert_to_camel(Credentials().model_dump()), indent=2)
+        )
+
+        with (
+            patch("ragnarbot.config.migration.get_config_path", return_value=config_path),
+            patch("ragnarbot.config.migration.get_credentials_path", return_value=creds_path),
+        ):
+            assert run_startup_migration(console) is True
+
+    def test_auto_adds_missing_fields(self, tmp_path):
+        from rich.console import Console
+
+        console = Console()
+
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps(
+            {"agents": {"defaults": {"model": "anthropic/claude-opus-4-6"}}}
+        ))
+
+        creds_path = tmp_path / "missing_creds.json"
+
+        with (
+            patch("ragnarbot.config.migration.get_config_path", return_value=config_path),
+            patch("ragnarbot.config.migration.get_credentials_path", return_value=creds_path),
+        ):
+            assert run_startup_migration(console) is True
+
+        # Config should have been saved with new fields
+        saved = json.loads(config_path.read_text())
+        assert "gateway" in saved or "channels" in saved
+
+    def test_auto_removes_empty_fields(self, tmp_path):
+        from ragnarbot.config.loader import convert_to_camel
+        from ragnarbot.config.schema import Config
+        from rich.console import Console
+
+        console = Console()
+
+        data = convert_to_camel(Config().model_dump())
+        data["oldEmptyField"] = ""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps(data, indent=2))
+
+        creds_path = tmp_path / "missing_creds.json"
+
+        with (
+            patch("ragnarbot.config.migration.get_config_path", return_value=config_path),
+            patch("ragnarbot.config.migration.get_credentials_path", return_value=creds_path),
+        ):
+            assert run_startup_migration(console) is True
+
+        saved = json.loads(config_path.read_text())
+        assert "oldEmptyField" not in saved
+
+    def test_prompts_for_meaningful_removals_accepted(self, tmp_path):
+        from ragnarbot.config.loader import convert_to_camel
+        from ragnarbot.config.schema import Config
+        from rich.console import Console
+
+        console = Console()
+
+        data = convert_to_camel(Config().model_dump())
+        data["obsoleteField"] = "important-data"
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps(data, indent=2))
+
+        creds_path = tmp_path / "missing_creds.json"
+
+        with (
+            patch("ragnarbot.config.migration.get_config_path", return_value=config_path),
+            patch("ragnarbot.config.migration.get_credentials_path", return_value=creds_path),
+            patch("ragnarbot.config.migration.typer.confirm", return_value=True),
+        ):
+            assert run_startup_migration(console) is True
+
+        saved = json.loads(config_path.read_text())
+        assert "obsoleteField" not in saved
+
+    def test_prompts_for_meaningful_removals_declined(self, tmp_path):
+        from ragnarbot.config.loader import convert_to_camel
+        from ragnarbot.config.schema import Config
+        from rich.console import Console
+
+        console = Console()
+
+        data = convert_to_camel(Config().model_dump())
+        data["obsoleteField"] = "important-data"
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps(data, indent=2))
+
+        creds_path = tmp_path / "missing_creds.json"
+
+        with (
+            patch("ragnarbot.config.migration.get_config_path", return_value=config_path),
+            patch("ragnarbot.config.migration.get_credentials_path", return_value=creds_path),
+            patch("ragnarbot.config.migration.typer.confirm", return_value=False),
+        ):
+            assert run_startup_migration(console) is False
+
+    def test_credentials_migration_alongside_config(self, tmp_path):
+        from ragnarbot.config.loader import convert_to_camel
+        from ragnarbot.config.schema import Config
+        from ragnarbot.auth.credentials import Credentials
+        from rich.console import Console
+
+        console = Console()
+
+        config_path = tmp_path / "config.json"
+        config_path.write_text(
+            json.dumps(convert_to_camel(Config().model_dump()), indent=2)
+        )
+
+        creds_data = convert_to_camel(Credentials().model_dump())
+        creds_data["oldSection"] = ""
+        creds_path = tmp_path / "creds.json"
+        creds_path.write_text(json.dumps(creds_data, indent=2))
+
+        with (
+            patch("ragnarbot.config.migration.get_config_path", return_value=config_path),
+            patch("ragnarbot.config.migration.get_credentials_path", return_value=creds_path),
+        ):
+            assert run_startup_migration(console) is True
+
+        saved = json.loads(creds_path.read_text())
+        assert "oldSection" not in saved
