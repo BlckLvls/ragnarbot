@@ -263,6 +263,7 @@ def gateway_main(
         cron_service=cron,
         stream_steps=config.agents.defaults.stream_steps,
         media_manager=media_manager,
+        debounce_seconds=config.agents.defaults.debounce_seconds,
     )
 
     # Set cron callback (needs agent)

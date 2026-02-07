@@ -48,6 +48,10 @@ class AgentLoop:
         cron_service: "CronService | None" = None,
         stream_steps: bool = False,
         media_manager: MediaManager | None = None,
+<<<<<<< Updated upstream
+=======
+        debounce_seconds: float = 0.5,
+>>>>>>> Stashed changes
     ):
         from ragnarbot.config.schema import ExecToolConfig
         from ragnarbot.cron.service import CronService
