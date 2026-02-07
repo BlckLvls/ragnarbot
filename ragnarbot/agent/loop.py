@@ -268,6 +268,19 @@ class AgentLoop:
                         )
                         media_refs.append({"type": "photo", "filename": filename})
 
+            # Process reply-to photo — save to disk, add to media_refs
+            reply_to = m.metadata.get("reply_to")
+            if reply_to and isinstance(reply_to, dict) and self.media_manager:
+                photo_data = reply_to.pop("photo_data", None)
+                photo_mime = reply_to.pop("photo_mime", None)
+                if photo_data:
+                    ext = _ext_from_mime(photo_mime)
+                    filename = await self.media_manager.save_photo(
+                        session.key, photo_data, ext
+                    )
+                    media_refs.append({"type": "photo", "filename": filename})
+                    reply_to["has_photo"] = True
+
             # Build prefix tags
             current_meta = {"timestamp": _dt.now().isoformat()}
             for k in ("message_id", "reply_to", "forwarded_from"):

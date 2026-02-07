@@ -349,7 +349,7 @@ class TelegramChannel(BaseChannel):
         }
 
         if message.reply_to_message:
-            reply_data = {"message_id": message.reply_to_message.message_id}
+            reply_data = {}
             if message.reply_to_message.from_user:
                 reply_user = message.reply_to_message.from_user
                 reply_data.update({
@@ -358,6 +358,20 @@ class TelegramChannel(BaseChannel):
                     "first_name": reply_user.first_name,
                     "last_name": reply_user.last_name,
                 })
+            reply_data["content"] = (
+                message.reply_to_message.text
+                or message.reply_to_message.caption
+                or ""
+            )
+            if message.reply_to_message.photo and self._app:
+                reply_photo = message.reply_to_message.photo[-1]
+                try:
+                    file = await self._app.bot.get_file(reply_photo.file_id)
+                    data = await file.download_as_bytearray()
+                    reply_data["photo_data"] = bytes(data)
+                    reply_data["photo_mime"] = "image/jpeg"
+                except Exception as e:
+                    logger.error(f"Failed to download reply photo: {e}")
             metadata["reply_to"] = reply_data
 
         if message.forward_origin:

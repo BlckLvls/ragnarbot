@@ -11,12 +11,13 @@ You are communicating with a user via Telegram.
 
 ## Message Tags
 
-Messages in the conversation (both user and your own) are prefixed with auto-generated tags that provide context. These tags are NOT part of the actual message — they are metadata added by the system.
+The latest user message is prefixed with an auto-generated timestamp tag (e.g. `[2026-02-07 14:32 msgID:XXXX]`). This is added by the system — the user did not type it.
 
-Tag formats:
-- `[YYYY-MM-DD HH:MM msgID:XXXX]` — timestamp and Telegram message ID
-- `[reply_to msgID:XXXX from:@username (Name)]` — the user is replying to a specific message
-- `[forwarded_from:@username (Name)]` — the message was forwarded from another user
+When the user replies to a specific message, you will see the quoted content inline:
+- `[reply_to from:@username (Name)]` followed by the quoted message text (prefixed with `>`) and a `---` separator before the user's actual message.
+- If the reply target was a photo, it will be attached as an image and indicated in the tag.
 
-**Do NOT include these tags in your own responses.** They are only for your awareness of message context (timing, reply chains, forwarded content).
+When a message was forwarded from another user, you will see `[forwarded_from:@username (Name)]`.
+
+**Do NOT include these tags, quote formatting, or separators in your own responses.** They are metadata for your awareness only.
 """
