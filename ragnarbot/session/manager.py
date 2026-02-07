@@ -81,8 +81,9 @@ class Session:
             role = m["role"]
 
             # Prepend context tags for user/assistant messages
+            # History messages get no timestamp — only the current message does
             if role in ("user", "assistant") and m.get("metadata"):
-                prefix = _build_message_prefix(m["metadata"])
+                prefix = _build_message_prefix(m["metadata"], include_timestamp=False)
                 if prefix:
                     content = prefix + content
 
@@ -123,47 +124,64 @@ def _format_user_ref(data: dict) -> str:
     return "unknown"
 
 
-def _build_message_prefix(metadata: dict) -> str:
+def _build_message_prefix(metadata: dict, include_timestamp: bool = True) -> str:
     """Build context-tag prefix for a message from its metadata.
 
     Returns a string like::
 
-        [2026-02-07 14:32 msgID:1234]
-        [reply_to msgID:5678 from:@johndoe (John Doe)]
+        [2026-02-07 14:32]
+        [reply_to from:@johndoe (John Doe)]
+        > quoted reply text
+        ---
 
     Or empty string when no useful metadata is present.
+
+    Args:
+        metadata: Message metadata dict.
+        include_timestamp: Whether to include the timestamp line.
+            Set to False for history messages (only the current message gets a timestamp).
     """
     lines = []
 
-    # Timestamp line
-    ts_raw = metadata.get("timestamp")
-    if ts_raw:
-        try:
-            dt = datetime.fromisoformat(ts_raw)
-            ts_str = dt.strftime("%Y-%m-%d %H:%M")
-        except (ValueError, TypeError):
+    # Timestamp line (only for current message)
+    if include_timestamp:
+        ts_raw = metadata.get("timestamp")
+        if ts_raw:
+            try:
+                dt = datetime.fromisoformat(ts_raw)
+                ts_str = dt.strftime("%Y-%m-%d %H:%M")
+            except (ValueError, TypeError):
+                ts_str = None
+        else:
             ts_str = None
-    else:
-        ts_str = None
 
-    msg_id = metadata.get("message_id")
-    if ts_str or msg_id:
-        parts = []
         if ts_str:
-            parts.append(ts_str)
-        if msg_id:
-            parts.append(f"msgID:{msg_id}")
-        lines.append(f"[{' '.join(parts)}]")
+            lines.append(f"[{ts_str}]")
 
-    # Reply context
+    # Reply context — inline quoted content
     reply = metadata.get("reply_to")
     if reply and isinstance(reply, dict):
         ref = _format_user_ref(reply)
-        reply_msg_id = reply.get("message_id")
-        if reply_msg_id:
-            lines.append(f"[reply_to msgID:{reply_msg_id} from:{ref}]")
+        reply_content = reply.get("content", "")
+        has_photo = reply.get("has_photo", False)
+
+        if has_photo and not reply_content:
+            lines.append(f"[reply_to from:{ref} (photo)]")
+        elif has_photo:
+            lines.append(f"[reply_to from:{ref} (photo + text)]")
         else:
             lines.append(f"[reply_to from:{ref}]")
+
+        if reply_content:
+            if len(reply_content) > 100:
+                reply_content = (
+                    reply_content[:50]
+                    + " ... [message shortened] ... "
+                    + reply_content[-50:]
+                )
+            lines.append(f"> {reply_content}")
+
+        lines.append("---")
 
     # Forward context
     fwd = metadata.get("forwarded_from")
