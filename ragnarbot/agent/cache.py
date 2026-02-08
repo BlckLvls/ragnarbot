@@ -57,6 +57,48 @@ class CacheManager:
         elapsed = (datetime.now() - created_dt).total_seconds()
         return elapsed >= self.get_cache_ttl(model)
 
+    def estimate_context_tokens(
+        self, messages: list[dict], model: str,
+        tools: list[dict] | None = None,
+        session=None,
+    ) -> int:
+        """Estimate total context tokens for an API call.
+
+        Counts tokens for all messages (system + history + current) and tool
+        definitions.  When ``session`` is provided and its cache has expired,
+        simulates flush on a copy to return the post-flush token count — i.e.
+        the actual number of tokens that would be sent to the provider.
+
+        Args:
+            messages: Full LLM message list (from build_messages).
+            model: Model string for provider detection.
+            tools: Tool definitions (OpenAI format).
+            session: Optional session; if provided, flush is simulated when
+                the cache has expired.
+
+        Returns:
+            Estimated token count.
+        """
+        provider = self.get_provider_from_model(model)
+
+        if session and self.should_flush(session, model):
+            msgs_copy = [m.copy() for m in messages]
+            raw_tokens = estimate_messages_tokens(msgs_copy, provider)
+            if tools:
+                raw_tokens += estimate_tools_tokens(tools)
+            ratio = raw_tokens / self.max_context_tokens
+            flush_type = "soft" if ratio <= 0.4 else "hard"
+            self._flush_tool_results(msgs_copy, flush_type)
+            total = estimate_messages_tokens(msgs_copy, provider)
+            if tools:
+                total += estimate_tools_tokens(tools)
+            return total
+
+        total = estimate_messages_tokens(messages, provider)
+        if tools:
+            total += estimate_tools_tokens(tools)
+        return total
+
     def flush_messages(self, messages: list[dict], session, model: str,
                        tools: list[dict] | None = None):
         """Trim large tool results in-place on the LLM message list.

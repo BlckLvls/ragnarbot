@@ -182,6 +182,77 @@ class TestFlushMessages:
         assert session.messages[0]["content"] == original_content
 
 
+class TestEstimateContextTokens:
+    def test_without_session_counts_raw(self):
+        cm = CacheManager()
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Hi"},
+        ]
+        result = cm.estimate_context_tokens(messages, "anthropic/claude-opus-4-6")
+        assert result > 0
+
+    def test_without_session_includes_tools(self):
+        cm = CacheManager()
+        messages = [{"role": "user", "content": "Hi"}]
+        tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
+        without_tools = cm.estimate_context_tokens(messages, "anthropic/claude-opus-4-6")
+        with_tools = cm.estimate_context_tokens(
+            messages, "anthropic/claude-opus-4-6", tools=tools
+        )
+        assert with_tools > without_tools
+
+    def test_with_session_no_flush_needed(self):
+        """When cache is fresh, returns raw count (no flush simulation)."""
+        cm = CacheManager()
+        messages = [
+            {"role": "user", "content": "Hi"},
+            {"role": "tool", "tool_call_id": "1", "content": "x" * 10000},
+        ]
+        session = FakeSession(metadata={
+            "cache": {"created_at": datetime.now().isoformat()}
+        })
+        result = cm.estimate_context_tokens(
+            messages, "anthropic/claude-opus-4-6", session=session
+        )
+        # Should be the raw count — no flush
+        raw = cm.estimate_context_tokens(messages, "anthropic/claude-opus-4-6")
+        assert result == raw
+
+    def test_with_expired_session_simulates_flush(self):
+        """When cache expired, simulates flush and returns smaller count."""
+        cm = CacheManager()
+        messages = [
+            {"role": "user", "content": "Hi"},
+            {"role": "tool", "tool_call_id": "1", "content": "x" * 10000},
+        ]
+        expired = datetime.now() - timedelta(seconds=600)
+        session = FakeSession(metadata={
+            "cache": {"created_at": expired.isoformat()}
+        })
+        flushed_count = cm.estimate_context_tokens(
+            messages, "anthropic/claude-opus-4-6", session=session
+        )
+        raw_count = cm.estimate_context_tokens(messages, "anthropic/claude-opus-4-6")
+        assert flushed_count < raw_count
+
+    def test_simulation_does_not_modify_original(self):
+        """Flush simulation must not touch the original messages."""
+        cm = CacheManager()
+        original_content = "y" * 10000
+        messages = [
+            {"role": "tool", "tool_call_id": "1", "content": original_content},
+        ]
+        expired = datetime.now() - timedelta(seconds=600)
+        session = FakeSession(metadata={
+            "cache": {"created_at": expired.isoformat()}
+        })
+        cm.estimate_context_tokens(
+            messages, "anthropic/claude-opus-4-6", session=session
+        )
+        assert messages[0]["content"] == original_content
+
+
 class TestMarkCacheCreated:
     def test_sets_created_at_on_cache_creation(self):
         session = FakeSession()
