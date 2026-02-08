@@ -165,8 +165,6 @@ class TestPerformFlush:
         assert cache["created_at"] == created_at  # Preserved
         assert "last_flush_at" in cache
         assert "last_flush_type" in cache
-        assert "post_flush_token_count" in cache
-        assert cache["flush_message_count"] == len(messages)
 
 
 class TestMarkCacheCreated:

@@ -62,47 +62,24 @@ class CacheManager:
         provider = self.get_provider_from_model(model)
         cache = session.metadata.get("cache", {})
 
-        # Token counting with optimization for repeated flushes
-        prev_flush_count = cache.get("flush_message_count", 0)
-        prev_token_count = cache.get("post_flush_token_count", 0)
-
-        if prev_flush_count > 0 and prev_flush_count <= len(session.messages):
-            new_messages = session.messages[prev_flush_count:]
-            total_tokens = prev_token_count + estimate_messages_tokens(
-                new_messages, provider
-            )
-        else:
-            total_tokens = estimate_messages_tokens(session.messages, provider)
-
-        # Add system prompt + tools estimate
+        total_tokens = estimate_messages_tokens(session.messages, provider)
         total_tokens += 5000  # System prompt buffer
         if tools:
             total_tokens += estimate_tools_tokens(tools)
 
-        # Determine flush level from PRE-flush token count
         ratio = total_tokens / self.max_context_tokens
         flush_type = "soft" if ratio <= 0.4 else "hard"
 
-        # Apply flush to ALL tool messages
         flushed = self._flush_tool_results(session.messages, flush_type)
 
-        # Recount after flush for metadata
-        post_flush_tokens = estimate_messages_tokens(session.messages, provider)
-        post_flush_tokens += 5000
-        if tools:
-            post_flush_tokens += estimate_tools_tokens(tools)
-
-        # Update metadata
         session.metadata["cache"] = {
             "created_at": cache.get("created_at"),
             "last_flush_at": datetime.now().isoformat(),
             "last_flush_type": flush_type,
-            "post_flush_token_count": post_flush_tokens,
-            "flush_message_count": len(session.messages),
         }
 
         logger.info(
-            f"Cache flush ({flush_type}): {total_tokens} -> {post_flush_tokens} tokens, "
+            f"Cache flush ({flush_type}): {total_tokens} est. tokens, "
             f"{flushed} results trimmed"
         )
 
