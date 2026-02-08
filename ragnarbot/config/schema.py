@@ -28,6 +28,7 @@ class AgentDefaults(BaseModel):
     max_tokens: int = 8192
     temperature: float = 0.7
     max_tool_iterations: int = 20
+    max_context_tokens: int = 200_000
     auth_method: str = "api_key"
     stream_steps: bool = True  # Send intermediate messages to user during tool-call loops
     debounce_seconds: float = 0.5  # Batch rapid-fire messages into a single LLM turn

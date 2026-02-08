@@ -91,10 +91,11 @@ Skills with available="false" need dependencies installed first - you can try in
     
     def _get_identity(self) -> str:
         """Get the core identity section."""
-        from datetime import datetime
-        now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
+        import time
+        tz_name = time.tzname[time.daylight] if time.daylight else time.tzname[0]
+        utc_offset = time.strftime("%z")
         workspace_path = str(self.workspace.expanduser().resolve())
-        
+
         return f"""# ragnarbot 🤖
 
 You are ragnarbot, a helpful AI assistant. You have access to tools that allow you to:
@@ -104,8 +105,8 @@ You are ragnarbot, a helpful AI assistant. You have access to tools that allow y
 - Send messages to users on chat channels
 - Spawn subagents for complex background tasks
 
-## Current Time
-{now}
+## Timezone
+{tz_name} (UTC{utc_offset[:3]}:{utc_offset[3:]})
 
 ## Workspace
 Your workspace is at: {workspace_path}

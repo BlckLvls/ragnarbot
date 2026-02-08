@@ -10,6 +10,7 @@ from loguru import logger
 from ragnarbot.bus.events import InboundMessage, OutboundMessage
 from ragnarbot.bus.queue import MessageBus
 from ragnarbot.providers.base import LLMProvider
+from ragnarbot.agent.cache import CacheManager
 from ragnarbot.agent.context import ContextBuilder
 from ragnarbot.agent.tools.registry import ToolRegistry
 from ragnarbot.agent.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
@@ -49,6 +50,7 @@ class AgentLoop:
         stream_steps: bool = False,
         media_manager: MediaManager | None = None,
         debounce_seconds: float = 0.5,
+        max_context_tokens: int = 200_000,
     ):
         from ragnarbot.config.schema import ExecToolConfig
         from ragnarbot.cron.service import CronService
@@ -63,6 +65,8 @@ class AgentLoop:
         self.stream_steps = stream_steps
         self.media_manager = media_manager
         self.debounce_seconds = debounce_seconds
+        self.max_context_tokens = max_context_tokens
+        self.cache_manager = CacheManager(max_context_tokens=max_context_tokens)
 
         self.context = ContextBuilder(workspace)
         self.sessions = SessionManager(workspace)
@@ -245,6 +249,12 @@ class AgentLoop:
                 "last_name": msg.metadata.get("last_name"),
             }
 
+        # Flush expired cache — trim large tool results before building messages
+        if self.cache_manager.should_flush(session, self.model):
+            tool_defs = self.tools.get_definitions()
+            self.cache_manager.perform_flush(session, model=self.model, tools=tool_defs)
+            self.sessions.save(session)
+
         # Update tool contexts
         message_tool = self.tools.get("message")
         if isinstance(message_tool, MessageTool):
@@ -345,6 +355,9 @@ class AgentLoop:
                 tools=self.tools.get_definitions(),
                 model=self.model
             )
+
+            # Track cache creation/read for flush scheduling
+            self.cache_manager.mark_cache_created(session, response.usage)
 
             if response.has_tool_calls:
                 if self.stream_steps and response.content:
@@ -480,6 +493,12 @@ class AgentLoop:
         session_key = f"{origin_channel}:{origin_chat_id}"
         session = self.sessions.get_or_create(session_key)
 
+        # Flush expired cache
+        if self.cache_manager.should_flush(session, self.model):
+            tool_defs = self.tools.get_definitions()
+            self.cache_manager.perform_flush(session, model=self.model, tools=tool_defs)
+            self.sessions.save(session)
+
         # Update tool contexts
         message_tool = self.tools.get("message")
         if isinstance(message_tool, MessageTool):
@@ -517,6 +536,9 @@ class AgentLoop:
                 tools=self.tools.get_definitions(),
                 model=self.model
             )
+
+            # Track cache creation/read for flush scheduling
+            self.cache_manager.mark_cache_created(session, response.usage)
 
             if response.has_tool_calls:
                 # Stream intermediate content to user if enabled

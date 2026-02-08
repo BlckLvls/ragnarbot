@@ -64,6 +64,10 @@ class LiteLLMProvider(LLMProvider):
         if "gemini" in model.lower() and not model.startswith("gemini/"):
             model = f"gemini/{model}"
         
+        # Inject cache_control for Anthropic and Gemini models
+        if "anthropic" in model or "gemini" in model.lower():
+            messages = self._inject_cache_control(messages)
+
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -85,6 +89,55 @@ class LiteLLMProvider(LLMProvider):
                 finish_reason="error",
             )
     
+    @staticmethod
+    def _inject_cache_control(messages: list[dict]) -> list[dict]:
+        """Add cache_control breakpoints to messages for Anthropic/Gemini via LiteLLM."""
+        messages = [m.copy() for m in messages]
+
+        # Breakpoint 1: System prompt
+        for msg in messages:
+            if msg["role"] == "system":
+                if isinstance(msg["content"], str):
+                    msg["content"] = [{
+                        "type": "text",
+                        "text": msg["content"],
+                        "cache_control": {"type": "ephemeral"},
+                    }]
+                elif isinstance(msg["content"], list):
+                    msg["content"] = [b.copy() for b in msg["content"]]
+                    if msg["content"]:
+                        msg["content"][-1] = {
+                            **msg["content"][-1],
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                break
+
+        # Breakpoint 2: Second-to-last user message (conversation history prefix)
+        user_count = 0
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i]["role"] == "user":
+                user_count += 1
+                if user_count == 2:
+                    content = messages[i]["content"]
+                    if isinstance(content, str):
+                        messages[i] = messages[i].copy()
+                        messages[i]["content"] = [{
+                            "type": "text",
+                            "text": content,
+                            "cache_control": {"type": "ephemeral"},
+                        }]
+                    elif isinstance(content, list):
+                        messages[i] = messages[i].copy()
+                        messages[i]["content"] = [b.copy() for b in content]
+                        if messages[i]["content"]:
+                            messages[i]["content"][-1] = {
+                                **messages[i]["content"][-1],
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                    break
+
+        return messages
+
     def _parse_response(self, response: Any) -> LLMResponse:
         """Parse LiteLLM response into our standard format."""
         choice = response.choices[0]
@@ -115,6 +168,17 @@ class LiteLLMProvider(LLMProvider):
                 "completion_tokens": response.usage.completion_tokens,
                 "total_tokens": response.usage.total_tokens,
             }
+            # Extract cache usage from prompt_tokens_details (LiteLLM unified format)
+            details = getattr(response.usage, "prompt_tokens_details", None)
+            if details:
+                if isinstance(details, dict):
+                    usage["cache_creation_input_tokens"] = (
+                        details.get("cache_creation_input_tokens", 0) or 0
+                    )
+                    usage["cache_read_input_tokens"] = (
+                        details.get("cache_read_input_tokens", 0) or 0
+                    )
+                    usage["cached_tokens"] = details.get("cached_tokens", 0) or 0
         
         return LLMResponse(
             content=message.content,
