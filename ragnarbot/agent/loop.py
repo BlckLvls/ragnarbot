@@ -10,6 +10,7 @@ from loguru import logger
 from ragnarbot.bus.events import InboundMessage, OutboundMessage
 from ragnarbot.bus.queue import MessageBus
 from ragnarbot.providers.base import LLMProvider
+from ragnarbot.agent.cache import CacheManager
 from ragnarbot.agent.context import ContextBuilder
 from ragnarbot.agent.tools.registry import ToolRegistry
 from ragnarbot.agent.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
@@ -49,6 +50,7 @@ class AgentLoop:
         stream_steps: bool = False,
         media_manager: MediaManager | None = None,
         debounce_seconds: float = 0.5,
+        max_context_tokens: int = 200_000,
     ):
         from ragnarbot.config.schema import ExecToolConfig
         from ragnarbot.cron.service import CronService
@@ -63,6 +65,8 @@ class AgentLoop:
         self.stream_steps = stream_steps
         self.media_manager = media_manager
         self.debounce_seconds = debounce_seconds
+        self.max_context_tokens = max_context_tokens
+        self.cache_manager = CacheManager(max_context_tokens=max_context_tokens)
 
         self.context = ContextBuilder(workspace)
         self.sessions = SessionManager(workspace)
@@ -330,6 +334,13 @@ class AgentLoop:
             )
             messages.append(user_msg)
 
+        # Flush expired cache — trim large tool results in LLM messages (not session)
+        if self.cache_manager.should_flush(session, self.model):
+            self.cache_manager.flush_messages(
+                messages, session, model=self.model,
+                tools=self.tools.get_definitions(),
+            )
+
         # Track where new messages start (the first user message in this batch)
         new_start = len(messages) - len(batch)
 
@@ -345,6 +356,9 @@ class AgentLoop:
                 tools=self.tools.get_definitions(),
                 model=self.model
             )
+
+            # Track cache creation/read for flush scheduling
+            self.cache_manager.mark_cache_created(session, response.usage)
 
             if response.has_tool_calls:
                 if self.stream_steps and response.content:
@@ -484,15 +498,15 @@ class AgentLoop:
         message_tool = self.tools.get("message")
         if isinstance(message_tool, MessageTool):
             message_tool.set_context(origin_channel, origin_chat_id)
-        
+
         spawn_tool = self.tools.get("spawn")
         if isinstance(spawn_tool, SpawnTool):
             spawn_tool.set_context(origin_channel, origin_chat_id)
-        
+
         cron_tool = self.tools.get("cron")
         if isinstance(cron_tool, CronTool):
             cron_tool.set_context(origin_channel, origin_chat_id)
-        
+
         # Build messages with the announce content
         messages = self.context.build_messages(
             history=session.get_history(),
@@ -501,6 +515,13 @@ class AgentLoop:
             chat_id=origin_chat_id,
             session_metadata=session.metadata,
         )
+
+        # Flush expired cache — trim large tool results in LLM messages (not session)
+        if self.cache_manager.should_flush(session, self.model):
+            self.cache_manager.flush_messages(
+                messages, session, model=self.model,
+                tools=self.tools.get_definitions(),
+            )
 
         # Track where new messages start
         new_start = len(messages) - 1
@@ -517,6 +538,9 @@ class AgentLoop:
                 tools=self.tools.get_definitions(),
                 model=self.model
             )
+
+            # Track cache creation/read for flush scheduling
+            self.cache_manager.mark_cache_created(session, response.usage)
 
             if response.has_tool_calls:
                 # Stream intermediate content to user if enabled
@@ -616,6 +640,69 @@ class AgentLoop:
         
         response = await self._process_batch([msg])
         return response.content if response else ""
+
+    def get_context_tokens(
+        self,
+        session_key: str,
+        channel: str | None = None,
+        chat_id: str | None = None,
+    ) -> int:
+        """Estimate current context token usage for a session.
+
+        Builds system prompt + history (without a current message) and
+        returns the effective token count, accounting for any previous
+        flush state stored in the session.
+
+        Read-only: does not create a session if one doesn't exist.
+
+        Args:
+            session_key: User routing key (e.g. "telegram:12345").
+            channel: Channel name (for system prompt context).
+            chat_id: Chat ID (for system prompt context).
+
+        Returns:
+            Estimated token count.
+        """
+        if channel is None and ":" in session_key:
+            channel, chat_id = session_key.split(":", 1)
+
+        active_id = self.sessions.get_active_id(session_key)
+        if not active_id:
+            messages = self.context.build_messages(
+                history=[], channel=channel, chat_id=chat_id,
+            )
+            return self.cache_manager.estimate_context_tokens(
+                messages, self.model, tools=self.tools.get_definitions(),
+            )
+
+        session = self.sessions.get_or_create(session_key)
+        history = session.get_history()
+
+        # Count image refs before build_messages pops them
+        image_count = sum(
+            len(m.get("media_refs", []))
+            for m in history if m.get("role") == "user"
+        )
+
+        messages = self.context.build_messages(
+            history=history,
+            channel=channel,
+            chat_id=chat_id,
+            session_metadata=session.metadata,
+        )
+        tokens = self.cache_manager.estimate_context_tokens(
+            messages, self.model,
+            tools=self.tools.get_definitions(),
+            session=session,
+        )
+
+        # Add image tokens without disk I/O (no base64 resolution needed)
+        if image_count:
+            from ragnarbot.agent.tokens import estimate_image_tokens
+            provider = self.cache_manager.get_provider_from_model(self.model)
+            tokens += image_count * estimate_image_tokens(provider)
+
+        return tokens
 
 
 def _ext_from_mime(mime_type: str) -> str:
