@@ -641,6 +641,69 @@ class AgentLoop:
         response = await self._process_batch([msg])
         return response.content if response else ""
 
+    def get_context_tokens(
+        self,
+        session_key: str,
+        channel: str | None = None,
+        chat_id: str | None = None,
+    ) -> int:
+        """Estimate current context token usage for a session.
+
+        Builds system prompt + history (without a current message) and
+        returns the effective token count, accounting for any previous
+        flush state stored in the session.
+
+        Read-only: does not create a session if one doesn't exist.
+
+        Args:
+            session_key: User routing key (e.g. "telegram:12345").
+            channel: Channel name (for system prompt context).
+            chat_id: Chat ID (for system prompt context).
+
+        Returns:
+            Estimated token count.
+        """
+        if channel is None and ":" in session_key:
+            channel, chat_id = session_key.split(":", 1)
+
+        active_id = self.sessions.get_active_id(session_key)
+        if not active_id:
+            messages = self.context.build_messages(
+                history=[], channel=channel, chat_id=chat_id,
+            )
+            return self.cache_manager.estimate_context_tokens(
+                messages, self.model, tools=self.tools.get_definitions(),
+            )
+
+        session = self.sessions.get_or_create(session_key)
+        history = session.get_history()
+
+        # Count image refs before build_messages pops them
+        image_count = sum(
+            len(m.get("media_refs", []))
+            for m in history if m.get("role") == "user"
+        )
+
+        messages = self.context.build_messages(
+            history=history,
+            channel=channel,
+            chat_id=chat_id,
+            session_metadata=session.metadata,
+        )
+        tokens = self.cache_manager.estimate_context_tokens(
+            messages, self.model,
+            tools=self.tools.get_definitions(),
+            session=session,
+        )
+
+        # Add image tokens without disk I/O (no base64 resolution needed)
+        if image_count:
+            from ragnarbot.agent.tokens import estimate_image_tokens
+            provider = self.cache_manager.get_provider_from_model(self.model)
+            tokens += image_count * estimate_image_tokens(provider)
+
+        return tokens
+
 
 def _ext_from_mime(mime_type: str) -> str:
     """Extract a short extension from a MIME type."""
