@@ -119,12 +119,27 @@ class AnthropicProvider(LLMProvider):
 
     @staticmethod
     def _inject_history_cache_control(anthropic_messages: list[dict[str, Any]]) -> None:
-        """Add cache_control to the second-to-last user message.
+        """Add sliding cache_control breakpoint to conversation history.
 
-        This caches all history up to (but not including) the current message,
-        so within a multi-iteration tool-call turn, only the latest tool
-        result is uncached.
+        Targets the last user message containing tool_result blocks, so
+        accumulated tool results are cached across agent-loop iterations.
+        Falls back to the second-to-last user message when no tool results
+        exist (first call in a turn).
         """
+        # Sliding: last user message with tool_result content
+        for i in range(len(anthropic_messages) - 1, -1, -1):
+            msg = anthropic_messages[i]
+            if msg["role"] != "user":
+                continue
+            content = msg["content"]
+            if isinstance(content, list) and any(
+                isinstance(b, dict) and b.get("type") == "tool_result"
+                for b in content
+            ):
+                content[-1] = {**content[-1], "cache_control": {"type": "ephemeral"}}
+                return
+
+        # Fallback: 2nd-to-last user message
         user_count = 0
         for i in range(len(anthropic_messages) - 1, -1, -1):
             if anthropic_messages[i]["role"] == "user":

@@ -112,29 +112,37 @@ class LiteLLMProvider(LLMProvider):
                         }
                 break
 
-        # Breakpoint 2: Second-to-last user message (conversation history prefix)
-        user_count = 0
+        # Breakpoint 2: Sliding — last tool result message so accumulated
+        # tool results are cached across agent-loop iterations.
+        # Fallback: 2nd-to-last user message (first call, no tool results yet).
+        bp2_set = False
         for i in range(len(messages) - 1, -1, -1):
-            if messages[i]["role"] == "user":
-                user_count += 1
-                if user_count == 2:
-                    content = messages[i]["content"]
-                    if isinstance(content, str):
-                        messages[i] = messages[i].copy()
-                        messages[i]["content"] = [{
-                            "type": "text",
-                            "text": content,
-                            "cache_control": {"type": "ephemeral"},
-                        }]
-                    elif isinstance(content, list):
-                        messages[i] = messages[i].copy()
-                        messages[i]["content"] = [b.copy() for b in content]
-                        if messages[i]["content"]:
-                            messages[i]["content"][-1] = {
-                                **messages[i]["content"][-1],
+            if messages[i]["role"] == "tool":
+                messages[i]["cache_control"] = {"type": "ephemeral"}
+                bp2_set = True
+                break
+
+        if not bp2_set:
+            user_count = 0
+            for i in range(len(messages) - 1, -1, -1):
+                if messages[i]["role"] == "user":
+                    user_count += 1
+                    if user_count == 2:
+                        content = messages[i]["content"]
+                        if isinstance(content, str):
+                            messages[i]["content"] = [{
+                                "type": "text",
+                                "text": content,
                                 "cache_control": {"type": "ephemeral"},
-                            }
-                    break
+                            }]
+                        elif isinstance(content, list):
+                            messages[i]["content"] = [b.copy() for b in content]
+                            if messages[i]["content"]:
+                                messages[i]["content"][-1] = {
+                                    **messages[i]["content"][-1],
+                                    "cache_control": {"type": "ephemeral"},
+                                }
+                        break
 
         return messages
 
