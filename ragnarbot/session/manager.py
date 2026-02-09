@@ -68,12 +68,18 @@ class Session:
         """
         recent = self.messages[-max_messages:] if len(self.messages) > max_messages else self.messages
 
-        # Find safe start — must begin at a "user" message
+        # Start from the last compaction message if one exists
         start = 0
-        for i, m in enumerate(recent):
-            if m["role"] == "user":
+        for i in range(len(recent) - 1, -1, -1):
+            if recent[i].get("metadata", {}).get("type") == "compaction":
                 start = i
                 break
+        else:
+            # No compaction — find safe start at a "user" message
+            for i, m in enumerate(recent):
+                if m["role"] == "user":
+                    start = i
+                    break
 
         result = []
         for m in recent[start:]:

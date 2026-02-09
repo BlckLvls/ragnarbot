@@ -32,6 +32,7 @@ class AgentDefaults(BaseModel):
     auth_method: str = "api_key"
     stream_steps: bool = True  # Send intermediate messages to user during tool-call loops
     debounce_seconds: float = 0.5  # Batch rapid-fire messages into a single LLM turn
+    context_mode: str = Field(default="normal", pattern="^(eco|normal|full)$")
 
 
 class AgentsConfig(BaseModel):
