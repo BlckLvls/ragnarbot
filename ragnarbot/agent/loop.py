@@ -11,6 +11,7 @@ from ragnarbot.bus.events import InboundMessage, OutboundMessage
 from ragnarbot.bus.queue import MessageBus
 from ragnarbot.providers.base import LLMProvider
 from ragnarbot.agent.cache import CacheManager
+from ragnarbot.agent.compactor import Compactor
 from ragnarbot.agent.context import ContextBuilder
 from ragnarbot.agent.tools.registry import ToolRegistry
 from ragnarbot.agent.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
@@ -28,7 +29,7 @@ from ragnarbot.session.manager import SessionManager
 class AgentLoop:
     """
     The agent loop is the core processing engine.
-    
+
     It:
     1. Receives messages from the bus
     2. Builds context with history, memory, skills
@@ -36,7 +37,9 @@ class AgentLoop:
     4. Executes tool calls
     5. Sends responses back
     """
-    
+
+    READ_ONLY_COMMANDS = frozenset({"context_info", "context_mode"})
+
     def __init__(
         self,
         bus: MessageBus,
@@ -51,6 +54,7 @@ class AgentLoop:
         media_manager: MediaManager | None = None,
         debounce_seconds: float = 0.5,
         max_context_tokens: int = 200_000,
+        context_mode: str = "normal",
     ):
         from ragnarbot.config.schema import ExecToolConfig
         from ragnarbot.cron.service import CronService
@@ -66,7 +70,14 @@ class AgentLoop:
         self.media_manager = media_manager
         self.debounce_seconds = debounce_seconds
         self.max_context_tokens = max_context_tokens
+        self.context_mode = context_mode
         self.cache_manager = CacheManager(max_context_tokens=max_context_tokens)
+        self.compactor = Compactor(
+            provider=provider,
+            cache_manager=self.cache_manager,
+            max_context_tokens=max_context_tokens,
+            model=self.model,
+        )
 
         self.context = ContextBuilder(workspace)
         self.sessions = SessionManager(workspace)
@@ -121,38 +132,100 @@ class AgentLoop:
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
         self._running = True
+        self._processing_task: asyncio.Task | None = None
         logger.info("Agent loop started")
 
         while self._running:
             try:
-                # Wait for next message
                 msg = await asyncio.wait_for(
-                    self.bus.consume_inbound(),
-                    timeout=1.0
+                    self.bus.consume_inbound(), timeout=1.0,
                 )
-
-                # Debounce: collect rapid-fire messages into a batch
-                batch = await self._debounce(msg)
-
-                # Process the batch
-                try:
-                    response = await self._process_batch(batch)
-                    if response:
-                        await self.bus.publish_outbound(response)
-                except Exception as e:
-                    logger.error(f"Error processing message: {e}")
-                    await self.bus.publish_outbound(OutboundMessage(
-                        channel=msg.channel,
-                        chat_id=msg.chat_id,
-                        content=f"Sorry, I encountered an error: {str(e)}"
-                    ))
             except asyncio.TimeoutError:
+                self._reap_processing_task()
                 continue
+
+            command = msg.metadata.get("command")
+
+            # Read-only commands: respond immediately, even during processing
+            if command in self.READ_ONLY_COMMANDS:
+                response = self._handle_command(command, msg)
+                if response:
+                    if self._processing_task and not self._processing_task.done():
+                        response.metadata["keep_typing"] = True
+                    await self.bus.publish_outbound(response)
+                continue
+
+            # Everything else: wait for active processing first
+            await self._await_processing_task()
+
+            # System messages → background task
+            if msg.channel == "system":
+                self._processing_task = asyncio.create_task(
+                    self._process_and_send(msg, system=True),
+                )
+                continue
+
+            # Mutating commands (new_chat, set_context_mode)
+            if command:
+                response = self._handle_command(command, msg)
+                if response:
+                    await self.bus.publish_outbound(response)
+                continue
+
+            # Regular messages: debounce, then process in background
+            batch = await self._debounce(msg)
+            self._processing_task = asyncio.create_task(
+                self._process_and_send(batch),
+            )
     
     def stop(self) -> None:
         """Stop the agent loop."""
         self._running = False
         logger.info("Agent loop stopping")
+
+    def _reap_processing_task(self):
+        """Check for completed/failed background task."""
+        if self._processing_task and self._processing_task.done():
+            try:
+                self._processing_task.result()
+            except Exception as e:
+                logger.error(f"Processing task error: {e}")
+            self._processing_task = None
+
+    async def _await_processing_task(self):
+        """Wait for any active processing to complete."""
+        if self._processing_task and not self._processing_task.done():
+            try:
+                await self._processing_task
+            except Exception as e:
+                logger.error(f"Processing task error: {e}")
+            self._processing_task = None
+        self._reap_processing_task()
+
+    async def _process_and_send(self, batch_or_msg, system=False):
+        """Run processing and publish response (background task wrapper)."""
+        if system:
+            msg = batch_or_msg
+            try:
+                response = await self._process_system_message(msg)
+                if response:
+                    await self.bus.publish_outbound(response)
+            except Exception as e:
+                logger.error(f"Error processing system message: {e}")
+        else:
+            batch = batch_or_msg
+            msg = batch[0]
+            try:
+                response = await self._process_batch(batch)
+                if response:
+                    await self.bus.publish_outbound(response)
+            except Exception as e:
+                logger.error(f"Error processing message: {e}")
+                await self.bus.publish_outbound(OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content=f"Sorry, I encountered an error: {str(e)}"
+                ))
 
     async def _debounce(self, first: InboundMessage) -> list[InboundMessage]:
         """Collect rapid-fire messages from the same session into a batch.
@@ -181,6 +254,14 @@ class AgentLoop:
             except asyncio.TimeoutError:
                 break
 
+            # Read-only commands: respond immediately, keep debouncing
+            command = msg.metadata.get("command")
+            if command in self.READ_ONLY_COMMANDS:
+                response = self._handle_command(command, msg)
+                if response:
+                    await self.bus.publish_outbound(response)
+                continue
+
             if msg.session_key == session_key:
                 batch.append(msg)
                 logger.debug(
@@ -201,9 +282,11 @@ class AgentLoop:
         """Process a batch of inbound messages as a single LLM turn.
 
         The first message determines session, channel, chat_id, and tool
-        contexts.  Commands and system messages are handled from the first
-        message only.  Each message gets its own timestamp prefix so the
+        contexts.  Each message gets its own timestamp prefix so the
         LLM sees them as distinct inputs but responds once.
+
+        System messages and commands are dispatched by ``run()`` before
+        reaching this method.
 
         Args:
             batch: One or more inbound messages from the same session.
@@ -215,15 +298,6 @@ class AgentLoop:
         from ragnarbot.session.manager import _build_message_prefix
 
         msg = batch[0]
-
-        # Handle system messages (subagent announces)
-        if msg.channel == "system":
-            return await self._process_system_message(msg)
-
-        # Handle commands (e.g. /new) before LLM processing
-        command = msg.metadata.get("command")
-        if command:
-            return self._handle_command(command, msg)
 
         logger.info(
             f"Processing batch of {len(batch)} message(s) from {msg.channel}:{msg.sender_id}"
@@ -334,23 +408,44 @@ class AgentLoop:
             )
             messages.append(user_msg)
 
-        # Flush expired cache — trim large tool results in LLM messages (not session)
-        if self.cache_manager.should_flush(session, self.model):
-            self.cache_manager.flush_messages(
-                messages, session, model=self.model,
-                tools=self.tools.get_definitions(),
-            )
-
         # Track where new messages start (the first user message in this batch)
         new_start = len(messages) - len(batch)
 
         # Agent loop
         iteration = 0
         final_content = None
+        compacted_this_turn = False
 
         try:
             while iteration < self.max_iterations:
                 iteration += 1
+
+                # Cache flush (if expired)
+                if self.cache_manager.should_flush(session, self.model):
+                    self.cache_manager.flush_messages(
+                        messages, session, model=self.model,
+                        tools=self.tools.get_definitions(),
+                        context_mode=self.context_mode,
+                    )
+
+                # Auto-compaction check (max once per turn)
+                if not compacted_this_turn and self.compactor.should_compact(
+                    messages, self.context_mode,
+                    tools=self.tools.get_definitions(),
+                    session=session,
+                ):
+                    messages, new_start = await self.compactor.compact(
+                        session=session,
+                        context_mode=self.context_mode,
+                        context_builder=self.context,
+                        messages=messages,
+                        new_start=new_start,
+                        tools=self.tools.get_definitions(),
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        session_metadata=session.metadata,
+                    )
+                    compacted_this_turn = True
 
                 response = await self.provider.chat(
                     messages=messages,
@@ -445,6 +540,12 @@ class AgentLoop:
         """Dispatch a channel command without calling the LLM."""
         if command == "new_chat":
             return self._handle_new_chat(msg)
+        if command == "context_mode":
+            return self._handle_context_mode(msg)
+        if command == "set_context_mode":
+            return self._handle_set_context_mode(msg)
+        if command == "context_info":
+            return self._handle_context_info(msg)
         logger.warning(f"Unknown command: {command}")
         return None
 
@@ -465,6 +566,89 @@ class AgentLoop:
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=f"✨ <b>New chat started</b>\n\n🤖 Model: <code>{self.model}</code>",
+            metadata={"raw_html": True},
+        )
+
+    def _handle_context_mode(self, msg: InboundMessage) -> OutboundMessage:
+        """Show current mode with inline keyboard buttons."""
+        mode_labels = {
+            "eco": "🌿 eco (40%)",
+            "normal": "⚖️ normal (60%)",
+            "full": "🔥 full (85%)",
+        }
+        current = self.context_mode
+        text = f"⚙️ <b>Context Mode</b>\n\nCurrent: {mode_labels[current]}"
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=text,
+            metadata={
+                "raw_html": True,
+                "inline_keyboard": [[
+                    {"text": "🌿 eco", "callback_data": "ctx_mode:eco"},
+                    {"text": "⚖️ normal", "callback_data": "ctx_mode:normal"},
+                    {"text": "🔥 full", "callback_data": "ctx_mode:full"},
+                ]],
+            },
+        )
+
+    def _handle_set_context_mode(self, msg: InboundMessage) -> OutboundMessage | None:
+        """Update context mode (from callback query)."""
+        mode = msg.metadata.get("context_mode")
+        if mode not in ("eco", "normal", "full"):
+            return None
+
+        self.context_mode = mode
+        from ragnarbot.config.loader import load_config, save_config
+        config = load_config()
+        config.agents.defaults.context_mode = mode
+        save_config(config)
+
+        mode_labels = {
+            "eco": "🌿 eco (40%)",
+            "normal": "⚖️ normal (60%)",
+            "full": "🔥 full (85%)",
+        }
+        text = f"✅ Context mode set to: {mode_labels[mode]}"
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=text,
+            metadata={
+                "raw_html": True,
+                "edit_message_id": msg.metadata.get("callback_message_id"),
+            },
+        )
+
+    def _handle_context_info(self, msg: InboundMessage) -> OutboundMessage:
+        """Show context usage info."""
+        tokens = self.get_context_tokens(
+            f"{msg.channel}:{msg.chat_id}", msg.channel, msg.chat_id
+        )
+        threshold = Compactor.THRESHOLDS.get(self.context_mode, 0.60)
+        effective_max = int(self.max_context_tokens * threshold)
+        pct = min(int(tokens / effective_max * 100), 100) if effective_max > 0 else 0
+        tokens_k = f"{tokens // 1000}k"
+        max_k = f"{effective_max // 1000}k"
+
+        session = self.sessions.get_or_create(f"{msg.channel}:{msg.chat_id}")
+        compactions = sum(
+            1 for m in session.messages
+            if m.get("metadata", {}).get("type") == "compaction"
+        )
+
+        mode_labels = {"eco": "🌿 eco", "normal": "⚖️ normal", "full": "🔥 full"}
+        text = (
+            f"📊 <b>Context</b>\n\n"
+            f"🤖 <code>{self.model}</code>\n"
+            f"📦 {mode_labels[self.context_mode]} ({int(threshold * 100)}%)\n\n"
+            f"📈 Usage: <b>{pct}%</b>  ({tokens_k} / {max_k})\n"
+            f"💾 Compactions: {compactions}"
+        )
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=text,
             metadata={"raw_html": True},
         )
 
@@ -521,23 +705,44 @@ class AgentLoop:
             session_metadata=session.metadata,
         )
 
-        # Flush expired cache — trim large tool results in LLM messages (not session)
-        if self.cache_manager.should_flush(session, self.model):
-            self.cache_manager.flush_messages(
-                messages, session, model=self.model,
-                tools=self.tools.get_definitions(),
-            )
-
         # Track where new messages start
         new_start = len(messages) - 1
 
         # Agent loop (limited for announce handling)
         iteration = 0
         final_content = None
+        compacted_this_turn = False
 
         try:
             while iteration < self.max_iterations:
                 iteration += 1
+
+                # Cache flush (if expired)
+                if self.cache_manager.should_flush(session, self.model):
+                    self.cache_manager.flush_messages(
+                        messages, session, model=self.model,
+                        tools=self.tools.get_definitions(),
+                        context_mode=self.context_mode,
+                    )
+
+                # Auto-compaction check (max once per turn)
+                if not compacted_this_turn and self.compactor.should_compact(
+                    messages, self.context_mode,
+                    tools=self.tools.get_definitions(),
+                    session=session,
+                ):
+                    messages, new_start = await self.compactor.compact(
+                        session=session,
+                        context_mode=self.context_mode,
+                        context_builder=self.context,
+                        messages=messages,
+                        new_start=new_start,
+                        tools=self.tools.get_definitions(),
+                        channel=origin_channel,
+                        chat_id=origin_chat_id,
+                        session_metadata=session.metadata,
+                    )
+                    compacted_this_turn = True
 
                 response = await self.provider.chat(
                     messages=messages,
@@ -707,11 +912,25 @@ class AgentLoop:
             chat_id=chat_id,
             session_metadata=session.metadata,
         )
+        tools = self.tools.get_definitions()
         tokens = self.cache_manager.estimate_context_tokens(
             messages, self.model,
-            tools=self.tools.get_definitions(),
+            tools=tools,
             session=session,
         )
+
+        # If a flush is pending, simulate it for accurate estimation
+        if self.cache_manager.should_flush(session, self.model):
+            ratio = tokens / self.max_context_tokens
+            if self.context_mode == "eco":
+                flush_type = "extra_hard"
+            else:
+                flush_type = "soft" if ratio <= CacheManager.HARD_FLUSH_RATIO else "hard"
+            sim_messages = [m.copy() for m in messages]
+            CacheManager._flush_tool_results(sim_messages, flush_type)
+            tokens = self.cache_manager.estimate_context_tokens(
+                sim_messages, self.model, tools=tools,
+            )
 
         # Add image tokens without disk I/O (no base64 resolution needed)
         if image_count:
