@@ -447,8 +447,12 @@ class AgentLoop:
                     )
                     compacted_this_turn = True
 
+                # Strip internal _ts metadata before sending to API
+                api_messages = [
+                    {k: v for k, v in m.items() if k != "_ts"} for m in messages
+                ]
                 response = await self.provider.chat(
-                    messages=messages,
+                    messages=api_messages,
                     tools=self.tools.get_definitions(),
                     model=self.model
                 )
@@ -744,8 +748,12 @@ class AgentLoop:
                     )
                     compacted_this_turn = True
 
+                # Strip internal _ts metadata before sending to API
+                api_messages = [
+                    {k: v for k, v in m.items() if k != "_ts"} for m in messages
+                ]
                 response = await self.provider.chat(
-                    messages=messages,
+                    messages=api_messages,
                     tools=self.tools.get_definitions(),
                     model=self.model
                 )
@@ -921,7 +929,11 @@ class AgentLoop:
 
         # If a flush is pending, simulate it for accurate estimation
         if self.cache_manager.should_flush(session, self.model):
-            ratio = tokens / self.max_context_tokens
+            # Use RAW ratio for flush type selection (not underestimated effective)
+            raw_tokens = self.cache_manager.estimate_context_tokens(
+                messages, self.model, tools=tools,
+            )
+            ratio = raw_tokens / self.max_context_tokens
             if self.context_mode == "eco":
                 flush_type = "extra_hard"
             else:

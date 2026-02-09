@@ -288,6 +288,32 @@ class TestGetHistoryWithCompaction:
         assert len(history) == 2
         assert history[0]["content"] == "Summary2"
 
+    def test_no_sliding_window(self):
+        """All messages returned when session exceeds 200 msgs (no window)."""
+        messages = []
+        for i in range(250):
+            messages.append({
+                "role": "user", "content": f"msg {i}", "metadata": {},
+            })
+        session = Session(key="test", user_key="test:1", messages=messages)
+        history = session.get_history()
+        assert len(history) == 250
+
+    def test_ts_carried_in_output(self):
+        """get_history should carry _ts from message metadata."""
+        session = Session(key="test", user_key="test:1", messages=[
+            {"role": "user", "content": "hello",
+             "metadata": {"timestamp": "2026-02-09T10:00:00"}},
+            {"role": "assistant", "content": "hi",
+             "metadata": {"timestamp": "2026-02-09T10:01:00"}},
+            {"role": "tool", "content": "result", "tool_call_id": "1",
+             "metadata": {}},
+        ])
+        history = session.get_history()
+        assert history[0]["_ts"] == "2026-02-09T10:00:00"
+        assert history[1]["_ts"] == "2026-02-09T10:01:00"
+        assert "_ts" not in history[2]  # No timestamp in metadata
+
 
 # ── Extra-hard flush ────────────────────────────────────────────
 

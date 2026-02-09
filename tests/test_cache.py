@@ -120,6 +120,43 @@ class TestFlushToolResults:
         hard_result = messages[0]["content"]
         assert len(hard_result) < len(soft_result)
 
+    def test_before_ts_skips_newer_messages(self):
+        """Messages with _ts after the cutoff should NOT be trimmed."""
+        messages = [
+            {"role": "tool", "tool_call_id": "1", "content": "x" * 10000,
+             "_ts": "2026-02-09T10:00:00"},
+            {"role": "tool", "tool_call_id": "2", "content": "y" * 10000,
+             "_ts": "2026-02-09T12:00:00"},
+        ]
+        count = CacheManager._flush_tool_results(
+            messages, "soft", before_ts="2026-02-09T11:00:00"
+        )
+        # Only the first message (before cutoff) should be trimmed
+        assert count == 1
+        assert "[... trimmed to save tokens ...]" in messages[0]["content"]
+        assert messages[1]["content"] == "y" * 10000  # Untouched
+
+    def test_before_ts_none_trims_all(self):
+        """Without before_ts, all eligible messages are trimmed."""
+        messages = [
+            {"role": "tool", "tool_call_id": "1", "content": "x" * 10000,
+             "_ts": "2026-02-09T10:00:00"},
+            {"role": "tool", "tool_call_id": "2", "content": "y" * 10000,
+             "_ts": "2026-02-09T12:00:00"},
+        ]
+        count = CacheManager._flush_tool_results(messages, "soft")
+        assert count == 2
+
+    def test_before_ts_with_missing_ts_trims(self):
+        """Messages without _ts are treated as old (before cutoff)."""
+        messages = [
+            {"role": "tool", "tool_call_id": "1", "content": "x" * 10000},
+        ]
+        count = CacheManager._flush_tool_results(
+            messages, "soft", before_ts="2026-02-09T11:00:00"
+        )
+        assert count == 1
+
 
 class TestFlushMessages:
     def test_soft_flush_under_40_percent(self):
@@ -220,16 +257,19 @@ class TestEstimateContextTokens:
         assert result == raw
 
     def test_with_prior_flush_simulates_effective_size(self):
-        """With last_flush_type set, returns effective (post-flush) count."""
+        """With last_flush_type and last_flush_at, returns effective count."""
         cm = CacheManager()
+        flush_at = "2026-02-09T10:00:00"
         messages = [
             {"role": "user", "content": "Hi"},
-            {"role": "tool", "tool_call_id": "1", "content": "x" * 10000},
+            {"role": "tool", "tool_call_id": "1", "content": "x" * 10000,
+             "_ts": "2026-02-09T09:00:00"},
         ]
         session = FakeSession(metadata={
             "cache": {
                 "created_at": datetime.now().isoformat(),
                 "last_flush_type": "soft",
+                "last_flush_at": flush_at,
             }
         })
         effective = cm.estimate_context_tokens(
@@ -238,6 +278,44 @@ class TestEstimateContextTokens:
         raw = cm.estimate_context_tokens(messages, "anthropic/claude-opus-4-6")
         assert effective < raw
 
+    def test_new_messages_after_flush_counted_raw(self):
+        """Tool results added after last flush should be counted at full size."""
+        cm = CacheManager()
+        flush_at = "2026-02-09T10:00:00"
+        messages = [
+            {"role": "user", "content": "Hi"},
+            {"role": "tool", "tool_call_id": "1", "content": "x" * 10000,
+             "_ts": "2026-02-09T09:00:00"},  # Before flush — will be trimmed
+            {"role": "tool", "tool_call_id": "2", "content": "y" * 10000,
+             "_ts": "2026-02-09T11:00:00"},  # After flush — raw
+        ]
+        session = FakeSession(metadata={
+            "cache": {
+                "created_at": datetime.now().isoformat(),
+                "last_flush_type": "soft",
+                "last_flush_at": flush_at,
+            }
+        })
+        effective = cm.estimate_context_tokens(
+            messages, "anthropic/claude-opus-4-6", session=session
+        )
+        # Should be less than raw (first tool result trimmed) but more than
+        # fully-flushed (second tool result NOT trimmed)
+        raw = cm.estimate_context_tokens(messages, "anthropic/claude-opus-4-6")
+        assert effective < raw
+        # Now test with no timestamp awareness (backward compat)
+        session_no_ts = FakeSession(metadata={
+            "cache": {
+                "created_at": datetime.now().isoformat(),
+                "last_flush_type": "soft",
+            }
+        })
+        effective_no_ts = cm.estimate_context_tokens(
+            messages, "anthropic/claude-opus-4-6", session=session_no_ts
+        )
+        # Without timestamp, both are trimmed — should be less than ts-aware
+        assert effective_no_ts < effective
+
     def test_effective_count_prevents_overcounting(self):
         """Flush type should be based on effective size, not raw.
 
@@ -245,16 +323,20 @@ class TestEstimateContextTokens:
         Raw would be 53% (hard), but effective is 38% (soft).
         """
         cm = CacheManager(max_context_tokens=10_000)
+        flush_at = "2026-02-09T10:00:00"
         # Old tool result: raw ~2500 tokens, after soft flush ~1275 tokens
         # New user message: ~500 tokens
         messages = [
-            {"role": "tool", "tool_call_id": "1", "content": "a" * 10000},
-            {"role": "user", "content": "b" * 2000},
+            {"role": "tool", "tool_call_id": "1", "content": "a" * 10000,
+             "_ts": "2026-02-09T09:00:00"},
+            {"role": "user", "content": "b" * 2000,
+             "_ts": "2026-02-09T11:00:00"},
         ]
         session = FakeSession(metadata={
             "cache": {
                 "created_at": (datetime.now() - timedelta(seconds=600)).isoformat(),
                 "last_flush_type": "soft",
+                "last_flush_at": flush_at,
             }
         })
         # Flush with effective counting — should see ~38% → soft

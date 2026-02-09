@@ -49,40 +49,34 @@ class Session:
         self.messages.append(msg)
         self.updated_at = datetime.now()
 
-    def get_history(self, max_messages: int = 200) -> list[dict[str, Any]]:
+    def get_history(self) -> list[dict[str, Any]]:
         """
         Get message history for LLM context.
 
         Returns full LLM-compatible messages (with tool_calls, tool_call_id, name)
-        and ensures truncation happens at a user-message boundary to avoid
-        orphaned tool_calls without results.
+        starting from the last compaction summary (or the first user message).
 
         User and assistant messages get auto-generated prefix tags with timestamp
         and message context (reply_to, forwarded_from) when metadata is available.
 
-        Args:
-            max_messages: Maximum messages to return.
-
         Returns:
             List of messages in LLM format.
         """
-        recent = self.messages[-max_messages:] if len(self.messages) > max_messages else self.messages
-
         # Start from the last compaction message if one exists
         start = 0
-        for i in range(len(recent) - 1, -1, -1):
-            if recent[i].get("metadata", {}).get("type") == "compaction":
+        for i in range(len(self.messages) - 1, -1, -1):
+            if self.messages[i].get("metadata", {}).get("type") == "compaction":
                 start = i
                 break
         else:
             # No compaction — find safe start at a "user" message
-            for i, m in enumerate(recent):
+            for i, m in enumerate(self.messages):
                 if m["role"] == "user":
                     start = i
                     break
 
         result = []
-        for m in recent[start:]:
+        for m in self.messages[start:]:
             content = m.get("content") or ""
             role = m["role"]
 
@@ -102,6 +96,9 @@ class Session:
                 msg["name"] = m["name"]
             if "media_refs" in m:
                 msg["media_refs"] = m["media_refs"]
+            ts = m.get("metadata", {}).get("timestamp")
+            if ts:
+                msg["_ts"] = ts
             result.append(msg)
         return result
 

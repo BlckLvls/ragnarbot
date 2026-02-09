@@ -89,14 +89,20 @@ class CacheManager:
         """Count tokens as the API would see them, respecting previous flush.
 
         If a previous flush happened, simulates it on a copy to get the
-        effective context size.  This avoids overcounting content that was
-        already trimmed in the last API call.
+        effective context size.  Only messages that existed at the time of the
+        flush are trimmed — newer messages are counted at full size.
         """
         provider = self.get_provider_from_model(model)
         cache = session.metadata.get("cache", {})
         last_flush_type = cache.get("last_flush_type")
+        last_flush_at = cache.get("last_flush_at")
 
-        if last_flush_type:
+        if last_flush_type and last_flush_at:
+            sim = [m.copy() for m in messages]
+            self._flush_tool_results(sim, last_flush_type, before_ts=last_flush_at)
+            total = estimate_messages_tokens(sim, provider)
+        elif last_flush_type:
+            # Fallback: no timestamp, simulate all (backward compat)
             sim = [m.copy() for m in messages]
             self._flush_tool_results(sim, last_flush_type)
             total = estimate_messages_tokens(sim, provider)
@@ -175,8 +181,16 @@ class CacheManager:
         )
 
     @classmethod
-    def _flush_tool_results(cls, messages: list[dict], flush_type: str) -> int:
-        """Trim large tool results in-place. Returns count of trimmed results."""
+    def _flush_tool_results(cls, messages: list[dict], flush_type: str,
+                            before_ts: str | None = None) -> int:
+        """Trim large tool results in-place. Returns count of trimmed results.
+
+        Args:
+            messages: Message list to modify in-place.
+            flush_type: One of "soft", "hard", "extra_hard".
+            before_ts: Optional ISO timestamp cutoff. Messages with ``_ts``
+                after this value are skipped (they were added after the flush).
+        """
         is_extra_hard = flush_type == "extra_hard"
 
         if flush_type == "soft":
@@ -190,6 +204,11 @@ class CacheManager:
         for msg in messages:
             if msg.get("role") != "tool":
                 continue
+            # Skip messages added after the flush cutoff
+            if before_ts:
+                msg_ts = msg.get("_ts") or ""
+                if msg_ts > before_ts:
+                    continue
             content = msg.get("content", "")
             if not isinstance(content, str) or len(content) <= threshold:
                 continue
