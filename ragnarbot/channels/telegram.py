@@ -14,6 +14,7 @@ from ragnarbot.bus.queue import MessageBus
 from ragnarbot.channels.base import BaseChannel
 from ragnarbot.config.schema import TelegramConfig
 from ragnarbot.media.manager import MediaManager
+from ragnarbot.providers.transcription import TranscriptionError, TranscriptionProvider
 
 
 def _markdown_to_telegram_html(text: str) -> str:
@@ -93,13 +94,14 @@ class TelegramChannel(BaseChannel):
         config: TelegramConfig,
         bus: MessageBus,
         bot_token: str = "",
-        groq_api_key: str = "",
+        transcription_provider: TranscriptionProvider | None = None,
         media_manager: MediaManager | None = None,
     ):
         super().__init__(config, bus)
         self.config: TelegramConfig = config
         self.bot_token = bot_token
-        self.groq_api_key = groq_api_key
+        self._transcriber = transcription_provider
+        self._transcription_semaphore = asyncio.Semaphore(2)
         self.media_manager = media_manager
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
@@ -536,35 +538,15 @@ class TelegramChannel(BaseChannel):
                 logger.error(f"Failed to download photo: {e}")
                 content_parts.append("[photo: download failed]")
 
-        # --- Voice / Audio: download + transcribe (unchanged behaviour) ---
+        # --- Voice / Audio: download + transcribe ---
         elif message.voice or message.audio:
             media_file = message.voice or message.audio
             media_type = "voice" if message.voice else "audio"
             if self._app:
-                try:
-                    from pathlib import Path
-                    file = await self._app.bot.get_file(media_file.file_id)
-                    ext = self._get_extension(media_type, getattr(media_file, 'mime_type', None))
-
-                    media_dir = Path.home() / ".ragnarbot" / "media"
-                    media_dir.mkdir(parents=True, exist_ok=True)
-                    file_path = media_dir / f"{media_file.file_id[:16]}{ext}"
-                    await file.download_to_drive(str(file_path))
-                    media_paths.append(str(file_path))
-
-                    from ragnarbot.providers.transcription import GroqTranscriptionProvider
-                    transcriber = GroqTranscriptionProvider(api_key=self.groq_api_key)
-                    transcription = await transcriber.transcribe(file_path)
-                    if transcription:
-                        logger.info(f"Transcribed {media_type}: {transcription[:50]}...")
-                        content_parts.append(f"[transcription: {transcription}]")
-                    else:
-                        content_parts.append(f"[{media_type}: {file_path}]")
-
-                    logger.debug(f"Downloaded {media_type} to {file_path}")
-                except Exception as e:
-                    logger.error(f"Failed to download {media_type}: {e}")
-                    content_parts.append(f"[{media_type}: download failed]")
+                text, path = await self._transcribe_voice(media_file, media_type)
+                content_parts.append(text)
+                if path:
+                    media_paths.append(path)
 
         # --- Documents / files: lazy (NO download) ---
         elif message.document:
@@ -617,6 +599,14 @@ class TelegramChannel(BaseChannel):
                     reply_data["photo_mime"] = "image/jpeg"
                 except Exception as e:
                     logger.error(f"Failed to download reply photo: {e}")
+            reply_voice = (
+                message.reply_to_message.voice or message.reply_to_message.audio
+            )
+            if reply_voice and self._app:
+                media_type = "voice" if message.reply_to_message.voice else "audio"
+                text, _ = await self._transcribe_voice(reply_voice, media_type)
+                existing = reply_data.get("content", "")
+                reply_data["content"] = f"{existing}\n{text}".strip()
             metadata["reply_to"] = reply_data
 
         if message.forward_origin:
@@ -639,6 +629,42 @@ class TelegramChannel(BaseChannel):
             metadata=metadata,
         )
     
+    async def _transcribe_voice(
+        self, media_file: object, media_type: str,
+    ) -> tuple[str, str | None]:
+        """Download and transcribe a voice/audio message.
+
+        Returns (content_string, media_path_or_None).
+        """
+        from pathlib import Path
+
+        try:
+            file = await self._app.bot.get_file(media_file.file_id)
+            ext = self._get_extension(media_type, getattr(media_file, "mime_type", None))
+
+            media_dir = Path.home() / ".ragnarbot" / "media"
+            media_dir.mkdir(parents=True, exist_ok=True)
+            file_path = media_dir / f"{media_file.file_id[:16]}{ext}"
+            await file.download_to_drive(str(file_path))
+        except Exception as e:
+            logger.error(f"Failed to download {media_type}: {e}")
+            return f"[{media_type}: download failed]", None
+
+        if not self._transcriber:
+            return f"[{media_type}: {file_path}]", str(file_path)
+
+        try:
+            async with self._transcription_semaphore:
+                text = await self._transcriber.transcribe(file_path)
+            logger.info(f"Transcribed {media_type}: {text[:50]}...")
+            return f"[Voice message transcription: {text}]", str(file_path)
+        except TranscriptionError as e:
+            logger.error(f"Transcription failed: {e.detail or e.short_message}")
+            return (
+                f"[Voice message — transcription failed: {e.short_message}]",
+                str(file_path),
+            )
+
     def _get_extension(self, media_type: str, mime_type: str | None) -> str:
         """Get file extension based on media type."""
         if mime_type:

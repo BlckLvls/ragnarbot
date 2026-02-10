@@ -83,7 +83,7 @@ class TestOnboardingFlow:
             return mock_save_config, mock_save_creds
 
     def test_anthropic_api_key_flow(self, tmp_path):
-        """Full flow: Anthropic -> API Key -> token -> first model -> skip telegram -> save."""
+        """Full flow: Anthropic -> API Key -> token -> first model -> skip telegram -> skip voice -> save."""
         keys = [
             (Key.ENTER, ""),        # Select Anthropic (first option)
             (Key.DOWN, ""),          # Navigate to API Key
@@ -92,6 +92,9 @@ class TestOnboardingFlow:
             (Key.ENTER, ""),         # Confirm key
             (Key.ENTER, ""),         # Select first model (Opus)
             (Key.ENTER, ""),         # Skip telegram (empty enter)
+            (Key.DOWN, ""),          # Voice: past Groq
+            (Key.DOWN, ""),          # Voice: to Skip
+            (Key.ENTER, ""),         # Select Skip
             (Key.DOWN, ""),          # Navigate to "No" (manual start)
             (Key.ENTER, ""),         # Select manual start
             (Key.ENTER, ""),         # Confirm summary
@@ -108,7 +111,7 @@ class TestOnboardingFlow:
         assert creds.providers.anthropic.api_key == "sk-ant-test-key-123"
 
     def test_anthropic_oauth_flow(self, tmp_path):
-        """Full flow: Anthropic -> OAuth -> token -> second model -> skip telegram."""
+        """Full flow: Anthropic -> OAuth -> token -> second model -> skip telegram -> skip voice."""
         keys = [
             (Key.ENTER, ""),        # Select Anthropic
             (Key.ENTER, ""),        # Select OAuth (first option)
@@ -117,6 +120,9 @@ class TestOnboardingFlow:
             (Key.DOWN, ""),         # Navigate to Sonnet
             (Key.ENTER, ""),        # Select Sonnet
             (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Voice: past Groq
+            (Key.DOWN, ""),         # Voice: to Skip
+            (Key.ENTER, ""),        # Select Skip
             (Key.DOWN, ""),         # Navigate to "No" (manual start)
             (Key.ENTER, ""),        # Select manual start
             (Key.ENTER, ""),        # Confirm summary
@@ -140,6 +146,9 @@ class TestOnboardingFlow:
             (Key.ENTER, ""),        # Confirm key
             (Key.ENTER, ""),        # Select first model (GPT-5.2)
             (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Voice: past Groq
+            (Key.DOWN, ""),         # Voice: to Skip
+            (Key.ENTER, ""),        # Select Skip
             (Key.DOWN, ""),         # Navigate to "No" (manual start)
             (Key.ENTER, ""),        # Select manual start
             (Key.ENTER, ""),        # Confirm summary
@@ -164,6 +173,9 @@ class TestOnboardingFlow:
             (Key.DOWN, ""),         # Navigate to Flash
             (Key.ENTER, ""),        # Select Flash
             (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Voice: past Groq
+            (Key.DOWN, ""),         # Voice: to Skip
+            (Key.ENTER, ""),        # Select Skip
             (Key.DOWN, ""),         # Navigate to "No" (manual start)
             (Key.ENTER, ""),        # Select manual start
             (Key.ENTER, ""),        # Confirm summary
@@ -188,6 +200,9 @@ class TestOnboardingFlow:
             (Key.ENTER, ""),        # Confirm key
             (Key.ENTER, ""),        # Select first model
             (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Voice: past Groq
+            (Key.DOWN, ""),         # Voice: to Skip
+            (Key.ENTER, ""),        # Select Skip
             (Key.DOWN, ""),         # Navigate to "No" (manual start)
             (Key.ENTER, ""),        # Select manual start
             (Key.ENTER, ""),        # Confirm summary
@@ -256,6 +271,9 @@ class TestTelegramValidation:
             *[(Key.CHAR, c) for c in "123456:ABC-DEF"],
             (Key.ENTER, ""),        # Submit token
             (Key.ENTER, ""),        # Accept bot info screen
+            (Key.DOWN, ""),         # Voice: past Groq
+            (Key.DOWN, ""),         # Voice: to Skip
+            (Key.ENTER, ""),        # Select Skip
             (Key.DOWN, ""),         # Navigate to "No" (manual start)
             (Key.ENTER, ""),        # Select manual start
             (Key.ENTER, ""),        # Confirm summary
@@ -289,3 +307,49 @@ class TestTelegramValidation:
 
             creds = mock_scr.call_args[0][0]
             assert creds.channels.telegram.bot_token == "123456:ABC-DEF"
+
+
+class TestVoiceTranscriptionOnboarding:
+    def _run_with_keys(self, keys, tmp_path):
+        """Helper: run onboarding with injected keys and temp config paths."""
+        set_key_reader(make_key_sequence(keys))
+        con = make_console()
+
+        p = _patches(tmp_path)
+        with (
+            p["load_config"] as mock_load_config,
+            p["save_config"] as mock_save_config,
+            p["get_config_path"],
+            p["load_credentials"] as mock_load_creds,
+            p["save_credentials"] as mock_save_creds,
+            p["get_credentials_path"],
+            p["get_workspace_path"],
+            p["create_templates"],
+        ):
+            run_onboarding(con)
+            return mock_save_config, mock_save_creds
+
+    def test_groq_voice_selection(self, tmp_path):
+        """Select Groq for voice transcription and provide API key."""
+        keys = [
+            (Key.ENTER, ""),        # Select Anthropic
+            (Key.DOWN, ""),         # Navigate to API Key
+            (Key.ENTER, ""),        # Select API Key
+            *[(Key.CHAR, c) for c in "sk-ant-key"],
+            (Key.ENTER, ""),        # Confirm key
+            (Key.ENTER, ""),        # Select first model
+            (Key.ENTER, ""),        # Skip telegram
+            (Key.ENTER, ""),        # Select Groq (first option)
+            *[(Key.CHAR, c) for c in "gsk-groq-key"],
+            (Key.ENTER, ""),        # Confirm Groq key
+            (Key.DOWN, ""),         # Navigate to "No" (manual start)
+            (Key.ENTER, ""),        # Select manual start
+            (Key.ENTER, ""),        # Confirm summary
+        ]
+        mock_save_config, mock_save_creds = self._run_with_keys(keys, tmp_path)
+
+        config = mock_save_config.call_args[0][0]
+        assert config.transcription.provider == "groq"
+
+        creds = mock_save_creds.call_args[0][0]
+        assert creds.services.groq.api_key == "gsk-groq-key"

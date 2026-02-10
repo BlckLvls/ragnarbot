@@ -46,11 +46,17 @@ class ChannelManager:
         if self.config.channels.telegram.enabled:
             try:
                 from ragnarbot.channels.telegram import TelegramChannel
+                from ragnarbot.providers.transcription import create_transcription_provider
+
+                transcriber = create_transcription_provider(
+                    self.config.transcription.provider,
+                    self.credentials.services,
+                )
                 self.channels["telegram"] = TelegramChannel(
                     self.config.channels.telegram,
                     self.bus,
                     bot_token=self.credentials.channels.telegram.bot_token,
-                    groq_api_key=self.credentials.services.transcription.api_key,
+                    transcription_provider=transcriber,
                     media_manager=self.media_manager,
                 )
                 logger.info("Telegram channel enabled")

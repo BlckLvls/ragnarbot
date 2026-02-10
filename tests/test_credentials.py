@@ -16,7 +16,8 @@ def test_default_credentials():
     creds = Credentials()
     assert creds.providers.anthropic.api_key == ""
     assert creds.providers.anthropic.oauth_key == ""
-    assert creds.services.transcription.api_key == ""
+    assert creds.services.groq.api_key == ""
+    assert creds.services.elevenlabs.api_key == ""
     assert creds.channels.telegram.bot_token == ""
 
 

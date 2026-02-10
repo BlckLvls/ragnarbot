@@ -185,7 +185,7 @@ class TestMigrateCredentials:
                 "openai": {"apiKey": ""},
                 "gemini": {"apiKey": ""},
             },
-            "services": {"transcription": {"apiKey": ""}, "webSearch": {"apiKey": ""}},
+            "services": {"groq": {"apiKey": ""}, "elevenlabs": {"apiKey": ""}, "webSearch": {"apiKey": ""}},
             "channels": {"telegram": {"botToken": ""}},
         }
         path = tmp_path / "creds.json"
@@ -201,7 +201,7 @@ class TestMigrateCredentials:
                 "openai": {"apiKey": ""},
                 "gemini": {"apiKey": ""},
             },
-            "services": {"transcription": {"apiKey": ""}, "webSearch": {"apiKey": ""}},
+            "services": {"groq": {"apiKey": ""}, "elevenlabs": {"apiKey": ""}, "webSearch": {"apiKey": ""}},
             "channels": {"telegram": {"botToken": ""}},
             "oldSection": {"key": "important-data"},
         }

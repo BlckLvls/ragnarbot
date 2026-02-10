@@ -73,6 +73,11 @@ class ToolsConfig(BaseModel):
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
 
 
+class TranscriptionConfig(BaseModel):
+    """Voice transcription configuration."""
+    provider: str = Field(default="none", pattern="^(groq|elevenlabs|none)$")
+
+
 class Config(BaseSettings):
     """Root configuration for ragnarbot."""
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
@@ -80,6 +85,7 @@ class Config(BaseSettings):
     daemon: DaemonConfig = Field(default_factory=DaemonConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    transcription: TranscriptionConfig = Field(default_factory=TranscriptionConfig)
 
     @property
     def workspace_path(self) -> Path:

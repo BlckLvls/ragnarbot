@@ -11,6 +11,7 @@ from ragnarbot.cli.tui.screens import (
     summary_screen,
     telegram_screen,
     token_input_screen,
+    voice_transcription_screen,
 )
 from ragnarbot.config.providers import PROVIDERS, get_models, get_provider, supports_oauth
 
@@ -35,9 +36,11 @@ def _onboarding_loop(console: Console) -> None:
     token: str | None = None
     model_idx: int | None = None
     telegram_token: str | None = None
+    voice_provider: str = "none"
+    voice_api_key: str = ""
     enable_daemon: bool | None = None
 
-    step = 1  # 1=provider, 2=auth, 3=token, 4=model, 5=telegram, 6=daemon, 7=summary
+    step = 1  # 1=provider, 2=auth, 3=token, 4=model, 5=telegram, 6=voice, 7=daemon, 8=summary
 
     while True:
         if step == 1:
@@ -87,14 +90,22 @@ def _onboarding_loop(console: Console) -> None:
             step = 6
 
         elif step == 6:
-            daemon_idx = daemon_screen(console)
-            if daemon_idx is None:
+            result = voice_transcription_screen(console)
+            if result is None:
                 step = 5
                 continue
-            enable_daemon = daemon_idx == 0
+            voice_provider, voice_api_key = result
             step = 7
 
         elif step == 7:
+            daemon_idx = daemon_screen(console)
+            if daemon_idx is None:
+                step = 6
+                continue
+            enable_daemon = daemon_idx == 0
+            step = 8
+
+        elif step == 8:
             provider_id = PROVIDERS[provider_idx]["id"]
             provider = get_provider(provider_id)
             auth_method = "oauth" if auth_idx == 0 else "api_key"
@@ -109,9 +120,10 @@ def _onboarding_loop(console: Console) -> None:
                 model["name"],
                 telegram_configured,
                 enable_daemon=enable_daemon,
+                voice_provider=voice_provider,
             )
             if not ok:
-                step = 6
+                step = 7
                 continue
 
             # Save everything
@@ -123,6 +135,8 @@ def _onboarding_loop(console: Console) -> None:
                 model_id=model["id"],
                 telegram_token=telegram_token if telegram_configured else "",
                 enable_daemon=enable_daemon,
+                voice_provider=voice_provider,
+                voice_api_key=voice_api_key,
             )
             return
 
@@ -135,6 +149,8 @@ def _save_results(
     model_id: str,
     telegram_token: str,
     enable_daemon: bool = False,
+    voice_provider: str = "none",
+    voice_api_key: str = "",
 ) -> None:
     """Save onboarding results to config and credentials files."""
     from ragnarbot.auth.credentials import (
@@ -157,6 +173,9 @@ def _save_results(
     if telegram_token:
         config.channels.telegram.enabled = True
 
+    # Update voice transcription
+    config.transcription.provider = voice_provider
+
     # Update daemon
     config.daemon.enabled = enable_daemon
 
@@ -171,6 +190,9 @@ def _save_results(
 
     if telegram_token:
         creds.channels.telegram.bot_token = telegram_token
+
+    if voice_api_key and voice_provider in ("groq", "elevenlabs"):
+        getattr(creds.services, voice_provider).api_key = voice_api_key
 
     save_credentials(creds)
 
