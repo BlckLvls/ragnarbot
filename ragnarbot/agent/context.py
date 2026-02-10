@@ -10,24 +10,26 @@ from ragnarbot.agent.memory import MemoryStore
 from ragnarbot.agent.skills import SkillsLoader
 
 DEFAULTS_DIR = Path(__file__).parent.parent / "workspace_defaults"
+BUILTIN_DIR = Path(__file__).parent.parent / "builtin"
 
 
 class ContextBuilder:
     """
     Builds the context (system prompt + messages) for the agent.
 
-    Assembles bootstrap files, memory, skills, and conversation history
-    into a coherent prompt for the LLM.
+    Assembles built-in files, user workspace files, memory, skills, and
+    conversation history into a coherent prompt for the LLM.
     """
 
-    BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
+    BUILTIN_FILES = ["SOUL.md", "AGENTS.md", "BUILTIN_TOOLS.md"]
+    BOOTSTRAP_FILES = ["IDENTITY.md", "USER.md", "TOOLS.md"]
 
     def __init__(self, workspace: Path):
         self.workspace = workspace
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
         self._ensure_bootstrap_files()
-    
+
     def build_system_prompt(
         self,
         skill_names: list[str] | None = None,
@@ -35,57 +37,47 @@ class ContextBuilder:
         channel: str | None = None,
     ) -> str:
         """
-        Build the system prompt from bootstrap files, memory, and skills.
-        
+        Build the system prompt from built-in files, workspace files, memory, and skills.
+
         Args:
             skill_names: Optional list of skills to include.
-        
+
         Returns:
             Complete system prompt.
         """
         parts = []
-        
-        # Core identity
+
+        # 1. Minimal identity header (dynamic values)
         parts.append(self._get_identity())
 
-        # Builtin tool usage guide
-        from ragnarbot.prompts.tools import TOOLS_CONTEXT
-        parts.append(TOOLS_CONTEXT)
+        # 2. Built-in files (raw, no extra headers)
+        builtin = self._load_builtin_files()
+        if builtin:
+            parts.append(builtin)
 
-        # Bootstrap files
+        # 3. Built-in Telegram (conditional, raw)
+        if channel == "telegram" and session_metadata and "user_data" in session_metadata:
+            telegram = self._load_builtin_telegram(session_metadata["user_data"])
+            if telegram:
+                parts.append(telegram)
+
+        # 4. User-editable files (with filename + path headers)
         bootstrap = self._load_bootstrap_files()
         if bootstrap:
             parts.append(bootstrap)
-        
-        # Memory context
+
+        # 5. Memory context
         memory = self.memory.get_memory_context()
         if memory:
             parts.append(f"# Memory\n\n{memory}")
-        
-        # Telegram context
-        if channel == "telegram" and session_metadata and "user_data" in session_metadata:
-            from ragnarbot.prompts.telegram import TELEGRAM_CONTEXT
 
-            user_data = session_metadata["user_data"]
-            full_name = " ".join(
-                filter(None, [user_data.get("first_name"), user_data.get("last_name")])
-            )
-            telegram_section = TELEGRAM_CONTEXT.format(
-                full_name=full_name or "Unknown",
-                username=user_data.get("username") or "N/A",
-                user_id=user_data.get("user_id") or "N/A",
-            )
-            parts.append(telegram_section)
-
-        # Skills - progressive loading
-        # 1. Always-loaded skills: include full content
+        # 6. Skills - progressive loading
         always_skills = self.skills.get_always_skills()
         if always_skills:
             always_content = self.skills.load_skills_for_context(always_skills)
             if always_content:
                 parts.append(f"# Active Skills\n\n{always_content}")
-        
-        # 2. Available skills: only show summary (agent uses file_read to load)
+
         skills_summary = self.skills.build_skills_summary()
         if skills_summary:
             parts.append(f"""# Skills
@@ -94,51 +86,68 @@ The following skills extend your capabilities. To use a skill, read its SKILL.md
 Skills with available="false" need dependencies installed first - you can try installing them with apt/brew.
 
 {skills_summary}""")
-        
+
         return "\n\n---\n\n".join(parts)
-    
+
     def _get_identity(self) -> str:
-        """Get the core identity section."""
+        """Get the minimal identity header with dynamic values."""
         import time
         tz_name = time.tzname[time.daylight] if time.daylight else time.tzname[0]
         utc_offset = time.strftime("%z")
         workspace_path = str(self.workspace.expanduser().resolve())
 
-        return f"""# ragnarbot 🤖
+        return f"""# ragnarbot
 
-You are ragnarbot, a helpful AI assistant. You have access to tools that allow you to:
-- Read, write, and edit files
-- Execute shell commands
-- Search the web and fetch web pages
-- Send messages to users on chat channels
-- Spawn subagents for complex background tasks
+**Timezone:** {tz_name} (UTC{utc_offset[:3]}:{utc_offset[3:]})
+**Workspace:** {workspace_path}"""
 
-## Timezone
-{tz_name} (UTC{utc_offset[:3]}:{utc_offset[3:]})
+    def _load_builtin_files(self) -> str:
+        """Load built-in developer-controlled files, applying placeholders."""
+        import time
+        tz_name = time.tzname[time.daylight] if time.daylight else time.tzname[0]
+        utc_offset = time.strftime("%z")
+        workspace_path = str(self.workspace.expanduser().resolve())
+        timezone = f"{tz_name} (UTC{utc_offset[:3]}:{utc_offset[3:]})"
 
-## Workspace
-Your workspace is at: {workspace_path}
-- Memory files: {workspace_path}/memory/MEMORY.md
-- Daily notes: {workspace_path}/memory/YYYY-MM-DD.md
-- Custom skills: {workspace_path}/skills/{{skill-name}}/SKILL.md
-
-IMPORTANT: When responding to direct questions or conversations, reply directly with your text response.
-Only use the 'message' tool when you need to send a message to a specific chat channel.
-For normal conversation, just respond with text - do not call the message tool.
-
-Always be helpful, accurate, and concise. When using tools, explain what you're doing.
-When remembering something, write to {workspace_path}/memory/MEMORY.md"""
-    
-    def _load_bootstrap_files(self) -> str:
-        """Load all bootstrap files from workspace."""
         parts = []
-        
+        for filename in self.BUILTIN_FILES:
+            file_path = BUILTIN_DIR / filename
+            if file_path.exists():
+                content = file_path.read_text(encoding="utf-8")
+                content = content.format(
+                    workspace_path=workspace_path,
+                    timezone=timezone,
+                )
+                parts.append(content)
+        return "\n\n---\n\n".join(parts) if parts else ""
+
+    def _load_builtin_telegram(self, user_data: dict) -> str:
+        """Load the built-in Telegram context file with user placeholders."""
+        file_path = BUILTIN_DIR / "TELEGRAM.md"
+        if not file_path.exists():
+            return ""
+        content = file_path.read_text(encoding="utf-8")
+        full_name = " ".join(
+            filter(None, [user_data.get("first_name"), user_data.get("last_name")])
+        )
+        return content.format(
+            full_name=full_name or "Unknown",
+            username=user_data.get("username") or "N/A",
+            user_id=user_data.get("user_id") or "N/A",
+        )
+
+    def _load_bootstrap_files(self) -> str:
+        """Load user-editable workspace files with filename and path headers."""
+        workspace_path = str(self.workspace.expanduser().resolve())
+        parts = []
+
         for filename in self.BOOTSTRAP_FILES:
             file_path = self.workspace / filename
             if file_path.exists():
                 content = file_path.read_text(encoding="utf-8")
-                parts.append(f"## {filename}\n\n{content}")
-        
+                header = f"## {filename}\n> Path: {workspace_path}/{filename}"
+                parts.append(f"{header}\n\n{content}")
+
         return "\n\n".join(parts) if parts else ""
 
     def _ensure_bootstrap_files(self) -> None:
