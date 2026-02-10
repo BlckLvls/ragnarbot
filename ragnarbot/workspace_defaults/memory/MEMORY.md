@@ -1,23 +1,5 @@
 # Long-term Memory
 
-This file stores important information that should persist across sessions.
+_Persistent knowledge that helps across sessions. Technical discoveries, environment details, project context, patterns, gotchas — anything that isn't about the user's profile or your identity._
 
-## User Information
-
-(Important facts about the user)
-
-## Preferences
-
-(User preferences learned over time)
-
-## Project Context
-
-(Information about ongoing projects)
-
-## Important Notes
-
-(Things to remember)
-
----
-
-*This file is automatically updated by ragnarbot when important information should be remembered.*
+_This file is part of your system prompt. Keep it concise and up to date._
