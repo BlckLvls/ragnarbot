@@ -46,7 +46,6 @@ class AgentLoop:
         provider: LLMProvider,
         workspace: Path,
         model: str | None = None,
-        max_iterations: int = 20,
         brave_api_key: str | None = None,
         exec_config: "ExecToolConfig | None" = None,
         cron_service: "CronService | None" = None,
@@ -62,7 +61,6 @@ class AgentLoop:
         self.provider = provider
         self.workspace = workspace
         self.model = model or provider.get_default_model()
-        self.max_iterations = max_iterations
         self.brave_api_key = brave_api_key
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
@@ -412,13 +410,11 @@ class AgentLoop:
         new_start = len(messages) - len(batch)
 
         # Agent loop
-        iteration = 0
         final_content = None
         compacted_this_turn = False
 
         try:
-            while iteration < self.max_iterations:
-                iteration += 1
+            while True:
 
                 # Cache flush escalation (if TTL expired)
                 flushed = False
@@ -734,14 +730,12 @@ class AgentLoop:
         # Track where new messages start
         new_start = len(messages) - 1
 
-        # Agent loop (limited for announce handling)
-        iteration = 0
+        # Agent loop
         final_content = None
         compacted_this_turn = False
 
         try:
-            while iteration < self.max_iterations:
-                iteration += 1
+            while True:
 
                 # Cache flush escalation (if TTL expired)
                 flushed = False

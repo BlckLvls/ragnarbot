@@ -27,7 +27,6 @@ class AgentDefaults(BaseModel):
     model: str = "anthropic/claude-opus-4-6"
     max_tokens: int = 8192
     temperature: float = 0.7
-    max_tool_iterations: int = 20
     max_context_tokens: int = 200_000
     auth_method: str = "api_key"
     stream_steps: bool = True  # Send intermediate messages to user during tool-call loops

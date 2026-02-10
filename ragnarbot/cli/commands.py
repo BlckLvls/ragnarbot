@@ -258,7 +258,6 @@ def gateway_main(
         provider=provider,
         workspace=config.workspace_path,
         model=config.agents.defaults.model,
-        max_iterations=config.agents.defaults.max_tool_iterations,
         brave_api_key=brave_api_key,
         exec_config=config.tools.exec,
         cron_service=cron,

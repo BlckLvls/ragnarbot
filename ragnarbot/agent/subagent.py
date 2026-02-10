@@ -114,14 +114,11 @@ class SubagentManager:
                 {"role": "user", "content": task},
             ]
             
-            # Run agent loop (limited iterations)
-            max_iterations = 15
-            iteration = 0
+            # Run agent loop
             final_result: str | None = None
-            
-            while iteration < max_iterations:
-                iteration += 1
-                
+
+            while True:
+
                 response = await self.provider.chat(
                     messages=messages,
                     tools=tools.get_definitions(),
