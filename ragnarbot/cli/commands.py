@@ -266,6 +266,7 @@ def gateway_main(
         media_manager=media_manager,
         debounce_seconds=config.agents.defaults.debounce_seconds,
         max_context_tokens=config.agents.defaults.max_context_tokens,
+        context_mode=config.agents.defaults.context_mode,
     )
 
     # Set cron callback (needs agent)

@@ -131,9 +131,14 @@ class TelegramChannel(BaseChannel):
         )
         
         # Add command handlers
-        from telegram.ext import CommandHandler
+        from telegram.ext import CallbackQueryHandler, CommandHandler
         self._app.add_handler(CommandHandler("start", self._on_start))
         self._app.add_handler(CommandHandler("new", self._on_new))
+        self._app.add_handler(CommandHandler("context", self._on_context))
+        self._app.add_handler(CommandHandler("context_mode", self._on_context_mode))
+        self._app.add_handler(CallbackQueryHandler(
+            self._on_callback_query, pattern="^ctx_mode:",
+        ))
         
         logger.info("Starting Telegram bot (polling mode)...")
         
@@ -148,6 +153,8 @@ class TelegramChannel(BaseChannel):
         from telegram import BotCommand
         await self._app.bot.set_my_commands([
             BotCommand("new", "Start a new conversation"),
+            BotCommand("context", "Show context usage"),
+            BotCommand("context_mode", "Change context mode"),
         ])
         
         # Register media download callback
@@ -164,7 +171,7 @@ class TelegramChannel(BaseChannel):
 
         # Start polling (this runs until stopped)
         await self._app.updater.start_polling(
-            allowed_updates=["message"],
+            allowed_updates=["message", "callback_query"],
             drop_pending_updates=True  # Ignore old messages on startup
         )
 
@@ -206,8 +213,8 @@ class TelegramChannel(BaseChannel):
         # Intermediate message — send text but keep typing active
         is_intermediate = msg.metadata.get("intermediate", False)
 
-        # Final message — stop typing first
-        if not is_intermediate:
+        # Final message — stop typing first (unless keep_typing is set)
+        if not is_intermediate and not msg.metadata.get("keep_typing"):
             self._stop_typing(chat_id)
 
         try:
@@ -216,11 +223,39 @@ class TelegramChannel(BaseChannel):
                 html_content = msg.content
             else:
                 html_content = _markdown_to_telegram_html(msg.content)
-            await self._app.bot.send_message(
-                chat_id=chat_id,
-                text=html_content,
-                parse_mode="HTML"
-            )
+
+            # Build optional reply_markup for inline keyboards
+            reply_markup = None
+            if msg.metadata.get("inline_keyboard"):
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                rows = []
+                for row in msg.metadata["inline_keyboard"]:
+                    rows.append([
+                        InlineKeyboardButton(
+                            text=btn["text"],
+                            callback_data=btn.get("callback_data"),
+                        )
+                        for btn in row
+                    ])
+                reply_markup = InlineKeyboardMarkup(rows)
+
+            # Edit existing message (callback response) or send new
+            edit_id = msg.metadata.get("edit_message_id")
+            if edit_id:
+                await self._app.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=edit_id,
+                    text=html_content,
+                    parse_mode="HTML",
+                    reply_markup=reply_markup,
+                )
+            else:
+                await self._app.bot.send_message(
+                    chat_id=chat_id,
+                    text=html_content,
+                    parse_mode="HTML",
+                    reply_markup=reply_markup,
+                )
         except Exception as e:
             # Fallback to plain text if HTML parsing fails
             logger.warning(f"HTML parse failed, falling back to plain text: {e}")
@@ -322,6 +357,91 @@ class TelegramChannel(BaseChannel):
                 "last_name": user.last_name,
             }
         )
+
+    async def _on_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /context command — show context usage info."""
+        if not update.message or not update.effective_user:
+            return
+        user = update.effective_user
+        chat_id = update.message.chat_id
+        sender_id = str(user.id)
+        if user.username:
+            sender_id = f"{sender_id}|{user.username}"
+        self._chat_ids[sender_id] = chat_id
+        await self._handle_message(
+            sender_id=sender_id,
+            chat_id=str(chat_id),
+            content="/context",
+            metadata={
+                "command": "context_info",
+                "message_id": update.message.message_id,
+                "user_id": user.id,
+                "username": user.username,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+            },
+        )
+
+    async def _on_context_mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /context_mode command — show mode picker."""
+        if not update.message or not update.effective_user:
+            return
+        user = update.effective_user
+        chat_id = update.message.chat_id
+        sender_id = str(user.id)
+        if user.username:
+            sender_id = f"{sender_id}|{user.username}"
+        self._chat_ids[sender_id] = chat_id
+        await self._handle_message(
+            sender_id=sender_id,
+            chat_id=str(chat_id),
+            content="/context_mode",
+            metadata={
+                "command": "context_mode",
+                "message_id": update.message.message_id,
+                "user_id": user.id,
+                "username": user.username,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+            },
+        )
+
+    async def _on_callback_query(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Handle callback queries from inline keyboard buttons."""
+        query = update.callback_query
+        if not query or not query.data or not update.effective_user:
+            return
+        await query.answer()
+
+        user = update.effective_user
+        chat_id = query.message.chat_id if query.message else None
+        if not chat_id:
+            return
+
+        sender_id = str(user.id)
+        if user.username:
+            sender_id = f"{sender_id}|{user.username}"
+        self._chat_ids[sender_id] = chat_id
+
+        # ctx_mode:<mode> → set_context_mode command
+        if query.data.startswith("ctx_mode:"):
+            mode = query.data.split(":", 1)[1]
+            await self._handle_message(
+                sender_id=sender_id,
+                chat_id=str(chat_id),
+                content=f"/context_mode {mode}",
+                metadata={
+                    "command": "set_context_mode",
+                    "context_mode": mode,
+                    "callback_message_id": query.message.message_id if query.message else None,
+                    "user_id": user.id,
+                    "username": user.username,
+                    "first_name": user.first_name,
+                    "last_name": user.last_name,
+                },
+            )
 
     async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming messages (text, photos, voice, documents)."""
