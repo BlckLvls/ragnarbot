@@ -214,7 +214,7 @@ def gateway_main(
         )
 
     # Service credentials
-    brave_api_key = creds.services.web_search.api_key or None
+    brave_api_key = creds.services.brave_search.api_key or None
 
     # Create media manager
     media_dir = get_data_dir() / "media"

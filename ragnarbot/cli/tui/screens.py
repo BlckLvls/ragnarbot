@@ -14,7 +14,7 @@ def provider_screen(console: Console) -> int | None:
         console,
         "Choose your LLM provider",
         options,
-        subtitle="Step 1 of 7",
+        subtitle="Step 1 of 8",
         back_label="Quit",
     )
 
@@ -29,7 +29,7 @@ def auth_method_screen(console: Console, provider_id: str) -> int | None:
         console,
         "Choose authentication method",
         options,
-        subtitle=f"Step 2 of 7 — {get_provider(provider_id)['name']}",
+        subtitle=f"Step 2 of 8 — {get_provider(provider_id)['name']}",
     )
 
 
@@ -52,7 +52,7 @@ def token_input_screen(
         prompt,
         hint=hint,
         secret=False,
-        subtitle=f"Step 3 of 7 — {provider['name']}",
+        subtitle=f"Step 3 of 8 — {provider['name']}",
     )
 
 
@@ -65,7 +65,7 @@ def model_screen(console: Console, provider_id: str) -> int | None:
         console,
         "Choose your default model",
         options,
-        subtitle=f"Step 4 of 7 — {provider['name']}",
+        subtitle=f"Step 4 of 8 — {provider['name']}",
     )
 
 
@@ -83,7 +83,7 @@ def telegram_screen(console: Console) -> str | None:
             "  Press Enter with empty input to skip"
         ),
         allow_empty=True,
-        subtitle="Step 5 of 7 — Optional",
+        subtitle="Step 5 of 8 — Optional",
     )
 
     if token is None or token == "":
@@ -114,7 +114,7 @@ def _validate_telegram_token(console: Console, token: str) -> str | None:
                     f"Name: [bold]{bot_name}[/bold]",
                     f"Username: @{bot_username}",
                 ],
-                subtitle="Step 5 of 7",
+                subtitle="Step 5 of 8",
             )
             return token
         else:
@@ -128,7 +128,7 @@ def _validate_telegram_token(console: Console, token: str) -> str | None:
                     "",
                     "Press Enter to try again, or Esc to skip.",
                 ],
-                subtitle="Step 5 of 7",
+                subtitle="Step 5 of 8",
             )
             return None
     except httpx.RequestError as e:
@@ -142,7 +142,7 @@ def _validate_telegram_token(console: Console, token: str) -> str | None:
                 "",
                 "Press Enter to try again, or Esc to skip.",
             ],
-            subtitle="Step 5 of 7",
+            subtitle="Step 5 of 8",
         )
         return None
 
@@ -150,23 +150,23 @@ def _validate_telegram_token(console: Console, token: str) -> str | None:
 def voice_transcription_screen(console: Console) -> tuple[str, str] | None:
     """Voice transcription setup. Returns (provider, api_key), ("none","") for skip, or None (back)."""
     voice_providers = [
-        ("Groq (Whisper v3 Turbo)", "Fast and free — recommended"),
-        ("ElevenLabs (Scribe v2)", "High-quality multilingual transcription"),
+        ("ElevenLabs (Scribe v2)", "Best quality, multilingual — recommended"),
+        ("Groq (Whisper v3 Turbo)", "Fast and free"),
         ("Skip", "Disable voice transcription"),
     ]
     idx = select_menu(
         console,
         "Voice transcription provider",
         voice_providers,
-        subtitle="Step 6 of 7 — Optional",
+        subtitle="Step 6 of 8 — Optional",
     )
     if idx is None:
         return None
     if idx == 2:
         return ("none", "")
 
-    provider_id = "groq" if idx == 0 else "elevenlabs"
-    provider_label = "Groq" if idx == 0 else "ElevenLabs"
+    provider_id = "elevenlabs" if idx == 0 else "groq"
+    provider_label = "ElevenLabs" if idx == 0 else "Groq"
 
     api_key = text_input(
         console,
@@ -174,11 +174,28 @@ def voice_transcription_screen(console: Console) -> tuple[str, str] | None:
         "API key",
         hint="Paste your API key and press Enter",
         secret=False,
-        subtitle=f"Step 6 of 7 — {provider_label}",
+        subtitle=f"Step 6 of 8 — {provider_label}",
     )
     if api_key is None:
         return None
     return (provider_id, api_key)
+
+
+def web_search_screen(console: Console) -> str | None:
+    """Web search API key setup. Returns key, "" (skip), or None (back)."""
+    return text_input(
+        console,
+        "Web search setup (Brave Search)",
+        "API key",
+        hint=(
+            "Brave Search provides free web search for your agent.\n"
+            "  Get a free API key at: https://brave.com/search/api/\n"
+            "\n"
+            "  Press Enter with empty input to skip"
+        ),
+        allow_empty=True,
+        subtitle="Step 7 of 8 — Optional (free)",
+    )
 
 
 def daemon_screen(console: Console) -> int | None:
@@ -195,7 +212,7 @@ def daemon_screen(console: Console) -> int | None:
                 "You can run the gateway manually with:",
                 "  [cyan]ragnarbot gateway[/cyan]",
             ],
-            subtitle="Step 7 of 7",
+            subtitle="Step 7 of 8",
         )
         return 1  # "no" — continue without daemon
 
@@ -208,7 +225,7 @@ def daemon_screen(console: Console) -> int | None:
         console,
         "Enable auto-start?",
         options,
-        subtitle="Step 7 of 7",
+        subtitle="Step 7 of 8",
     )
 
 
@@ -220,6 +237,7 @@ def summary_screen(
     telegram_configured: bool,
     enable_daemon: bool = False,
     voice_provider: str = "none",
+    web_search_configured: bool = False,
 ) -> bool:
     """Show summary of configured values. Returns True on Enter."""
     voice_label = {"groq": "Groq", "elevenlabs": "ElevenLabs", "none": "Skipped"}
@@ -231,6 +249,7 @@ def summary_screen(
         f"  Model:          [cyan]{model_name}[/cyan]",
         f"  Telegram:       [cyan]{'Enabled' if telegram_configured else 'Skipped'}[/cyan]",
         f"  Transcription:  [cyan]{voice_label.get(voice_provider, voice_provider)}[/cyan]",
+        f"  Web search:     [cyan]{'Enabled' if web_search_configured else 'Skipped'}[/cyan]",
         f"  Auto-start:     [cyan]{'Enabled' if enable_daemon else 'Manual'}[/cyan]",
         "",
         "[green]Press Enter to save and finish.[/green]",

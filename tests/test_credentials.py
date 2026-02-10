@@ -28,7 +28,7 @@ def test_save_load_round_trip(tmp_path):
     creds = Credentials()
     creds.providers.anthropic.oauth_key = "sk-ant-oat-test"
     creds.providers.openai.api_key = "sk-openai-test"
-    creds.services.web_search.api_key = "brave-key"
+    creds.services.brave_search.api_key = "brave-key"
     creds.channels.telegram.bot_token = "bot123:ABC"
 
     save_credentials(creds, path)
@@ -36,7 +36,7 @@ def test_save_load_round_trip(tmp_path):
 
     assert loaded.providers.anthropic.oauth_key == "sk-ant-oat-test"
     assert loaded.providers.openai.api_key == "sk-openai-test"
-    assert loaded.services.web_search.api_key == "brave-key"
+    assert loaded.services.brave_search.api_key == "brave-key"
     assert loaded.channels.telegram.bot_token == "bot123:ABC"
 
 
@@ -55,7 +55,7 @@ def test_camel_case_serialization(tmp_path):
 
     creds = Credentials()
     creds.providers.anthropic.oauth_key = "tok"
-    creds.services.web_search.api_key = "key"
+    creds.services.brave_search.api_key = "key"
     creds.channels.telegram.bot_token = "bot"
 
     save_credentials(creds, path)
@@ -66,7 +66,7 @@ def test_camel_case_serialization(tmp_path):
     # Top-level keys should be camelCase
     assert "providers" in raw
     assert "oauthKey" in raw["providers"]["anthropic"]
-    assert "webSearch" in raw["services"]
+    assert "braveSearch" in raw["services"]
     assert "botToken" in raw["channels"]["telegram"]
 
 

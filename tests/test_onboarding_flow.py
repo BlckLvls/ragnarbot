@@ -83,7 +83,7 @@ class TestOnboardingFlow:
             return mock_save_config, mock_save_creds
 
     def test_anthropic_api_key_flow(self, tmp_path):
-        """Full flow: Anthropic -> API Key -> token -> first model -> skip telegram -> skip voice -> save."""
+        """Full flow: Anthropic -> API Key -> token -> first model -> skip all optional -> save."""
         keys = [
             (Key.ENTER, ""),        # Select Anthropic (first option)
             (Key.DOWN, ""),          # Navigate to API Key
@@ -92,9 +92,10 @@ class TestOnboardingFlow:
             (Key.ENTER, ""),         # Confirm key
             (Key.ENTER, ""),         # Select first model (Opus)
             (Key.ENTER, ""),         # Skip telegram (empty enter)
-            (Key.DOWN, ""),          # Voice: past Groq
+            (Key.DOWN, ""),          # Voice: past ElevenLabs
             (Key.DOWN, ""),          # Voice: to Skip
             (Key.ENTER, ""),         # Select Skip
+            (Key.ENTER, ""),         # Skip web search (empty enter)
             (Key.DOWN, ""),          # Navigate to "No" (manual start)
             (Key.ENTER, ""),         # Select manual start
             (Key.ENTER, ""),         # Confirm summary
@@ -111,7 +112,7 @@ class TestOnboardingFlow:
         assert creds.providers.anthropic.api_key == "sk-ant-test-key-123"
 
     def test_anthropic_oauth_flow(self, tmp_path):
-        """Full flow: Anthropic -> OAuth -> token -> second model -> skip telegram -> skip voice."""
+        """Full flow: Anthropic -> OAuth -> token -> second model -> skip all optional."""
         keys = [
             (Key.ENTER, ""),        # Select Anthropic
             (Key.ENTER, ""),        # Select OAuth (first option)
@@ -120,9 +121,10 @@ class TestOnboardingFlow:
             (Key.DOWN, ""),         # Navigate to Sonnet
             (Key.ENTER, ""),        # Select Sonnet
             (Key.ENTER, ""),        # Skip telegram
-            (Key.DOWN, ""),         # Voice: past Groq
+            (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
             (Key.ENTER, ""),        # Select Skip
+            (Key.ENTER, ""),        # Skip web search
             (Key.DOWN, ""),         # Navigate to "No" (manual start)
             (Key.ENTER, ""),        # Select manual start
             (Key.ENTER, ""),        # Confirm summary
@@ -146,9 +148,10 @@ class TestOnboardingFlow:
             (Key.ENTER, ""),        # Confirm key
             (Key.ENTER, ""),        # Select first model (GPT-5.2)
             (Key.ENTER, ""),        # Skip telegram
-            (Key.DOWN, ""),         # Voice: past Groq
+            (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
             (Key.ENTER, ""),        # Select Skip
+            (Key.ENTER, ""),        # Skip web search
             (Key.DOWN, ""),         # Navigate to "No" (manual start)
             (Key.ENTER, ""),        # Select manual start
             (Key.ENTER, ""),        # Confirm summary
@@ -173,9 +176,10 @@ class TestOnboardingFlow:
             (Key.DOWN, ""),         # Navigate to Flash
             (Key.ENTER, ""),        # Select Flash
             (Key.ENTER, ""),        # Skip telegram
-            (Key.DOWN, ""),         # Voice: past Groq
+            (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
             (Key.ENTER, ""),        # Select Skip
+            (Key.ENTER, ""),        # Skip web search
             (Key.DOWN, ""),         # Navigate to "No" (manual start)
             (Key.ENTER, ""),        # Select manual start
             (Key.ENTER, ""),        # Confirm summary
@@ -200,9 +204,10 @@ class TestOnboardingFlow:
             (Key.ENTER, ""),        # Confirm key
             (Key.ENTER, ""),        # Select first model
             (Key.ENTER, ""),        # Skip telegram
-            (Key.DOWN, ""),         # Voice: past Groq
+            (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
             (Key.ENTER, ""),        # Select Skip
+            (Key.ENTER, ""),        # Skip web search
             (Key.DOWN, ""),         # Navigate to "No" (manual start)
             (Key.ENTER, ""),        # Select manual start
             (Key.ENTER, ""),        # Confirm summary
@@ -271,9 +276,10 @@ class TestTelegramValidation:
             *[(Key.CHAR, c) for c in "123456:ABC-DEF"],
             (Key.ENTER, ""),        # Submit token
             (Key.ENTER, ""),        # Accept bot info screen
-            (Key.DOWN, ""),         # Voice: past Groq
+            (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
             (Key.ENTER, ""),        # Select Skip
+            (Key.ENTER, ""),        # Skip web search
             (Key.DOWN, ""),         # Navigate to "No" (manual start)
             (Key.ENTER, ""),        # Select manual start
             (Key.ENTER, ""),        # Confirm summary
@@ -339,9 +345,11 @@ class TestVoiceTranscriptionOnboarding:
             (Key.ENTER, ""),        # Confirm key
             (Key.ENTER, ""),        # Select first model
             (Key.ENTER, ""),        # Skip telegram
-            (Key.ENTER, ""),        # Select Groq (first option)
+            (Key.DOWN, ""),         # Voice: past ElevenLabs to Groq
+            (Key.ENTER, ""),        # Select Groq
             *[(Key.CHAR, c) for c in "gsk-groq-key"],
             (Key.ENTER, ""),        # Confirm Groq key
+            (Key.ENTER, ""),        # Skip web search
             (Key.DOWN, ""),         # Navigate to "No" (manual start)
             (Key.ENTER, ""),        # Select manual start
             (Key.ENTER, ""),        # Confirm summary
@@ -353,3 +361,27 @@ class TestVoiceTranscriptionOnboarding:
 
         creds = mock_save_creds.call_args[0][0]
         assert creds.services.groq.api_key == "gsk-groq-key"
+
+    def test_web_search_with_key(self, tmp_path):
+        """Provide Brave Search API key during onboarding."""
+        keys = [
+            (Key.ENTER, ""),        # Select Anthropic
+            (Key.DOWN, ""),         # Navigate to API Key
+            (Key.ENTER, ""),        # Select API Key
+            *[(Key.CHAR, c) for c in "sk-ant-key"],
+            (Key.ENTER, ""),        # Confirm key
+            (Key.ENTER, ""),        # Select first model
+            (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Voice: past ElevenLabs
+            (Key.DOWN, ""),         # Voice: to Skip
+            (Key.ENTER, ""),        # Select Skip
+            *[(Key.CHAR, c) for c in "BSA-brave-key"],
+            (Key.ENTER, ""),        # Confirm web search key
+            (Key.DOWN, ""),         # Navigate to "No" (manual start)
+            (Key.ENTER, ""),        # Select manual start
+            (Key.ENTER, ""),        # Confirm summary
+        ]
+        mock_save_config, mock_save_creds = self._run_with_keys(keys, tmp_path)
+
+        creds = mock_save_creds.call_args[0][0]
+        assert creds.services.brave_search.api_key == "BSA-brave-key"
