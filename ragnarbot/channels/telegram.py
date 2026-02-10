@@ -80,6 +80,121 @@ def _markdown_to_telegram_html(text: str) -> str:
     return text
 
 
+TELEGRAM_MAX_LENGTH = 4096
+_TAG_OVERHEAD = 100  # Reserve space for closing/reopening tags across splits
+
+
+def _avoid_tag_split(text: str, pos: int) -> int:
+    """Adjust split position to avoid splitting inside an HTML tag."""
+    last_open = text.rfind('<', 0, pos)
+    if last_open != -1:
+        last_close = text.rfind('>', last_open, pos)
+        if last_close == -1:
+            return last_open
+    return pos
+
+
+def _find_split_point(text: str, max_length: int) -> int:
+    """Find the best position to split text, preferring natural boundaries."""
+    min_pos = max_length // 4
+
+    # Paragraph boundary
+    pos = text.rfind('\n\n', 0, max_length)
+    if pos > min_pos:
+        return _avoid_tag_split(text, pos)
+
+    # Line boundary
+    pos = text.rfind('\n', 0, max_length)
+    if pos > min_pos:
+        return _avoid_tag_split(text, pos)
+
+    # Word boundary
+    pos = text.rfind(' ', 0, max_length)
+    if pos > min_pos:
+        return _avoid_tag_split(text, pos)
+
+    return _avoid_tag_split(text, max_length)
+
+
+def _balance_html_tags(chunk: str) -> tuple[str, str]:
+    """Close unclosed HTML tags in chunk, return tags to reopen in next chunk."""
+    tag_pattern = re.compile(r'<(/?)(\w+)(?:\s[^>]*)?>')
+    open_tags: list[tuple[str, str]] = []  # (tag_name, full_opening_tag)
+
+    for match in tag_pattern.finditer(chunk):
+        is_closing = match.group(1) == '/'
+        tag_name = match.group(2)
+
+        if is_closing:
+            for i in range(len(open_tags) - 1, -1, -1):
+                if open_tags[i][0] == tag_name:
+                    open_tags.pop(i)
+                    break
+        else:
+            open_tags.append((tag_name, match.group(0)))
+
+    if not open_tags:
+        return chunk, ""
+
+    closing = ''.join(f'</{tag}>' for tag, _ in reversed(open_tags))
+    reopening = ''.join(full_tag for _, full_tag in open_tags)
+    return chunk + closing, reopening
+
+
+def _split_html_message(text: str, max_length: int = TELEGRAM_MAX_LENGTH) -> list[str]:
+    """Split HTML text into chunks that fit Telegram's message limit."""
+    if len(text) <= max_length:
+        return [text]
+
+    effective_limit = max_length - _TAG_OVERHEAD
+    chunks: list[str] = []
+    remaining = text
+
+    while remaining:
+        if len(remaining) <= max_length:
+            chunks.append(remaining)
+            break
+
+        split_at = _find_split_point(remaining, effective_limit)
+        chunk = remaining[:split_at]
+        remaining = remaining[split_at:].lstrip('\n')
+
+        chunk, reopen_tags = _balance_html_tags(chunk)
+        chunks.append(chunk)
+        if reopen_tags:
+            remaining = reopen_tags + remaining
+
+    return chunks
+
+
+def _split_plain_text(text: str, max_length: int = TELEGRAM_MAX_LENGTH) -> list[str]:
+    """Split plain text into chunks that fit Telegram's message limit."""
+    if len(text) <= max_length:
+        return [text]
+
+    chunks: list[str] = []
+    remaining = text
+    min_pos = max_length // 4
+
+    while remaining:
+        if len(remaining) <= max_length:
+            chunks.append(remaining)
+            break
+
+        pos = remaining.rfind('\n\n', 0, max_length)
+        if pos <= min_pos:
+            pos = remaining.rfind('\n', 0, max_length)
+        if pos <= min_pos:
+            pos = remaining.rfind(' ', 0, max_length)
+        if pos <= min_pos:
+            pos = max_length
+
+        chunks.append(remaining[:pos])
+        remaining = remaining[pos:].lstrip('\n')
+
+    return chunks
+
+
 class TelegramChannel(BaseChannel):
     """
     Telegram channel using long polling.
@@ -291,6 +406,9 @@ class TelegramChannel(BaseChannel):
             # Edit existing message (callback response) or send new
             edit_id = msg.metadata.get("edit_message_id")
             if edit_id:
+                # Edits can't become multiple messages — truncate if needed
+                if len(html_content) > TELEGRAM_MAX_LENGTH:
+                    html_content = html_content[:TELEGRAM_MAX_LENGTH - 3] + "..."
                 await self._app.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=edit_id,
@@ -299,20 +417,24 @@ class TelegramChannel(BaseChannel):
                     reply_markup=reply_markup,
                 )
             else:
-                await self._app.bot.send_message(
-                    chat_id=chat_id,
-                    text=html_content,
-                    parse_mode="HTML",
-                    reply_markup=reply_markup,
-                )
+                chunks = _split_html_message(html_content)
+                for i, chunk in enumerate(chunks):
+                    is_last = i == len(chunks) - 1
+                    await self._app.bot.send_message(
+                        chat_id=chat_id,
+                        text=chunk,
+                        parse_mode="HTML",
+                        reply_markup=reply_markup if is_last else None,
+                    )
         except Exception as e:
             # Fallback to plain text if HTML parsing fails
             logger.warning(f"HTML parse failed, falling back to plain text: {e}")
             try:
-                await self._app.bot.send_message(
-                    chat_id=chat_id,
-                    text=msg.content
-                )
+                for chunk in _split_plain_text(msg.content):
+                    await self._app.bot.send_message(
+                        chat_id=chat_id,
+                        text=chunk,
+                    )
             except Exception as e2:
                 logger.error(f"Error sending Telegram message: {e2}")
     
