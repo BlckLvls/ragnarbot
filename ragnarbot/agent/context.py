@@ -19,10 +19,27 @@ class ContextBuilder:
     
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
     
+    TOOLS_MD_HEADER = """# Tool Preferences & Custom Notes
+
+This file is maintained by the agent based on conversations with the user.
+It stores user preferences, custom scripts, workflows, and tool-related
+notes learned over time.
+
+DO NOT clear or overwrite this header. Only append new sections below the separator.
+Document here when the user:
+- Expresses a preference about how a tool should be used
+- Sets up a custom workflow or script
+- Wants specific tool behavior remembered across sessions
+
+---
+
+"""
+
     def __init__(self, workspace: Path):
         self.workspace = workspace
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
+        self._ensure_tools_md()
     
     def build_system_prompt(
         self,
@@ -43,7 +60,11 @@ class ContextBuilder:
         
         # Core identity
         parts.append(self._get_identity())
-        
+
+        # Builtin tool usage guide
+        from ragnarbot.prompts.tools import TOOLS_CONTEXT
+        parts.append(TOOLS_CONTEXT)
+
         # Bootstrap files
         bootstrap = self._load_bootstrap_files()
         if bootstrap:
@@ -132,7 +153,13 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
                 parts.append(f"## {filename}\n\n{content}")
         
         return "\n\n".join(parts) if parts else ""
-    
+
+    def _ensure_tools_md(self) -> None:
+        """Create TOOLS.md in workspace if it doesn't exist."""
+        tools_path = self.workspace / "TOOLS.md"
+        if not tools_path.exists():
+            tools_path.write_text(self.TOOLS_MD_HEADER, encoding="utf-8")
+
     def build_messages(
         self,
         history: list[dict[str, Any]],
