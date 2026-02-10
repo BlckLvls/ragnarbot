@@ -19,6 +19,9 @@ from ragnarbot.agent.tools.shell import ExecTool
 from ragnarbot.agent.tools.web import WebSearchTool, WebFetchTool
 from ragnarbot.agent.tools.media import DownloadFileTool
 from ragnarbot.agent.tools.message import MessageTool
+from ragnarbot.agent.tools.telegram import (
+    SendPhotoTool, SendVideoTool, SendFileTool, SetReactionTool,
+)
 from ragnarbot.agent.tools.spawn import SpawnTool
 from ragnarbot.agent.tools.cron import CronTool
 from ragnarbot.agent.subagent import SubagentManager
@@ -114,7 +117,14 @@ class AgentLoop:
         # Message tool
         message_tool = MessageTool(send_callback=self.bus.publish_outbound)
         self.tools.register(message_tool)
-        
+
+        # Telegram media & reaction tools
+        send_cb = self.bus.publish_outbound
+        self.tools.register(SendPhotoTool(send_callback=send_cb))
+        self.tools.register(SendVideoTool(send_callback=send_cb))
+        self.tools.register(SendFileTool(send_callback=send_cb))
+        self.tools.register(SetReactionTool(send_callback=send_cb))
+
         # Spawn tool (for subagents)
         spawn_tool = SpawnTool(manager=self.subagents)
         self.tools.register(spawn_tool)
@@ -337,6 +347,16 @@ class AgentLoop:
         download_tool = self.tools.get("download_file")
         if isinstance(download_tool, DownloadFileTool):
             download_tool.set_context(msg.channel, session.key)
+
+        # Telegram media tools
+        last_message_id = batch[-1].metadata.get("message_id")
+        for tool_name in ("send_photo", "send_video", "send_file"):
+            tool = self.tools.get(tool_name)
+            if tool and hasattr(tool, "set_context"):
+                tool.set_context(msg.channel, msg.chat_id)
+        reaction_tool = self.tools.get("set_reaction")
+        if isinstance(reaction_tool, SetReactionTool):
+            reaction_tool.set_context(msg.channel, msg.chat_id, last_message_id)
 
         # -- Per-message processing: attachments, prefixes, media_refs --
         batch_data: list[dict] = []  # {prefixed_content, media_refs, media, raw_msg}
