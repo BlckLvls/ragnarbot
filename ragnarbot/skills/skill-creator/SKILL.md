@@ -1,6 +1,6 @@
 ---
 name: skill-creator
-description: Create or update AgentSkills. Use when designing, structuring, or packaging skills with scripts, references, and assets.
+description: Create or update AgentSkills. Use when designing, structuring, or improving skills with scripts, references, and assets.
 ---
 
 # Skill Creator
@@ -206,8 +206,7 @@ Skill creation involves these steps:
 2. Plan reusable skill contents (scripts, references, assets)
 3. Initialize the skill (run init_skill.py)
 4. Edit the skill (implement resources and write SKILL.md)
-5. Package the skill (run package_skill.py)
-6. Iterate based on real usage
+5. Iterate based on real usage
 
 Follow these steps in order, skipping only if there is a clear reason why they are not applicable.
 
@@ -264,22 +263,28 @@ To establish the skill's contents, analyze each concrete example to create a lis
 
 At this point, it is time to actually create the skill.
 
-Skip this step only if the skill being developed already exists, and iteration or packaging is needed. In this case, continue to the next step.
+Skip this step only if the skill being developed already exists and iteration is needed. In this case, continue to the next step.
 
-When creating a new skill from scratch, always run the `init_skill.py` script. The script conveniently generates a new template skill directory that automatically includes everything a skill requires, making the skill creation process much more efficient and reliable.
+When creating a new skill from scratch, always run the `init_skill.py` script. The script generates a new template skill directory that automatically includes everything a skill requires.
 
 Usage:
 
 ```bash
-scripts/init_skill.py <skill-name> --path <output-directory> [--resources scripts,references,assets] [--examples]
+{baseDir}/scripts/init_skill.py <skill-name> [--path <output-directory>] [--resources scripts,references,assets]
 ```
+
+Arguments:
+
+- `name` (required): Skill name in kebab-case (lowercase alphanumeric + hyphens, max 64 chars)
+- `--path` (optional): Parent directory for the skill. Defaults to `~/.ragnarbot/workspace/skills/`
+- `--resources` (optional): Comma-separated list of resource directories to create: `scripts`, `references`, `assets`
 
 Examples:
 
 ```bash
-scripts/init_skill.py my-skill --path skills/public
-scripts/init_skill.py my-skill --path skills/public --resources scripts,references
-scripts/init_skill.py my-skill --path skills/public --resources scripts --examples
+{baseDir}/scripts/init_skill.py my-skill
+{baseDir}/scripts/init_skill.py my-skill --resources scripts,references
+{baseDir}/scripts/init_skill.py data-export --path /tmp --resources scripts,references,assets
 ```
 
 The script:
@@ -287,22 +292,12 @@ The script:
 - Creates the skill directory at the specified path
 - Generates a SKILL.md template with proper frontmatter and TODO placeholders
 - Optionally creates resource directories based on `--resources`
-- Optionally adds example files when `--examples` is set
 
-After initialization, customize the SKILL.md and add resources as needed. If you used `--examples`, replace or delete placeholder files.
+After initialization, customize the SKILL.md and add resources as needed.
 
 ### Step 4: Edit the Skill
 
 When editing the (newly-generated or existing) skill, remember that the skill is being created for another instance of the agent to use. Include information that would be beneficial and non-obvious to the agent. Consider what procedural knowledge, domain-specific details, or reusable assets would help another the agent instance execute these tasks more effectively.
-
-#### Learn Proven Design Patterns
-
-Consult these helpful guides based on your skill's needs:
-
-- **Multi-step processes**: See references/workflows.md for sequential workflows and conditional logic
-- **Specific output formats or quality standards**: See references/output-patterns.md for template and example patterns
-
-These files contain established best practices for effective skill design.
 
 #### Start with Reusable Skill Contents
 
@@ -310,7 +305,7 @@ To begin implementation, start with the reusable resources identified above: `sc
 
 Added scripts must be tested by actually running them to ensure there are no bugs and that the output matches what is expected. If there are many similar scripts, only a representative sample needs to be tested to ensure confidence that they all work while balancing time to completion.
 
-If you used `--examples`, delete any placeholder files that are not needed for the skill. Only create resource directories that are actually required.
+Only create resource directories that are actually required.
 
 #### Update SKILL.md
 
@@ -328,38 +323,30 @@ Write the YAML frontmatter with `name` and `description`:
 
 Do not include any other fields in YAML frontmatter.
 
+##### The `always` Flag
+
+By default, skills are loaded on-demand (progressive loading). The `always: true` flag forces a skill to be fully included in every system prompt.
+
+**Default: do NOT set `always: true`.** The progressive loading system is preferred — it keeps the context window lean. Only enable `always: true` if:
+
+- The user explicitly requests it
+- You believe it's strongly warranted — in which case, ask the user first and explain why
+
+To enable, add to the frontmatter metadata:
+
+```yaml
+metadata: {"ragnarbot":{"always":true}}
+```
+
 ##### Body
 
 Write instructions for using the skill and its bundled resources.
 
-### Step 5: Packaging a Skill
+##### Updating Resources
 
-Once development of the skill is complete, it must be packaged into a distributable .skill file that gets shared with the user. The packaging process automatically validates the skill first to ensure it meets all requirements:
+When adding new resource directories (`scripts/`, `references/`, `assets/`) to an existing skill, always update the SKILL.md body to document them — describe what each resource contains and when to use it. Undocumented resources will be invisible to the agent.
 
-```bash
-scripts/package_skill.py <path/to/skill-folder>
-```
-
-Optional output directory specification:
-
-```bash
-scripts/package_skill.py <path/to/skill-folder> ./dist
-```
-
-The packaging script will:
-
-1. **Validate** the skill automatically, checking:
-
-   - YAML frontmatter format and required fields
-   - Skill naming conventions and directory structure
-   - Description completeness and quality
-   - File organization and resource references
-
-2. **Package** the skill if validation passes, creating a .skill file named after the skill (e.g., `my-skill.skill`) that includes all files and maintains the proper directory structure for distribution. The .skill file is a zip file with a .skill extension.
-
-If validation fails, the script will report the errors and exit without creating a package. Fix any validation errors and run the packaging command again.
-
-### Step 6: Iterate
+### Step 5: Iterate
 
 After testing the skill, users may request improvements. Often this happens right after using the skill, with fresh context of how the skill performed.
 

@@ -95,7 +95,7 @@ def main() -> None:
         (skill_dir / res).mkdir()
 
     print(f"Created skill '{args.name}' at {skill_dir}")
-    print(f"  SKILL.md")
+    print("  SKILL.md")
     for res in sorted(args.resources):
         print(f"  {res}/")
 
