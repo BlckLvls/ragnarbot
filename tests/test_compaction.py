@@ -232,14 +232,18 @@ class TestInjectCompaction:
             {"role": "assistant", "content": "recent2", "metadata": {"timestamp": ts}},
         ])
         c._inject_compaction(session, "Test summary", tail_count=2, context_mode="normal")
-        # Old messages before tail should be replaced by compaction
-        assert session.messages[0]["metadata"]["type"] == "compaction"
-        assert session.messages[0]["content"] == "[Conversation Summary]\nTest summary"
-        assert session.messages[0]["metadata"]["mode"] == "normal"
-        # Tail preserved
-        assert session.messages[1]["content"] == "recent1"
-        assert session.messages[2]["content"] == "recent2"
-        assert len(session.messages) == 3
+        # All 6 original messages preserved + 1 compaction = 7
+        assert len(session.messages) == 7
+        # Old messages preserved at indices 0-3
+        assert session.messages[0]["content"] == "old1"
+        assert session.messages[3]["content"] == "old4"
+        # Compaction inserted at index 4 (before the 2-message tail)
+        assert session.messages[4]["metadata"]["type"] == "compaction"
+        assert session.messages[4]["content"] == "[Conversation Summary]\nTest summary"
+        assert session.messages[4]["metadata"]["mode"] == "normal"
+        # Tail preserved at indices 5-6
+        assert session.messages[5]["content"] == "recent1"
+        assert session.messages[6]["content"] == "recent2"
 
     def test_compaction_timestamp_before_tail(self):
         c = self._make_compactor()
@@ -249,7 +253,8 @@ class TestInjectCompaction:
             {"role": "user", "content": "recent", "metadata": {"timestamp": tail_ts.isoformat()}},
         ])
         c._inject_compaction(session, "Summary", tail_count=1, context_mode="eco")
-        compaction_ts = datetime.fromisoformat(session.messages[0]["metadata"]["timestamp"])
+        # Compaction inserted at index 1 (old message stays at index 0)
+        compaction_ts = datetime.fromisoformat(session.messages[1]["metadata"]["timestamp"])
         assert compaction_ts < tail_ts
 
 

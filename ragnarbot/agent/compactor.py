@@ -267,7 +267,6 @@ class Compactor:
             },
         }
 
-        # Remove all messages before the tail (they're now compacted)
+        # Insert compaction marker before the tail
         insert_idx = len(session.messages) - tail_count
-        # Replace everything before tail with compaction message
-        session.messages = [compaction_msg] + session.messages[insert_idx:]
+        session.messages.insert(insert_idx, compaction_msg)
