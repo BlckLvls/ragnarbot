@@ -104,6 +104,35 @@ def onboard():
 
 
 
+@app.command()
+def bootstrap():
+    """Re-run the identity bootstrap protocol."""
+    import shutil
+
+    from ragnarbot.agent.context import DEFAULTS_DIR
+    from ragnarbot.config.loader import load_config
+
+    config = load_config()
+    workspace = config.workspace_path
+
+    # Remove .bootstrap_done marker so it won't be skipped
+    done_marker = workspace / ".bootstrap_done"
+    done_marker.unlink(missing_ok=True)
+
+    # Copy BOOTSTRAP.md from defaults
+    source = DEFAULTS_DIR / "BOOTSTRAP.md"
+    target = workspace / "BOOTSTRAP.md"
+
+    if source.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        console.print("[green]✓[/green] Bootstrap protocol activated.")
+        console.print("Start a conversation to begin the identity setup.")
+    else:
+        console.print("[red]Error: BOOTSTRAP.md template not found[/red]")
+        raise typer.Exit(1)
+
+
 def _create_workspace_templates(workspace: Path):
     """Copy default workspace files from workspace_defaults/ if missing."""
     import shutil

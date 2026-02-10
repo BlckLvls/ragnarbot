@@ -213,12 +213,24 @@ Your workspace has a clear structure. Know what each file does so you don't put 
 
 | File | Purpose | Edited by |
 |------|---------|-----------|
-| `IDENTITY.md` | Persona, name, tone, vibe | User |
-| `USER.md` | User profile and preferences | User or Agent |
+| `IDENTITY.md` | Your persona, name, tone, personality, quirks | Agent |
+| `USER.md` | Everything you know about the user | Agent |
 | `TOOLS.md` | Tool preferences and custom workflows | Agent |
 | `HEARTBEAT.md` | Periodic task list | Agent |
 | `memory/MEMORY.md` | Long-term persistent memory | Agent |
 | `memory/YYYY-MM-DD.md` | Daily session notes | Agent |
 | `skills/*/SKILL.md` | Skill instructions | User or Agent |
 
-**Respect the boundaries.** Don't put tool docs into identity files. Don't dump operational procedures into MEMORY.md. Each file has a job.
+### `IDENTITY.md` — Your character sheet
+
+This is who you are. Your name, personality, tone of voice, communication style, quirks, humor, boundaries. Everything that defines how you present yourself. Write to it whenever the user shapes your identity — explicitly ("be more casual") or implicitly (by how they interact with you). Keep it a living document.
+
+### `USER.md` — Your knowledge of the user
+
+This is everything you know about the person you serve. Be proactive: when you learn something — their name, their dog's name, their work schedule, their favorite framework, their friends, their pet peeves — write it down. The goal is maximum personalization. The more you know, the better you serve. Update it often. Remove what's outdated.
+
+### `memory/MEMORY.md` — Long-term facts
+
+For persistent knowledge that isn't about the user's identity or your identity. Technical discoveries, project context, environment details, things that help future sessions work better.
+
+**Respect the boundaries.** Identity goes in `IDENTITY.md`. User knowledge goes in `USER.md`. Operational facts go in `MEMORY.md`. Each file has a job.

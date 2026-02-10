@@ -61,17 +61,24 @@ class ContextBuilder:
             if telegram:
                 parts.append(telegram)
 
-        # 4. User-editable files (with filename + path headers)
+        # 4. Bootstrap protocol (first-run only, self-deleting)
+        bootstrap_protocol = self.workspace / "BOOTSTRAP.md"
+        if bootstrap_protocol.exists():
+            content = bootstrap_protocol.read_text(encoding="utf-8").strip()
+            if content:
+                parts.append(content)
+
+        # 5. User-editable files (with filename + path headers)
         bootstrap = self._load_bootstrap_files()
         if bootstrap:
             parts.append(bootstrap)
 
-        # 5. Memory context
+        # 6. Memory context
         memory = self.memory.get_memory_context()
         if memory:
             parts.append(f"# Memory\n\n{memory}")
 
-        # 6. Skills - progressive loading
+        # 7. Skills - progressive loading
         always_skills = self.skills.get_always_skills()
         if always_skills:
             always_content = self.skills.load_skills_for_context(always_skills)
@@ -153,10 +160,17 @@ Skills with available="false" need dependencies installed first - you can try in
     def _ensure_bootstrap_files(self) -> None:
         """Copy default workspace files from workspace_defaults/ if missing or empty."""
         self.workspace.mkdir(parents=True, exist_ok=True)
+        bootstrap_done = self.workspace / ".bootstrap_done"
+
         for default_file in DEFAULTS_DIR.rglob("*"):
             if not default_file.is_file():
                 continue
             rel = default_file.relative_to(DEFAULTS_DIR)
+
+            # BOOTSTRAP.md: only create on first run (never re-create after completion)
+            if rel.name == "BOOTSTRAP.md" and bootstrap_done.exists():
+                continue
+
             target = self.workspace / rel
             if not target.exists() or not target.read_text(encoding="utf-8").strip():
                 target.parent.mkdir(parents=True, exist_ok=True)
