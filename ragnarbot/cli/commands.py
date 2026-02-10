@@ -105,89 +105,23 @@ def onboard():
 
 
 def _create_workspace_templates(workspace: Path):
-    """Create default workspace template files."""
-    templates = {
-        "AGENTS.md": """# Agent Instructions
+    """Create default workspace template files.
 
-You are a helpful AI assistant. Be concise, accurate, and friendly.
+    Delegates to ContextBuilder which owns the canonical default content.
+    """
+    from ragnarbot.agent.context import ContextBuilder
 
-## Guidelines
-
-- Always explain what you're doing before taking actions
-- Ask for clarification when the request is ambiguous
-- Use tools to help accomplish tasks
-- Remember important information in your memory files
-""",
-        "SOUL.md": """# Soul
-
-I am ragnarbot, a lightweight AI assistant.
-
-## Personality
-
-- Helpful and friendly
-- Concise and to the point
-- Curious and eager to learn
-
-## Values
-
-- Accuracy over speed
-- User privacy and safety
-- Transparency in actions
-""",
-        "USER.md": """# User
-
-Information about the user goes here.
-
-## Preferences
-
-- Communication style: (casual/formal)
-- Timezone: (your timezone)
-- Language: (your preferred language)
-""",
-        "TOOLS.md": """# Tool Preferences & Custom Notes
-
-This file is maintained by the agent based on conversations with the user.
-It stores user preferences, custom scripts, workflows, and tool-related
-notes learned over time.
-
-DO NOT clear or overwrite this header. Only append new sections below the separator.
-Document here when the user:
-- Expresses a preference about how a tool should be used
-- Sets up a custom workflow or script
-- Wants specific tool behavior remembered across sessions
-
----
-
-""",
-    }
-
-    for filename, content in templates.items():
+    for filename, default in ContextBuilder.BOOTSTRAP_DEFAULTS.items():
         file_path = workspace / filename
         if not file_path.exists():
-            file_path.write_text(content)
+            file_path.write_text(default, encoding="utf-8")
             console.print(f"  [dim]Created {filename}[/dim]")
 
-    # Create memory directory and MEMORY.md
     memory_dir = workspace / "memory"
     memory_dir.mkdir(exist_ok=True)
     memory_file = memory_dir / "MEMORY.md"
     if not memory_file.exists():
-        memory_file.write_text("""# Long-term Memory
-
-This file stores important information that should persist across sessions.
-
-## User Information
-
-(Important facts about the user)
-
-## Preferences
-
-(User preferences learned over time)
-
-## Important Notes
-
-(Things to remember)
-""")
+        memory_file.write_text(ContextBuilder.MEMORY_DEFAULT, encoding="utf-8")
         console.print("  [dim]Created memory/MEMORY.md[/dim]")
 
 

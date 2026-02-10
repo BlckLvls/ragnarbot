@@ -19,7 +19,45 @@ class ContextBuilder:
     
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
     
-    TOOLS_MD_HEADER = """# Tool Preferences & Custom Notes
+    BOOTSTRAP_DEFAULTS = {
+        "AGENTS.md": """# Agent Instructions
+
+You are a helpful AI assistant. Be concise, accurate, and friendly.
+
+## Guidelines
+
+- Always explain what you're doing before taking actions
+- Ask for clarification when the request is ambiguous
+- Use tools to help accomplish tasks
+- Remember important information in your memory files
+""",
+        "SOUL.md": """# Soul
+
+I am ragnarbot, a lightweight AI assistant.
+
+## Personality
+
+- Helpful and friendly
+- Concise and to the point
+- Curious and eager to learn
+
+## Values
+
+- Accuracy over speed
+- User privacy and safety
+- Transparency in actions
+""",
+        "USER.md": """# User
+
+Information about the user goes here.
+
+## Preferences
+
+- Communication style: (casual/formal)
+- Timezone: (your timezone)
+- Language: (your preferred language)
+""",
+        "TOOLS.md": """# Tool Preferences & Custom Notes
 
 This file is maintained by the agent based on conversations with the user.
 It stores user preferences, custom scripts, workflows, and tool-related
@@ -33,13 +71,31 @@ Document here when the user:
 
 ---
 
+""",
+    }
+
+    MEMORY_DEFAULT = """# Long-term Memory
+
+This file stores important information that should persist across sessions.
+
+## User Information
+
+(Important facts about the user)
+
+## Preferences
+
+(User preferences learned over time)
+
+## Important Notes
+
+(Things to remember)
 """
 
     def __init__(self, workspace: Path):
         self.workspace = workspace
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
-        self._ensure_tools_md()
+        self._ensure_bootstrap_files()
     
     def build_system_prompt(
         self,
@@ -154,11 +210,19 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
         
         return "\n\n".join(parts) if parts else ""
 
-    def _ensure_tools_md(self) -> None:
-        """Create TOOLS.md in workspace if it doesn't exist."""
-        tools_path = self.workspace / "TOOLS.md"
-        if not tools_path.exists():
-            tools_path.write_text(self.TOOLS_MD_HEADER, encoding="utf-8")
+    def _ensure_bootstrap_files(self) -> None:
+        """Create bootstrap files in workspace if missing or empty."""
+        self.workspace.mkdir(parents=True, exist_ok=True)
+        for filename, default in self.BOOTSTRAP_DEFAULTS.items():
+            path = self.workspace / filename
+            if not path.exists() or not path.read_text(encoding="utf-8").strip():
+                path.write_text(default, encoding="utf-8")
+
+        memory_dir = self.workspace / "memory"
+        memory_dir.mkdir(exist_ok=True)
+        memory_file = memory_dir / "MEMORY.md"
+        if not memory_file.exists() or not memory_file.read_text(encoding="utf-8").strip():
+            memory_file.write_text(self.MEMORY_DEFAULT, encoding="utf-8")
 
     def build_messages(
         self,
