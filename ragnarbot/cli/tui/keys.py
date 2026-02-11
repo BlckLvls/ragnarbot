@@ -99,6 +99,8 @@ def read_key() -> tuple[Key, str]:
                 if select.select([fd], [], [], 0.01)[0]:
                     os.read(fd, 2)
                 continue
+            if more_ch in ("\r", "\n"):
+                continue  # skip newlines from terminal line-wrapping in paste
             _input_buffer.append(_byte_to_key(more_ch))
 
         return first
