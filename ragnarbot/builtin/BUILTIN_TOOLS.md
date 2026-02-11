@@ -23,6 +23,28 @@ Execute a shell command. Returns stdout, stderr, and exit code.
 - Provide `working_dir` when the command must run in a specific directory.
 - For long-running processes, warn the user about potential timeout.
 
+## Background Execution
+
+For tasks that take more than a few seconds — image generation, data processing, long scripts, batch operations. Do NOT use these for quick commands; use `exec` instead.
+
+### exec_bg
+Launch a shell command in the background. Returns a `job_id` immediately. The system notifies you automatically when the job finishes — no need to poll or check manually in most cases.
+- Use `label` to give the job a human-readable name.
+- `working_dir` sets where the command runs.
+- Same safety guards as `exec`.
+
+### output
+Read the current stdout/stderr of a running or completed background job. Pass `job_id` and optionally `lines` (default 20). Use when you need to check progress mid-run.
+
+### poll
+Schedule a status check for all background jobs after N seconds. Use ONLY when the task produces periodic progress output you need to monitor (build logs, training progress, incremental results). In most cases you don't need this — the automatic completion notification is enough.
+
+### kill
+Terminate a running background job or cancel a scheduled poll. Pass the `job_id`.
+
+### dismiss
+Remove a completed/errored/killed job from the status summary. Cannot dismiss running jobs.
+
 ## Web Tools
 
 ### web_search
