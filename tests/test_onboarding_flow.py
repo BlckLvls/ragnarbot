@@ -25,6 +25,14 @@ def make_key_sequence(keys):
     return reader
 
 
+# Common key sequences for skipping web search (select "Skip" = 3rd option)
+SKIP_WEB_SEARCH = [
+    (Key.DOWN, ""),          # Past Brave Search
+    (Key.DOWN, ""),          # To Skip
+    (Key.ENTER, ""),         # Select Skip
+]
+
+
 @pytest.fixture(autouse=True)
 def cleanup():
     yield
@@ -95,7 +103,7 @@ class TestOnboardingFlow:
             (Key.DOWN, ""),          # Voice: past ElevenLabs
             (Key.DOWN, ""),          # Voice: to Skip
             (Key.ENTER, ""),         # Select Skip
-            (Key.ENTER, ""),         # Skip web search (empty enter)
+            *SKIP_WEB_SEARCH,       # Skip web search
             (Key.DOWN, ""),          # Navigate to "No" (manual start)
             (Key.ENTER, ""),         # Select manual start
             (Key.ENTER, ""),         # Confirm summary
@@ -124,7 +132,7 @@ class TestOnboardingFlow:
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
             (Key.ENTER, ""),        # Select Skip
-            (Key.ENTER, ""),        # Skip web search
+            *SKIP_WEB_SEARCH,      # Skip web search
             (Key.DOWN, ""),         # Navigate to "No" (manual start)
             (Key.ENTER, ""),        # Select manual start
             (Key.ENTER, ""),        # Confirm summary
@@ -151,7 +159,7 @@ class TestOnboardingFlow:
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
             (Key.ENTER, ""),        # Select Skip
-            (Key.ENTER, ""),        # Skip web search
+            *SKIP_WEB_SEARCH,      # Skip web search
             (Key.DOWN, ""),         # Navigate to "No" (manual start)
             (Key.ENTER, ""),        # Select manual start
             (Key.ENTER, ""),        # Confirm summary
@@ -179,7 +187,7 @@ class TestOnboardingFlow:
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
             (Key.ENTER, ""),        # Select Skip
-            (Key.ENTER, ""),        # Skip web search
+            *SKIP_WEB_SEARCH,      # Skip web search
             (Key.DOWN, ""),         # Navigate to "No" (manual start)
             (Key.ENTER, ""),        # Select manual start
             (Key.ENTER, ""),        # Confirm summary
@@ -207,7 +215,7 @@ class TestOnboardingFlow:
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
             (Key.ENTER, ""),        # Select Skip
-            (Key.ENTER, ""),        # Skip web search
+            *SKIP_WEB_SEARCH,      # Skip web search
             (Key.DOWN, ""),         # Navigate to "No" (manual start)
             (Key.ENTER, ""),        # Select manual start
             (Key.ENTER, ""),        # Confirm summary
@@ -279,7 +287,7 @@ class TestTelegramValidation:
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
             (Key.ENTER, ""),        # Select Skip
-            (Key.ENTER, ""),        # Skip web search
+            *SKIP_WEB_SEARCH,      # Skip web search
             (Key.DOWN, ""),         # Navigate to "No" (manual start)
             (Key.ENTER, ""),        # Select manual start
             (Key.ENTER, ""),        # Confirm summary
@@ -349,7 +357,7 @@ class TestVoiceTranscriptionOnboarding:
             (Key.ENTER, ""),        # Select Groq
             *[(Key.CHAR, c) for c in "gsk-groq-key"],
             (Key.ENTER, ""),        # Confirm Groq key
-            (Key.ENTER, ""),        # Skip web search
+            *SKIP_WEB_SEARCH,      # Skip web search
             (Key.DOWN, ""),         # Navigate to "No" (manual start)
             (Key.ENTER, ""),        # Select manual start
             (Key.ENTER, ""),        # Confirm summary
@@ -362,8 +370,8 @@ class TestVoiceTranscriptionOnboarding:
         creds = mock_save_creds.call_args[0][0]
         assert creds.services.groq.api_key == "gsk-groq-key"
 
-    def test_web_search_with_key(self, tmp_path):
-        """Provide Brave Search API key during onboarding."""
+    def test_web_search_brave_with_key(self, tmp_path):
+        """Select Brave Search and provide API key during onboarding."""
         keys = [
             (Key.ENTER, ""),        # Select Anthropic
             (Key.DOWN, ""),         # Navigate to API Key
@@ -375,13 +383,65 @@ class TestVoiceTranscriptionOnboarding:
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
             (Key.ENTER, ""),        # Select Skip
+            (Key.ENTER, ""),        # Select Brave Search (first option)
             *[(Key.CHAR, c) for c in "BSA-brave-key"],
-            (Key.ENTER, ""),        # Confirm web search key
+            (Key.ENTER, ""),        # Confirm Brave API key
             (Key.DOWN, ""),         # Navigate to "No" (manual start)
             (Key.ENTER, ""),        # Select manual start
             (Key.ENTER, ""),        # Confirm summary
         ]
         mock_save_config, mock_save_creds = self._run_with_keys(keys, tmp_path)
 
+        config = mock_save_config.call_args[0][0]
+        assert config.tools.web.search.engine == "brave"
+
         creds = mock_save_creds.call_args[0][0]
         assert creds.services.brave_search.api_key == "BSA-brave-key"
+
+    def test_web_search_duckduckgo(self, tmp_path):
+        """Select DuckDuckGo search engine during onboarding (no API key needed)."""
+        keys = [
+            (Key.ENTER, ""),        # Select Anthropic
+            (Key.DOWN, ""),         # Navigate to API Key
+            (Key.ENTER, ""),        # Select API Key
+            *[(Key.CHAR, c) for c in "sk-ant-key"],
+            (Key.ENTER, ""),        # Confirm key
+            (Key.ENTER, ""),        # Select first model
+            (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Voice: past ElevenLabs
+            (Key.DOWN, ""),         # Voice: to Skip
+            (Key.ENTER, ""),        # Select Skip
+            (Key.DOWN, ""),         # Web search: past Brave to DuckDuckGo
+            (Key.ENTER, ""),        # Select DuckDuckGo
+            (Key.DOWN, ""),         # Navigate to "No" (manual start)
+            (Key.ENTER, ""),        # Select manual start
+            (Key.ENTER, ""),        # Confirm summary
+        ]
+        mock_save_config, mock_save_creds = self._run_with_keys(keys, tmp_path)
+
+        config = mock_save_config.call_args[0][0]
+        assert config.tools.web.search.engine == "duckduckgo"
+
+    def test_web_search_skip(self, tmp_path):
+        """Skip web search during onboarding."""
+        keys = [
+            (Key.ENTER, ""),        # Select Anthropic
+            (Key.DOWN, ""),         # Navigate to API Key
+            (Key.ENTER, ""),        # Select API Key
+            *[(Key.CHAR, c) for c in "sk-ant-key"],
+            (Key.ENTER, ""),        # Confirm key
+            (Key.ENTER, ""),        # Select first model
+            (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Voice: past ElevenLabs
+            (Key.DOWN, ""),         # Voice: to Skip
+            (Key.ENTER, ""),        # Select Skip
+            *SKIP_WEB_SEARCH,      # Skip web search
+            (Key.DOWN, ""),         # Navigate to "No" (manual start)
+            (Key.ENTER, ""),        # Select manual start
+            (Key.ENTER, ""),        # Confirm summary
+        ]
+        mock_save_config, mock_save_creds = self._run_with_keys(keys, tmp_path)
+
+        # Engine should remain default "brave" since we skipped (engine="none" means don't set)
+        config = mock_save_config.call_args[0][0]
+        assert config.tools.web.search.engine == "brave"  # default, unchanged
