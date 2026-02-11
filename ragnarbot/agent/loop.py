@@ -50,6 +50,7 @@ class AgentLoop:
         workspace: Path,
         model: str | None = None,
         brave_api_key: str | None = None,
+        search_engine: str = "brave",
         exec_config: "ExecToolConfig | None" = None,
         cron_service: "CronService | None" = None,
         stream_steps: bool = False,
@@ -65,6 +66,7 @@ class AgentLoop:
         self.workspace = workspace
         self.model = model or provider.get_default_model()
         self.brave_api_key = brave_api_key
+        self.search_engine = search_engine
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.stream_steps = stream_steps
@@ -89,6 +91,7 @@ class AgentLoop:
             bus=bus,
             model=self.model,
             brave_api_key=brave_api_key,
+            search_engine=search_engine,
             exec_config=self.exec_config,
         )
 
@@ -111,7 +114,7 @@ class AgentLoop:
         ))
         
         # Web tools
-        self.tools.register(WebSearchTool(api_key=self.brave_api_key))
+        self.tools.register(WebSearchTool(engine=self.search_engine, api_key=self.brave_api_key))
         self.tools.register(WebFetchTool())
         
         # Message tool

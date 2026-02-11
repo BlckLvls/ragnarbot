@@ -215,6 +215,7 @@ def gateway_main(
 
     # Service credentials
     brave_api_key = creds.services.brave_search.api_key or None
+    search_engine = config.tools.web.search.engine
 
     # Create media manager
     media_dir = get_data_dir() / "media"
@@ -232,6 +233,7 @@ def gateway_main(
         workspace=config.workspace_path,
         model=config.agents.defaults.model,
         brave_api_key=brave_api_key,
+        search_engine=search_engine,
         exec_config=config.tools.exec,
         cron_service=cron,
         stream_steps=config.agents.defaults.stream_steps,
