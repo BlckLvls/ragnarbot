@@ -181,21 +181,48 @@ def voice_transcription_screen(console: Console) -> tuple[str, str] | None:
     return (provider_id, api_key)
 
 
-def web_search_screen(console: Console) -> str | None:
-    """Web search API key setup. Returns key, "" (skip), or None (back)."""
-    return text_input(
+def web_search_screen(console: Console) -> tuple[str, str] | None:
+    """Web search engine setup.
+
+    Returns (engine, api_key) tuple, or None (back).
+    engine is "brave", "duckduckgo", or "none".
+    """
+    engines = [
+        ("Brave Search", "Best quality, requires free API key"),
+        ("DuckDuckGo", "No API key needed, slightly slower"),
+        ("Skip", "Disable web search"),
+    ]
+    idx = select_menu(
         console,
-        "Web search setup (Brave Search)",
+        "Web search engine",
+        engines,
+        subtitle="Step 7 of 8 — Optional",
+    )
+    if idx is None:
+        return None
+    if idx == 2:
+        return ("none", "")
+    if idx == 1:
+        return ("duckduckgo", "")
+
+    # Brave selected — ask for API key
+    api_key = text_input(
+        console,
+        "Brave Search API key",
         "API key",
         hint=(
-            "Brave Search provides free web search for your agent.\n"
-            "  Get a free API key at: https://brave.com/search/api/\n"
+            "Get a free API key at: https://brave.com/search/api/\n"
             "\n"
             "  Press Enter with empty input to skip"
         ),
         allow_empty=True,
-        subtitle="Step 7 of 8 — Optional (free)",
+        subtitle="Step 7 of 8 — Brave Search",
     )
+    if api_key is None:
+        return None
+    if api_key == "":
+        return ("none", "")
+    return ("brave", api_key)
 
 
 def daemon_screen(console: Console) -> int | None:
@@ -237,10 +264,11 @@ def summary_screen(
     telegram_configured: bool,
     enable_daemon: bool = False,
     voice_provider: str = "none",
-    web_search_configured: bool = False,
+    search_engine: str = "none",
 ) -> bool:
     """Show summary of configured values. Returns True on Enter."""
     voice_label = {"groq": "Groq", "elevenlabs": "ElevenLabs", "none": "Skipped"}
+    search_label = {"brave": "Brave Search", "duckduckgo": "DuckDuckGo", "none": "Skipped"}
     lines = [
         "[bold]Configuration summary:[/bold]",
         "",
@@ -249,7 +277,7 @@ def summary_screen(
         f"  Model:          [cyan]{model_name}[/cyan]",
         f"  Telegram:       [cyan]{'Enabled' if telegram_configured else 'Skipped'}[/cyan]",
         f"  Transcription:  [cyan]{voice_label.get(voice_provider, voice_provider)}[/cyan]",
-        f"  Web search:     [cyan]{'Enabled' if web_search_configured else 'Skipped'}[/cyan]",
+        f"  Web search:     [cyan]{search_label.get(search_engine, search_engine)}[/cyan]",
         f"  Auto-start:     [cyan]{'Enabled' if enable_daemon else 'Manual'}[/cyan]",
         "",
         "[green]Press Enter to save and finish.[/green]",

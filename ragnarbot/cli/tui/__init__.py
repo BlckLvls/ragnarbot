@@ -39,6 +39,7 @@ def _onboarding_loop(console: Console) -> None:
     telegram_token: str | None = None
     voice_provider: str = "none"
     voice_api_key: str = ""
+    search_engine: str = "none"
     web_search_key: str = ""
     enable_daemon: bool | None = None
 
@@ -100,11 +101,11 @@ def _onboarding_loop(console: Console) -> None:
             step = 7
 
         elif step == 7:
-            web_search_key_result = web_search_screen(console)
-            if web_search_key_result is None:
+            web_search_result = web_search_screen(console)
+            if web_search_result is None:
                 step = 6
                 continue
-            web_search_key = web_search_key_result
+            search_engine, web_search_key = web_search_result
             step = 8
 
         elif step == 8:
@@ -131,7 +132,7 @@ def _onboarding_loop(console: Console) -> None:
                 telegram_configured,
                 enable_daemon=enable_daemon,
                 voice_provider=voice_provider,
-                web_search_configured=bool(web_search_key),
+                search_engine=search_engine,
             )
             if not ok:
                 step = 8
@@ -148,6 +149,7 @@ def _onboarding_loop(console: Console) -> None:
                 enable_daemon=enable_daemon,
                 voice_provider=voice_provider,
                 voice_api_key=voice_api_key,
+                search_engine=search_engine,
                 web_search_key=web_search_key,
             )
             return
@@ -163,6 +165,7 @@ def _save_results(
     enable_daemon: bool = False,
     voice_provider: str = "none",
     voice_api_key: str = "",
+    search_engine: str = "none",
     web_search_key: str = "",
 ) -> None:
     """Save onboarding results to config and credentials files."""
@@ -188,6 +191,10 @@ def _save_results(
 
     # Update voice transcription
     config.transcription.provider = voice_provider
+
+    # Update web search engine
+    if search_engine != "none":
+        config.tools.web.search.engine = search_engine
 
     # Update daemon
     config.daemon.enabled = enable_daemon
