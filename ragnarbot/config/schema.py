@@ -53,6 +53,7 @@ class GatewayConfig(BaseModel):
 
 class WebSearchConfig(BaseModel):
     """Web search tool configuration."""
+    engine: str = Field(default="brave", pattern="^(brave|duckduckgo)$")
     max_results: int = 5
 
 
