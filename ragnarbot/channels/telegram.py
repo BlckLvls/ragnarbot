@@ -17,6 +17,19 @@ from ragnarbot.media.manager import MediaManager
 from ragnarbot.providers.transcription import TranscriptionError, TranscriptionProvider
 
 
+BOT_COMMANDS = [
+    ("new", "Start a new conversation"),
+    ("context", "Show context usage"),
+    ("context_mode", "Change context mode"),
+]
+
+
+async def set_bot_commands(bot) -> None:
+    """Set the bot command menu. Single source of truth for all command lists."""
+    from telegram import BotCommand
+    await bot.set_my_commands([BotCommand(cmd, desc) for cmd, desc in BOT_COMMANDS])
+
+
 def _markdown_to_telegram_html(text: str) -> str:
     """
     Convert markdown to Telegram-safe HTML.
@@ -267,12 +280,7 @@ class TelegramChannel(BaseChannel):
         bot_info = await self._app.bot.get_me()
         logger.info(f"Telegram bot @{bot_info.username} connected")
 
-        from telegram import BotCommand
-        await self._app.bot.set_my_commands([
-            BotCommand("new", "Start a new conversation"),
-            BotCommand("context", "Show context usage"),
-            BotCommand("context_mode", "Change context mode"),
-        ])
+        await set_bot_commands(self._app.bot)
         
         # Register media download callback
         if self.media_manager:

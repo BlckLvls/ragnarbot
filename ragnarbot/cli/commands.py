@@ -528,7 +528,9 @@ def telegram_grant_access(
         import asyncio
 
         async def _send_confirmation():
-            from telegram import Bot, BotCommand
+            from telegram import Bot
+
+            from ragnarbot.channels.telegram import set_bot_commands
             bot = Bot(token=bot_token)
             async with bot:
                 await bot.send_message(
@@ -539,9 +541,7 @@ def telegram_grant_access(
                     ),
                     parse_mode="HTML",
                 )
-                await bot.set_my_commands([
-                    BotCommand("new", "Start a new conversation"),
-                ])
+                await set_bot_commands(bot)
 
         try:
             asyncio.run(_send_confirmation())
