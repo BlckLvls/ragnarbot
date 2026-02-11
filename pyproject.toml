@@ -28,6 +28,7 @@ dependencies = [
     "rich>=13.0.0",
     "croniter>=2.0.0",
     "python-telegram-bot>=21.0",
+    "aiohttp>=3.9.0",
 ]
 
 [project.optional-dependencies]
@@ -56,6 +57,7 @@ include = [
     "ragnarbot/**/*.py",
     "ragnarbot/skills/**/*.md",
     "ragnarbot/skills/**/*.sh",
+    "ragnarbot/channels/web_static/**",
 ]
 
 [tool.hatch.build.targets.sdist]

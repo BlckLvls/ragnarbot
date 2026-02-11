@@ -607,6 +607,11 @@ def channels_status():
         tg_config
     )
 
+    # Web
+    web_cfg = config.channels.web
+    web_info = f"http://{web_cfg.host}:{web_cfg.port}" if web_cfg.enabled else "[dim]not configured[/dim]"
+    table.add_row("Web", "✓" if web_cfg.enabled else "✗", web_info)
+
     console.print(table)
 
 

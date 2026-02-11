@@ -13,9 +13,18 @@ class TelegramConfig(BaseModel):
     proxy: str | None = None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
 
 
+class WebConfig(BaseModel):
+    """Web channel configuration."""
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 8080
+    title: str = "ragnarbot"
+
+
 class ChannelsConfig(BaseModel):
     """Configuration for chat channels."""
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    web: WebConfig = Field(default_factory=WebConfig)
 
 
 OAUTH_SUPPORTED_PROVIDERS = {"anthropic"}

@@ -62,8 +62,20 @@ class ChannelManager:
                 logger.info("Telegram channel enabled")
             except ImportError as e:
                 logger.warning(f"Telegram channel not available: {e}")
-        
-    
+
+        # Web channel
+        if self.config.channels.web.enabled:
+            try:
+                from ragnarbot.channels.web import WebChannel
+                self.channels["web"] = WebChannel(
+                    self.config.channels.web,
+                    self.bus,
+                )
+                logger.info("Web channel enabled")
+            except ImportError as e:
+                logger.warning(f"Web channel not available: {e}")
+
+
     async def start_all(self) -> None:
         """Start all channels and the outbound dispatcher."""
         if not self.channels:
