@@ -1,5 +1,6 @@
 """Cron tool for scheduling reminders and tasks."""
 
+import datetime
 from typing import Any
 
 from ragnarbot.agent.tools.base import Tool
@@ -26,7 +27,7 @@ class CronTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Schedule and manage recurring tasks. Actions: add, list, update, remove."
+        return "Schedule and manage tasks. Actions: add, list, update, remove."
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -52,6 +53,13 @@ class CronTool(Tool):
                     "description": (
                         "Execution mode: 'isolated' (fresh context, deliver_result) "
                         "or 'session' (injected into user's active chat)"
+                    ),
+                },
+                "at": {
+                    "type": "string",
+                    "description": (
+                        "ISO datetime for one-shot tasks (e.g. '2026-02-12T15:00:00'). "
+                        "Job auto-deletes after execution."
                     ),
                 },
                 "every_seconds": {
@@ -80,6 +88,7 @@ class CronTool(Tool):
         message: str = "",
         name: str = "",
         mode: str = "",
+        at: str | None = None,
         every_seconds: int | None = None,
         cron_expr: str | None = None,
         job_id: str | None = None,
@@ -87,7 +96,7 @@ class CronTool(Tool):
         **kwargs: Any,
     ) -> str:
         if action == "add":
-            return self._add_job(message, name, mode, every_seconds, cron_expr)
+            return self._add_job(message, name, mode, at, every_seconds, cron_expr)
         elif action == "list":
             return self._list_jobs()
         elif action == "update":
@@ -101,6 +110,7 @@ class CronTool(Tool):
         message: str,
         name: str,
         mode: str,
+        at: str | None,
         every_seconds: int | None,
         cron_expr: str | None,
     ) -> str:
@@ -110,13 +120,19 @@ class CronTool(Tool):
             return "Error: no session context (channel/chat_id)"
 
         # Build schedule
-        if every_seconds:
+        if at:
+            try:
+                dt = datetime.datetime.fromisoformat(at)
+            except ValueError:
+                return f"Error: invalid ISO datetime: {at}"
+            schedule = CronSchedule(kind="at", at_ms=int(dt.timestamp() * 1000))
+        elif every_seconds:
             schedule = CronSchedule(kind="every", every_ms=every_seconds * 1000)
         elif cron_expr:
             tz = _detect_timezone()
             schedule = CronSchedule(kind="cron", expr=cron_expr, tz=tz)
         else:
-            return "Error: either every_seconds or cron_expr is required"
+            return "Error: one of at, every_seconds, or cron_expr is required"
 
         job_name = name or message[:30]
         job_mode = mode if mode in ("isolated", "session") else "isolated"

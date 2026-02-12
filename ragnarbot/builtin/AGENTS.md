@@ -103,26 +103,81 @@ Use markdown checkboxes. Keep descriptions clear and self-contained — your fut
 
 ---
 
-## Scheduled Reminders
+## Scheduling Protocol
 
-When the user asks to be reminded of something at a specific time, use the CLI scheduler — not memory, not heartbeat.
+All scheduled work goes through the `cron` tool: one-shot reminders, recurring tasks, data fetching, monitoring.
 
-**The command:**
+### Schedule Types
 
+**One-shot** (`at`) — runs once at a specific time. Auto-deletes after execution. Logs persist.
 ```
-ragnarbot cron add --name "descriptive name" --message "The reminder message for the user" --at "YYYY-MM-DDTHH:MM:SS" --deliver --to "USER_ID" --channel "CHANNEL"
+cron(action="add", message="Call John", at="2026-02-12T15:00:00", mode="session")
 ```
 
-**How to get the values:**
-- `USER_ID` and `CHANNEL` come from your current session. If your session is `telegram:8281248569`, then `CHANNEL` is `telegram` and `USER_ID` is `8281248569`.
-- `--at` takes an ISO datetime in your local timezone (`{timezone}`)
-- `--name` is a short label for the job (shown in `cron list`)
+**Interval** (`every_seconds`) — runs every N seconds, persists.
+```
+cron(action="add", message="Check disk space", every_seconds=3600, mode="isolated")
+```
 
-**Execute this via the `exec` tool.** This is a shell command, not a cron tool call. The `--at` flag creates a one-shot job that fires once and auto-deletes.
+**Cron expression** (`cron_expr`) — runs on schedule, persists. Uses the user's local timezone.
+```
+cron(action="add", message="Summarize top HN stories", cron_expr="0 9 * * *", mode="isolated")
+```
 
-**Critical:** Writing a reminder to `MEMORY.md` does nothing. Memory is passive — it only gets read when a session starts. The cron scheduler actively wakes the agent and delivers the message at the specified time.
+### Choosing Execution Mode
 
-For *recurring* reminders (every day at 9am, every Monday, etc.), use the `cron` tool directly with `cron_expr` — that's what it's built for.
+**Session mode** — the task is injected into the user's active chat as a message. The agent sees full conversation history and can respond interactively.
+
+Use session when:
+- It's a simple reminder ("time to stretch", "standup in 10 minutes")
+- The task needs conversation context ("follow up on what we discussed")
+- The user should be able to reply and interact
+
+**Isolated mode** (default) — the agent gets fresh context with no session history. It executes the task independently using tools and must call `deliver_result` to send output. Multiple isolated jobs run in parallel.
+
+Use isolated when:
+- The task involves fetching data (web search, API calls, file reads)
+- The task runs commands or produces a report
+- The task doesn't need conversation context
+- You want concurrent execution without blocking the user's session
+
+**Default behavior:**
+- Simple reminders ("remind me to...") → session
+- Tasks requiring tool use (fetching, commands, reports) → isolated
+- When in doubt → isolated
+
+### When to Ask the User
+
+Do NOT ask about mode or schedule type when the intent is clear. The user shouldn't need to know about "isolated" or "session" — that's an implementation detail.
+
+**Just do it** when:
+- "Remind me at 3pm to call John" → one-shot, session. Done.
+- "Check HN every hour and send me top stories" → recurring, isolated. Done.
+- "Every morning at 9, summarize my emails" → recurring, isolated. Done.
+- "Ping me every 30 minutes to drink water" → recurring, session. Done.
+
+**Ask** when:
+- The user says "schedule something" but you can't tell if it's one-shot or recurring
+- The task could reasonably be either mode (e.g., "check the weather daily" — do they want just a nudge or a full report?)
+- The schedule is ambiguous ("do this regularly" — how often?)
+
+**Critical:** Writing a reminder to `MEMORY.md` does nothing. Memory is passive — it only gets read when a session starts. The cron scheduler actively wakes the agent at the specified time.
+
+### Silent Markers
+
+After an isolated job runs, a marker is silently saved to the user's session history:
+```
+[Cron result: {{job_name}} | id: {{job_id}} | {{timestamp}} | status: ok]
+```
+
+This means you can see in conversation history that a cron job ran, without it triggering a conversation turn. Reference these naturally if the user asks about recent activity.
+
+### Managing Jobs
+
+- `cron(action="list")` — see all jobs with IDs, schedules, modes, and status
+- `cron(action="update", job_id="...", ...)` — change schedule, message, mode, or enable/disable
+- `cron(action="remove", job_id="...")` — permanently delete a job
+- Execution logs persist at `~/.ragnarbot/cron/logs/{{job_id}}.jsonl` even after jobs are deleted
 
 ---
 

@@ -73,20 +73,50 @@ The subagent gets its own tool access and reports back when done. Give it a clea
 ## Scheduling
 
 ### cron
-Schedule and manage recurring tasks. Actions:
-- `add` — create a job. Requires `message` and either `every_seconds` or `cron_expr`. Optional: `name`, `mode`.
-- `list` — show all scheduled jobs with mode and status.
+Schedule and manage tasks. Actions:
+- `add` — create a job. Requires `message` and one of `at`, `every_seconds`, or `cron_expr`. Optional: `name`, `mode`.
+- `list` — show all scheduled jobs with mode, schedule, and status.
 - `update` — modify a job. Requires `job_id`. Supports: `name`, `message`, `mode`, `enabled`, `every_seconds`, `cron_expr`.
 - `remove` — delete a job by `job_id`.
 
+**Schedule types:**
+- `at` — ISO datetime (e.g. `"2026-02-12T15:00:00"`). One-shot: runs once and **auto-deletes**. Logs persist.
+- `every_seconds` — interval in seconds (recurring).
+- `cron_expr` — cron expression like `"0 9 * * *"` (recurring). Uses the user's local timezone automatically.
+
 **Execution modes** (`mode` parameter):
-- `isolated` (default) — fresh context per run, no session history. The agent gets a cron-specific prompt and must use `deliver_result` to send output. Jobs run fully parallel.
-- `session` — injected into the user's active chat session as a message. Fully interactive — the agent can ask follow-up questions and use conversation history.
+
+| | Isolated (default) | Session |
+|---|---|---|
+| Context | Fresh — no session history | Full conversation history |
+| Output | Must call `deliver_result` | Responds naturally in chat |
+| Interaction | None — one turn, no questions | Fully interactive |
+| Concurrency | Parallel — multiple jobs run simultaneously | Sequential — queued into session |
+| Best for | Data fetching, reports, monitoring, automated checks | Reminders, conversation-aware tasks, follow-ups |
+
+**Choosing a mode:**
+- Default to `isolated` for any task that fetches data, runs commands, or produces a report.
+- Use `session` when the task is a reminder, needs conversation context, or should feel like a natural message in the chat.
+- When in doubt and the user hasn't specified, use `isolated`.
 
 ### deliver_result
-Capture the final output of an isolated cron job. Only available during isolated cron execution. This is the ONLY way the user sees the result of an isolated job — call it with the final output content.
+Capture the final output of an isolated cron job. Only available during isolated cron execution. This is the ONLY way the user sees the result — if the agent doesn't call `deliver_result`, the job runs silently with no output delivered.
 
-**Cron logs** are stored at `~/.ragnarbot/cron/logs/{{job_id}}.jsonl`. Use `file_read` to inspect execution history.
+### Time expression reference
+
+| User says | Parameters |
+|---|---|
+| at 3pm today | `at="2026-02-12T15:00:00"` |
+| in 2 hours | `at` with computed ISO datetime |
+| every 20 minutes | `every_seconds=1200` |
+| every hour | `every_seconds=3600` |
+| every day at 8am | `cron_expr="0 8 * * *"` |
+| weekdays at 5pm | `cron_expr="0 17 * * 1-5"` |
+| every Sunday at noon | `cron_expr="0 12 * * 0"` |
+
+### Cron logs
+
+Execution history is stored at `~/.ragnarbot/cron/logs/{{job_id}}.jsonl`. Each entry contains timestamp, status, duration, input, and output. Logs persist even after one-shot jobs auto-delete. Use `file_read` to inspect them.
 
 ## Configuration
 
