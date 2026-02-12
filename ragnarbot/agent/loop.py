@@ -652,6 +652,17 @@ class AgentLoop:
             "full": "🔥 full (85%)",
         }
         text = f"✅ Context mode set to: {mode_labels[mode]}"
+
+        # Compute context data after mode change
+        tokens = self.get_context_tokens(
+            f"{msg.channel}:{msg.chat_id}", msg.channel, msg.chat_id
+        )
+        threshold = Compactor.THRESHOLDS.get(mode, 0.60)
+        effective_max = int(self.max_context_tokens * threshold)
+        pct = min(int(tokens / effective_max * 100), 100) if effective_max > 0 else 0
+        tokens_k = f"{tokens // 1000}k"
+        max_k = f"{effective_max // 1000}k"
+
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
@@ -659,6 +670,12 @@ class AgentLoop:
             metadata={
                 "raw_html": True,
                 "edit_message_id": msg.metadata.get("callback_message_id"),
+                "context_data": {
+                    "pct": pct,
+                    "tokens_k": tokens_k,
+                    "max_k": max_k,
+                    "mode": mode,
+                },
             },
         )
 
@@ -691,7 +708,15 @@ class AgentLoop:
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=text,
-            metadata={"raw_html": True},
+            metadata={
+                "raw_html": True,
+                "context_data": {
+                    "pct": pct,
+                    "tokens_k": tokens_k,
+                    "max_k": max_k,
+                    "mode": self.context_mode,
+                },
+            },
         )
 
     async def _process_system_message(self, msg: InboundMessage) -> OutboundMessage | None:
