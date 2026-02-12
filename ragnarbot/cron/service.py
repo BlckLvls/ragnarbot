@@ -16,26 +16,60 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _detect_timezone() -> str:
+    """Detect the local IANA timezone name."""
+    import os
+
+    if tz := os.environ.get("TZ"):
+        return tz
+
+    # macOS / Linux: /etc/localtime symlink → .../zoneinfo/Region/City
+    try:
+        link = os.readlink("/etc/localtime")
+        if "zoneinfo/" in link:
+            return link.split("zoneinfo/")[-1]
+    except OSError:
+        pass
+
+    # Linux: /etc/timezone plain-text file
+    try:
+        return Path("/etc/timezone").read_text().strip()
+    except OSError:
+        pass
+
+    return "UTC"
+
+
 def _compute_next_run(schedule: CronSchedule, now_ms: int) -> int | None:
     """Compute next run time in ms."""
     if schedule.kind == "at":
         return schedule.at_ms if schedule.at_ms and schedule.at_ms > now_ms else None
-    
+
     if schedule.kind == "every":
         if not schedule.every_ms or schedule.every_ms <= 0:
             return None
         # Next interval from now
         return now_ms + schedule.every_ms
-    
+
     if schedule.kind == "cron" and schedule.expr:
         try:
             from croniter import croniter
-            cron = croniter(schedule.expr, time.time())
-            next_time = cron.get_next()
-            return int(next_time * 1000)
+
+            if schedule.tz:
+                from datetime import datetime
+                from zoneinfo import ZoneInfo
+                tz = ZoneInfo(schedule.tz)
+                now = datetime.now(tz)
+                cron = croniter(schedule.expr, now)
+                next_dt = cron.get_next(datetime)
+                return int(next_dt.timestamp() * 1000)
+            else:
+                cron = croniter(schedule.expr, time.time())
+                next_time = cron.get_next()
+                return int(next_time * 1000)
         except Exception:
             return None
-    
+
     return None
 
 
@@ -352,6 +386,8 @@ class CronService:
             if "schedule" in updates:
                 sched = updates["schedule"]
                 kind = sched.get("kind", job.schedule.kind)
+                # Preserve existing tz unless explicitly overridden
+                tz = sched.get("tz", job.schedule.tz)
                 if kind == "every" and "every_seconds" in sched:
                     job.schedule = CronSchedule(
                         kind="every", every_ms=sched["every_seconds"] * 1000,
@@ -359,7 +395,7 @@ class CronService:
                     schedule_changed = True
                 elif kind == "cron" and "cron_expr" in sched:
                     job.schedule = CronSchedule(
-                        kind="cron", expr=sched["cron_expr"],
+                        kind="cron", expr=sched["cron_expr"], tz=tz,
                     )
                     schedule_changed = True
 

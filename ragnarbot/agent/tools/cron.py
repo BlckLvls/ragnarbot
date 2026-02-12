@@ -3,7 +3,7 @@
 from typing import Any
 
 from ragnarbot.agent.tools.base import Tool
-from ragnarbot.cron.service import CronService
+from ragnarbot.cron.service import CronService, _detect_timezone
 from ragnarbot.cron.types import CronSchedule
 
 
@@ -113,7 +113,8 @@ class CronTool(Tool):
         if every_seconds:
             schedule = CronSchedule(kind="every", every_ms=every_seconds * 1000)
         elif cron_expr:
-            schedule = CronSchedule(kind="cron", expr=cron_expr)
+            tz = _detect_timezone()
+            schedule = CronSchedule(kind="cron", expr=cron_expr, tz=tz)
         else:
             return "Error: either every_seconds or cron_expr is required"
 

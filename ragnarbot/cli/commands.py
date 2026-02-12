@@ -828,7 +828,8 @@ def cron_add(
     if every:
         schedule = CronSchedule(kind="every", every_ms=every * 1000)
     elif cron_expr:
-        schedule = CronSchedule(kind="cron", expr=cron_expr)
+        from ragnarbot.cron.service import _detect_timezone
+        schedule = CronSchedule(kind="cron", expr=cron_expr, tz=_detect_timezone())
     elif at:
         import datetime
         dt = datetime.datetime.fromisoformat(at)
