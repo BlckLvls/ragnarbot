@@ -305,6 +305,10 @@ class CronService:
         store = self._load_store()
         now = _now_ms()
 
+        # One-shot jobs auto-delete after execution (logs persist separately)
+        if schedule.kind == "at":
+            delete_after_run = True
+
         job = CronJob(
             id=str(uuid.uuid4())[:8],
             name=name,
