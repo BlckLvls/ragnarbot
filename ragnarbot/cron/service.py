@@ -77,6 +77,7 @@ class CronService:
                         payload=CronPayload(
                             kind=j["payload"].get("kind", "agent_turn"),
                             message=j["payload"].get("message", ""),
+                            mode=j["payload"].get("mode", "isolated"),
                             deliver=j["payload"].get("deliver", False),
                             channel=j["payload"].get("channel"),
                             to=j["payload"].get("to"),
@@ -124,6 +125,7 @@ class CronService:
                     "payload": {
                         "kind": j.payload.kind,
                         "message": j.payload.message,
+                        "mode": j.payload.mode,
                         "deliver": j.payload.deliver,
                         "channel": j.payload.channel,
                         "to": j.payload.to,
@@ -259,6 +261,7 @@ class CronService:
         name: str,
         schedule: CronSchedule,
         message: str,
+        mode: str = "isolated",
         deliver: bool = False,
         channel: str | None = None,
         to: str | None = None,
@@ -267,7 +270,7 @@ class CronService:
         """Add a new job."""
         store = self._load_store()
         now = _now_ms()
-        
+
         job = CronJob(
             id=str(uuid.uuid4())[:8],
             name=name,
@@ -276,6 +279,7 @@ class CronService:
             payload=CronPayload(
                 kind="agent_turn",
                 message=message,
+                mode=mode,
                 deliver=deliver,
                 channel=channel,
                 to=to,
@@ -323,6 +327,54 @@ class CronService:
                 return job
         return None
     
+    def update_job(self, job_id: str, **updates) -> CronJob | None:
+        """Update a job's fields.
+
+        Supported keys: name, message, mode, enabled, schedule (dict with
+        kind + every_seconds/cron_expr).
+        """
+        store = self._load_store()
+        for job in store.jobs:
+            if job.id != job_id:
+                continue
+
+            schedule_changed = False
+
+            if "name" in updates:
+                job.name = updates["name"]
+            if "message" in updates:
+                job.payload.message = updates["message"]
+            if "mode" in updates and updates["mode"] in ("isolated", "session"):
+                job.payload.mode = updates["mode"]
+            if "enabled" in updates:
+                job.enabled = bool(updates["enabled"])
+                schedule_changed = True
+            if "schedule" in updates:
+                sched = updates["schedule"]
+                kind = sched.get("kind", job.schedule.kind)
+                if kind == "every" and "every_seconds" in sched:
+                    job.schedule = CronSchedule(
+                        kind="every", every_ms=sched["every_seconds"] * 1000,
+                    )
+                    schedule_changed = True
+                elif kind == "cron" and "cron_expr" in sched:
+                    job.schedule = CronSchedule(
+                        kind="cron", expr=sched["cron_expr"],
+                    )
+                    schedule_changed = True
+
+            if schedule_changed and job.enabled:
+                job.state.next_run_at_ms = _compute_next_run(job.schedule, _now_ms())
+            elif schedule_changed and not job.enabled:
+                job.state.next_run_at_ms = None
+
+            job.updated_at_ms = _now_ms()
+            self._save_store()
+            self._arm_timer()
+            return job
+
+        return None
+
     async def run_job(self, job_id: str, force: bool = False) -> bool:
         """Manually run a job."""
         store = self._load_store()
