@@ -26,6 +26,7 @@ from ragnarbot.agent.tools.media import DownloadFileTool
 from ragnarbot.agent.tools.message import MessageTool
 from ragnarbot.agent.tools.registry import ToolRegistry
 from ragnarbot.agent.tools.restart import RestartTool
+from ragnarbot.agent.tools.update import UpdateTool
 from ragnarbot.agent.tools.shell import ExecTool
 from ragnarbot.agent.tools.spawn import SpawnTool
 from ragnarbot.agent.tools.telegram import (
@@ -168,7 +169,8 @@ class AgentLoop:
         # Config and restart tools
         self.tools.register(ConfigTool(agent=self))
         self.tools.register(RestartTool(agent=self))
-    
+        self.tools.register(UpdateTool(agent=self))
+
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
         self._running = True
@@ -399,6 +401,10 @@ class AgentLoop:
         restart_tool = self.tools.get("restart")
         if isinstance(restart_tool, RestartTool):
             restart_tool.set_context(msg.channel, msg.chat_id)
+
+        update_tool = self.tools.get("update")
+        if isinstance(update_tool, UpdateTool):
+            update_tool.set_context(msg.channel, msg.chat_id)
 
         download_tool = self.tools.get("download_file")
         if isinstance(download_tool, DownloadFileTool):
@@ -805,6 +811,10 @@ class AgentLoop:
         restart_tool = self.tools.get("restart")
         if isinstance(restart_tool, RestartTool):
             restart_tool.set_context(origin_channel, origin_chat_id)
+
+        update_tool = self.tools.get("update")
+        if isinstance(update_tool, UpdateTool):
+            update_tool.set_context(origin_channel, origin_chat_id)
 
         # Build messages with the announce content
         messages = self.context.build_messages(

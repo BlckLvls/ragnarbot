@@ -299,6 +299,40 @@ def gateway_main(
         pid_path.parent.mkdir(parents=True, exist_ok=True)
         pid_path.write_text(str(os.getpid()))
 
+        # If this is a post-update restart, notify the originating channel
+        from ragnarbot.agent.tools.update import UPDATE_MARKER, GITHUB_REPO
+        if UPDATE_MARKER.exists():
+            try:
+                import json as _json
+                marker = _json.loads(UPDATE_MARKER.read_text())
+                origin_channel = marker["channel"]
+                origin_chat_id = marker["chat_id"]
+                old_ver = marker.get("old_version", "?")
+                new_ver = marker.get("new_version", "?")
+                changelog_url = (
+                    f"https://github.com/{GITHUB_REPO}/compare/v{old_ver}...v{new_ver}"
+                )
+                from ragnarbot.bus.events import InboundMessage
+                await bus.publish_inbound(InboundMessage(
+                    channel="system",
+                    sender_id="gateway",
+                    chat_id=f"{origin_channel}:{origin_chat_id}",
+                    content=(
+                        f"[System: ragnarbot updated from v{old_ver} to v{new_ver}. "
+                        f"Changelog: {changelog_url}]"
+                    ),
+                ))
+                console.print(
+                    f"[green]✓[/green] Post-update notification queued "
+                    f"for {origin_channel}:{origin_chat_id} (v{old_ver} → v{new_ver})"
+                )
+            except Exception as e:
+                console.print(
+                    f"[yellow]Warning: could not inject update notification: {e}[/yellow]"
+                )
+            finally:
+                UPDATE_MARKER.unlink(missing_ok=True)
+
         # If this is a restart, inject a notification into the originating channel
         from ragnarbot.agent.tools.restart import RESTART_MARKER
         if RESTART_MARKER.exists():
