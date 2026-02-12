@@ -31,6 +31,7 @@
 
   html, body {
     height: 100%;
+    overflow: hidden;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
     background: var(--bg);
     color: var(--text);
@@ -42,6 +43,7 @@
     height: 100%;
     max-width: 800px;
     margin: 0 auto;
+    overflow: hidden;
   }
 
   /* Header */
@@ -484,7 +486,8 @@ document.addEventListener("DOMContentLoaded", function() {
   // --- Config ---
   var wsProto = location.protocol === "https:" ? "wss:" : "ws:";
   var WS_URL = wsProto + "//" + location.host + "/ws";
-  const STORAGE_KEY = "ragnarbot_chat_id";
+  var STORAGE_KEY = "ragnarbot_chat_id";
+  var HISTORY_KEY = "ragnarbot_history_";
 
   // --- Elements ---
   const messagesEl = document.getElementById("messages");
@@ -680,7 +683,7 @@ document.addEventListener("DOMContentLoaded", function() {
   }
 
   // --- Messages ---
-  function addMessage(role, content, intermediate, attachments, media) {
+  function addMessage(role, content, intermediate, attachments, media, fromHistory) {
     // If intermediate, replace previous intermediate message
     if (role === "bot" && intermediate) {
       var prev = messagesEl.querySelector(".msg-wrapper.bot.intermediate");
@@ -694,6 +697,7 @@ document.addEventListener("DOMContentLoaded", function() {
 
     var wrapper = document.createElement("div");
     wrapper.className = "msg-wrapper " + role + (intermediate ? " intermediate" : "");
+    if (fromHistory) wrapper.style.animation = "none";
 
     var div = document.createElement("div");
     div.className = "msg";
@@ -758,6 +762,15 @@ document.addEventListener("DOMContentLoaded", function() {
 
     messagesEl.insertBefore(wrapper, typingEl);
     scrollBottom();
+
+    // Persist to localStorage (skip intermediate and already-restored)
+    if (!intermediate && !fromHistory) {
+      var mediaUrl = (media && media.type === "image") ? media.url : null;
+      // Don't save huge base64 data URLs (bot snapshots)
+      if (mediaUrl && mediaUrl.length > 50000) mediaUrl = null;
+      saveHistory(role, content, mediaUrl);
+    }
+
     return wrapper;
   }
 
@@ -981,6 +994,7 @@ document.addEventListener("DOMContentLoaded", function() {
   sendBtn.addEventListener("click", sendMessage);
 
   newChatBtn.addEventListener("click", function() {
+    clearHistory();
     chatId = generateId();
     localStorage.setItem(STORAGE_KEY, chatId);
     // Clear messages
@@ -1000,7 +1014,50 @@ document.addEventListener("DOMContentLoaded", function() {
     }
   });
 
+  // --- Chat history persistence ---
+  var MAX_HISTORY = 200;
+
+  function historyKey() { return HISTORY_KEY + chatId; }
+
+  function saveHistory(role, content, mediaUrl) {
+    try {
+      var arr = JSON.parse(localStorage.getItem(historyKey()) || "[]");
+      arr.push({ r: role, c: content, m: mediaUrl || null });
+      if (arr.length > MAX_HISTORY) arr = arr.slice(-MAX_HISTORY);
+      localStorage.setItem(historyKey(), JSON.stringify(arr));
+    } catch (e) {}
+  }
+
+  function loadHistory() {
+    try {
+      var arr = JSON.parse(localStorage.getItem(historyKey()) || "[]");
+      arr.forEach(function(h) {
+        var media = h.m ? { type: "image", url: h.m, filename: "image" } : null;
+        addMessage(h.r, h.c, false, null, media, true);
+      });
+    } catch (e) {}
+  }
+
+  function clearHistory() {
+    try { localStorage.removeItem(historyKey()); } catch (e) {}
+  }
+
+  // --- Mobile keyboard viewport fix ---
+  function adjustViewport() {
+    if (window.visualViewport) {
+      var h = window.visualViewport.height;
+      document.getElementById("app").style.height = h + "px";
+      scrollBottom();
+    }
+  }
+
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", adjustViewport);
+    window.visualViewport.addEventListener("scroll", adjustViewport);
+  }
+
   // --- Init ---
+  loadHistory();
   connect();
 });
 </script>
