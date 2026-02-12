@@ -248,21 +248,69 @@ def gateway_main(
     )
 
     # Set cron callback (needs agent)
+    def _format_schedule(schedule) -> str:
+        if schedule.kind == "every" and schedule.every_ms:
+            secs = schedule.every_ms // 1000
+            if secs >= 3600:
+                return f"every {secs // 3600}h"
+            if secs >= 60:
+                return f"every {secs // 60}m"
+            return f"every {secs}s"
+        if schedule.kind == "cron" and schedule.expr:
+            return f"cron({schedule.expr})"
+        if schedule.kind == "at":
+            return "one-time"
+        return "unknown"
+
     async def on_cron_job(job: CronJob) -> str | None:
         """Execute a cron job through the agent."""
-        response = await agent.process_direct(
-            job.payload.message,
-            session_key=f"cron:{job.id}",
-            channel=job.payload.channel or "cli",
-            chat_id=job.payload.to or "direct",
-        )
-        if job.payload.deliver and job.payload.to:
-            from ragnarbot.bus.events import OutboundMessage
-            await bus.publish_outbound(OutboundMessage(
-                channel=job.payload.channel or "cli",
-                chat_id=job.payload.to,
-                content=response or ""
-            ))
+        import time as _time
+        from ragnarbot.cron.logger import log_execution
+
+        start_time = _time.time()
+        response = None
+        status = "ok"
+        error = None
+
+        try:
+            if job.payload.mode == "session":
+                # Inject into user's active session via inbound queue
+                cron_header = f"[Cron task: {job.name}]\n---\n{job.payload.message}"
+                from ragnarbot.bus.events import InboundMessage
+                await bus.publish_inbound(InboundMessage(
+                    channel=job.payload.channel or "cli",
+                    sender_id="cron",
+                    chat_id=job.payload.to or "direct",
+                    content=cron_header,
+                    metadata={"cron_job_id": job.id},
+                ))
+                response = "(queued to session)"
+            else:
+                # Isolated mode — fully parallel, no locks
+                schedule_desc = _format_schedule(job.schedule)
+                response = await agent.process_cron_isolated(
+                    job_name=job.name,
+                    message=job.payload.message,
+                    schedule_desc=schedule_desc,
+                    channel=job.payload.channel or "cli",
+                    chat_id=job.payload.to or "direct",
+                )
+                # Deliver result to user
+                if response and job.payload.to:
+                    from ragnarbot.bus.events import OutboundMessage
+                    await bus.publish_outbound(OutboundMessage(
+                        channel=job.payload.channel or "cli",
+                        chat_id=job.payload.to,
+                        content=response,
+                    ))
+        except Exception as e:
+            status = "error"
+            error = str(e)
+            raise
+        finally:
+            duration = _time.time() - start_time
+            log_execution(job, response, status, duration, error)
+
         return response
     cron.on_job = on_cron_job
 
@@ -728,6 +776,7 @@ def cron_list(
     table.add_column("ID", style="cyan")
     table.add_column("Name")
     table.add_column("Schedule")
+    table.add_column("Mode")
     table.add_column("Status")
     table.add_column("Next Run")
 
@@ -749,7 +798,7 @@ def cron_list(
 
         status = "[green]enabled[/green]" if job.enabled else "[dim]disabled[/dim]"
 
-        table.add_row(job.id, job.name, sched, status, next_run)
+        table.add_row(job.id, job.name, sched, job.payload.mode, status, next_run)
 
     console.print(table)
 
@@ -761,6 +810,7 @@ def cron_add(
     every: int = typer.Option(None, "--every", "-e", help="Run every N seconds"),
     cron_expr: str = typer.Option(None, "--cron", "-c", help="Cron expression (e.g. '0 9 * * *')"),
     at: str = typer.Option(None, "--at", help="Run once at time (ISO format)"),
+    mode: str = typer.Option("isolated", "--mode", help="Execution mode: isolated or session"),
     deliver: bool = typer.Option(False, "--deliver", "-d", help="Deliver response to channel"),
     to: str = typer.Option(None, "--to", help="Recipient for delivery"),
     channel: str = typer.Option(None, "--channel", help="Channel for delivery (e.g. 'telegram')"),
@@ -769,6 +819,10 @@ def cron_add(
     from ragnarbot.config.loader import get_data_dir
     from ragnarbot.cron.service import CronService
     from ragnarbot.cron.types import CronSchedule
+
+    if mode not in ("isolated", "session"):
+        console.print("[red]Error: --mode must be 'isolated' or 'session'[/red]")
+        raise typer.Exit(1)
 
     # Determine schedule type
     if every:
@@ -790,12 +844,13 @@ def cron_add(
         name=name,
         schedule=schedule,
         message=message,
+        mode=mode,
         deliver=deliver,
         to=to,
         channel=channel,
     )
 
-    console.print(f"[green]✓[/green] Added job '{job.name}' ({job.id})")
+    console.print(f"[green]✓[/green] Added job '{job.name}' ({job.id}, mode: {mode})")
 
 
 @cron_app.command("remove")
@@ -813,6 +868,94 @@ def cron_remove(
         console.print(f"[green]✓[/green] Removed job {job_id}")
     else:
         console.print(f"[red]Job {job_id} not found[/red]")
+
+
+@cron_app.command("update")
+def cron_update(
+    job_id: str = typer.Argument(..., help="Job ID to update"),
+    name: str = typer.Option(None, "--name", "-n", help="New job name"),
+    message: str = typer.Option(None, "--message", "-m", help="New message"),
+    mode: str = typer.Option(None, "--mode", help="Execution mode: isolated or session"),
+    every: int = typer.Option(None, "--every", "-e", help="New interval in seconds"),
+    cron_expr: str = typer.Option(None, "--cron", "-c", help="New cron expression"),
+    enable: bool = typer.Option(None, "--enable/--disable", help="Enable or disable the job"),
+):
+    """Update a scheduled job."""
+    from ragnarbot.config.loader import get_data_dir
+    from ragnarbot.cron.service import CronService
+
+    if mode is not None and mode not in ("isolated", "session"):
+        console.print("[red]Error: --mode must be 'isolated' or 'session'[/red]")
+        raise typer.Exit(1)
+
+    store_path = get_data_dir() / "cron" / "jobs.json"
+    service = CronService(store_path)
+
+    updates: dict = {}
+    if name is not None:
+        updates["name"] = name
+    if message is not None:
+        updates["message"] = message
+    if mode is not None:
+        updates["mode"] = mode
+    if enable is not None:
+        updates["enabled"] = enable
+    if every is not None:
+        updates["schedule"] = {"kind": "every", "every_seconds": every}
+    elif cron_expr is not None:
+        updates["schedule"] = {"kind": "cron", "cron_expr": cron_expr}
+
+    if not updates:
+        console.print("[yellow]Nothing to update — provide at least one option.[/yellow]")
+        raise typer.Exit(1)
+
+    job = service.update_job(job_id, **updates)
+    if job:
+        console.print(f"[green]✓[/green] Updated job '{job.name}' ({job.id})")
+    else:
+        console.print(f"[red]Job {job_id} not found[/red]")
+
+
+@cron_app.command("logs")
+def cron_logs(
+    job_id: str = typer.Argument(..., help="Job ID to view logs for"),
+    lines: int = typer.Option(10, "--lines", "-n", help="Number of recent entries to show"),
+):
+    """Show execution logs for a cron job."""
+    from ragnarbot.cron.logger import get_cron_logs_dir
+
+    log_file = get_cron_logs_dir() / f"{job_id}.jsonl"
+    if not log_file.exists():
+        console.print(f"[yellow]No logs found for job {job_id}[/yellow]")
+        return
+
+    import json
+    all_lines = log_file.read_text(encoding="utf-8").strip().splitlines()
+    recent = all_lines[-lines:]
+
+    table = Table(title=f"Logs for {job_id}")
+    table.add_column("Time", style="dim")
+    table.add_column("Status")
+    table.add_column("Duration")
+    table.add_column("Output", max_width=60)
+
+    for line in recent:
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        status_style = "[green]ok[/green]" if entry["status"] == "ok" else "[red]error[/red]"
+        output = entry.get("output") or entry.get("error") or ""
+        if len(output) > 60:
+            output = output[:57] + "..."
+        table.add_row(
+            entry.get("timestamp", "?"),
+            status_style,
+            f"{entry.get('duration_s', '?')}s",
+            output,
+        )
+
+    console.print(table)
 
 
 @cron_app.command("enable")
