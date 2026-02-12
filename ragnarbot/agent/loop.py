@@ -396,6 +396,10 @@ class AgentLoop:
         if isinstance(poll_tool, PollTool):
             poll_tool.set_context(msg.channel, msg.chat_id)
 
+        restart_tool = self.tools.get("restart")
+        if isinstance(restart_tool, RestartTool):
+            restart_tool.set_context(msg.channel, msg.chat_id)
+
         download_tool = self.tools.get("download_file")
         if isinstance(download_tool, DownloadFileTool):
             download_tool.set_context(msg.channel, session.key)
@@ -797,6 +801,10 @@ class AgentLoop:
         poll_tool = self.tools.get("poll")
         if isinstance(poll_tool, PollTool):
             poll_tool.set_context(origin_channel, origin_chat_id)
+
+        restart_tool = self.tools.get("restart")
+        if isinstance(restart_tool, RestartTool):
+            restart_tool.set_context(origin_channel, origin_chat_id)
 
         # Build messages with the announce content
         messages = self.context.build_messages(

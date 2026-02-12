@@ -295,6 +295,33 @@ def gateway_main(
         pid_path.parent.mkdir(parents=True, exist_ok=True)
         pid_path.write_text(str(os.getpid()))
 
+        # If this is a restart, inject a notification into the originating channel
+        from ragnarbot.agent.tools.restart import RESTART_MARKER
+        if RESTART_MARKER.exists():
+            try:
+                import json as _json
+                marker = _json.loads(RESTART_MARKER.read_text())
+                origin_channel = marker["channel"]
+                origin_chat_id = marker["chat_id"]
+                from ragnarbot.bus.events import InboundMessage
+                await bus.publish_inbound(InboundMessage(
+                    channel="system",
+                    sender_id="gateway",
+                    chat_id=f"{origin_channel}:{origin_chat_id}",
+                    content=(
+                        "[System: gateway restarted successfully. "
+                        "Config changes are now active.]"
+                    ),
+                ))
+                console.print(
+                    f"[green]✓[/green] Post-restart notification queued "
+                    f"for {origin_channel}:{origin_chat_id}"
+                )
+            except Exception as e:
+                console.print(f"[yellow]Warning: could not inject restart notification: {e}[/yellow]")
+            finally:
+                RESTART_MARKER.unlink(missing_ok=True)
+
         # SIGUSR1 handler for config reload
         reload_event = asyncio.Event()
         loop = asyncio.get_running_loop()
