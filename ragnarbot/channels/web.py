@@ -177,7 +177,11 @@ class WebChannel(BaseChannel):
     async def _handle_index(self, _request: web.Request) -> web.Response:
         html = (STATIC_DIR / "index.html").read_text()
         html = html.replace("{{title}}", self.config.title)
-        return web.Response(text=html, content_type="text/html")
+        return web.Response(
+            text=html,
+            content_type="text/html",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
 
     async def _handle_upload(self, request: web.Request) -> web.Response:
         """Accept file upload via multipart/form-data, return file_id."""

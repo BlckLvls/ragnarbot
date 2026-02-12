@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{{title}}</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js" defer crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer crossorigin="anonymous"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -480,9 +480,10 @@
   </div>
 </div>
 <script>
-(function() {
+document.addEventListener("DOMContentLoaded", function() {
   // --- Config ---
-  const WS_URL = `ws://${location.host}/ws`;
+  var wsProto = location.protocol === "https:" ? "wss:" : "ws:";
+  var WS_URL = wsProto + "//" + location.host + "/ws";
   const STORAGE_KEY = "ragnarbot_chat_id";
 
   // --- Elements ---
@@ -502,10 +503,18 @@
   const attachPreview = document.getElementById("attach-preview");
   const voiceBtn = document.getElementById("voice-btn");
 
+  // --- Helpers ---
+  function generateId() {
+    if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+    return "xxxx-xxxx-xxxx-xxxx".replace(/x/g, function() {
+      return ((Math.random() * 16) | 0).toString(16);
+    });
+  }
+
   // --- State ---
   let chatId = localStorage.getItem(STORAGE_KEY);
   if (!chatId) {
-    chatId = crypto.randomUUID();
+    chatId = generateId();
     localStorage.setItem(STORAGE_KEY, chatId);
   }
 
@@ -527,16 +536,25 @@
   let audioChunks = [];
   let isRecording = false;
 
-  // --- Markdown ---
-  marked.setOptions({
-    highlight: function(code, lang) {
-      if (lang && hljs.getLanguage(lang)) {
-        return hljs.highlight(code, { language: lang }).value;
-      }
-      return hljs.highlightAuto(code).value;
-    },
-    breaks: true,
-  });
+  // --- Markdown (graceful fallback if CDN unavailable) ---
+  var hasMarked = typeof marked !== "undefined";
+  var hasHljs = typeof hljs !== "undefined";
+
+  if (hasMarked) {
+    marked.setOptions({
+      highlight: function(code, lang) {
+        if (hasHljs && lang && hljs.getLanguage(lang)) return hljs.highlight(code, { language: lang }).value;
+        if (hasHljs) return hljs.highlightAuto(code).value;
+        return code;
+      },
+      breaks: true,
+    });
+  }
+
+  function renderMarkdown(text) {
+    if (hasMarked) return marked.parse(text);
+    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>");
+  }
 
   // --- WebSocket ---
   function connect() {
@@ -681,10 +699,12 @@
     div.className = "msg";
 
     if (role === "bot") {
-      div.innerHTML = marked.parse(content || "");
-      div.querySelectorAll("pre code").forEach(function(block) {
-        hljs.highlightElement(block);
-      });
+      div.innerHTML = renderMarkdown(content || "");
+      if (hasHljs) {
+        div.querySelectorAll("pre code").forEach(function(block) {
+          hljs.highlightElement(block);
+        });
+      }
     } else {
       div.textContent = content;
     }
@@ -961,7 +981,7 @@
   sendBtn.addEventListener("click", sendMessage);
 
   newChatBtn.addEventListener("click", function() {
-    chatId = crypto.randomUUID();
+    chatId = generateId();
     localStorage.setItem(STORAGE_KEY, chatId);
     // Clear messages
     messagesEl.querySelectorAll(".msg-wrapper").forEach(function(m) { m.remove(); });
@@ -982,7 +1002,7 @@
 
   // --- Init ---
   connect();
-})();
+});
 </script>
 </body>
 </html>
