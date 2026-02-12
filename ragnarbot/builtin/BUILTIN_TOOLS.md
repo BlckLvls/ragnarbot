@@ -73,12 +73,20 @@ The subagent gets its own tool access and reports back when done. Give it a clea
 ## Scheduling
 
 ### cron
-Schedule recurring tasks or reminders. Actions:
-- `add` — create a job. Requires `message` and either `every_seconds` (interval) or `cron_expr` (cron syntax like "0 9 * * *" for daily at 9am).
-- `list` — show all scheduled jobs.
+Schedule and manage recurring tasks. Actions:
+- `add` — create a job. Requires `message` and either `every_seconds` or `cron_expr`. Optional: `name`, `mode`.
+- `list` — show all scheduled jobs with mode and status.
+- `update` — modify a job. Requires `job_id`. Supports: `name`, `message`, `mode`, `enabled`, `every_seconds`, `cron_expr`.
 - `remove` — delete a job by `job_id`.
 
-Jobs run through the agent and deliver responses to the user's chat.
+**Execution modes** (`mode` parameter):
+- `isolated` (default) — fresh context per run, no session history. The agent gets a cron-specific prompt and must use `deliver_result` to send output. Jobs run fully parallel.
+- `session` — injected into the user's active chat session as a message. Fully interactive — the agent can ask follow-up questions and use conversation history.
+
+### deliver_result
+Capture the final output of an isolated cron job. Only available during isolated cron execution. This is the ONLY way the user sees the result of an isolated job — call it with the final output content.
+
+**Cron logs** are stored at `~/.ragnarbot/cron/logs/{{job_id}}.jsonl`. Use `file_read` to inspect execution history.
 
 ## Configuration
 
