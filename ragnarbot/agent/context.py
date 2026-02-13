@@ -146,6 +146,8 @@ Skills with available="false" need dependencies installed first - you can try in
 
     def _load_builtin_telegram(self, user_data: dict) -> str:
         """Load the built-in Telegram context file with user placeholders."""
+        from telegram.constants import ReactionEmoji
+
         file_path = BUILTIN_DIR / "TELEGRAM.md"
         if not file_path.exists():
             return ""
@@ -153,10 +155,12 @@ Skills with available="false" need dependencies installed first - you can try in
         full_name = " ".join(
             filter(None, [user_data.get("first_name"), user_data.get("last_name")])
         )
+        reaction_emojis = " ".join(e.value for e in ReactionEmoji)
         return content.format(
             full_name=full_name or "Unknown",
             username=user_data.get("username") or "N/A",
             user_id=user_data.get("user_id") or "N/A",
+            reaction_emojis=reaction_emojis,
         )
 
     def _load_builtin_cron_isolated(self, cron_ctx: dict) -> str:

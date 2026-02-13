@@ -2,8 +2,12 @@
 
 from typing import Any, Awaitable, Callable
 
+from telegram.constants import ReactionEmoji
+
 from ragnarbot.agent.tools.base import Tool
 from ragnarbot.bus.events import OutboundMessage
+
+VALID_TELEGRAM_REACTIONS = frozenset(e.value for e in ReactionEmoji)
 
 
 class SendPhotoTool(Tool):
@@ -227,7 +231,7 @@ class SetReactionTool(Tool):
             "properties": {
                 "emoji": {
                     "type": "string",
-                    "description": "A single emoji character to react with",
+                    "description": "A single emoji character to react with. Must be a valid Telegram reaction emoji.",
                 },
             },
             "required": ["emoji"],
@@ -240,6 +244,14 @@ class SetReactionTool(Tool):
             return "Error: Message sending not configured"
         if not self._message_id:
             return "Error: No target message to react to"
+
+        emoji = emoji.strip()
+        if emoji not in VALID_TELEGRAM_REACTIONS:
+            valid_list = " ".join(sorted(VALID_TELEGRAM_REACTIONS))
+            return (
+                f"Error: '{emoji}' is not a valid Telegram reaction. "
+                f"Valid reactions: {valid_list}"
+            )
 
         msg = OutboundMessage(
             channel=self._channel,
