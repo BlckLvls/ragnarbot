@@ -66,42 +66,13 @@ Today's daily note is automatically injected into your system prompt alongside `
 
 ## Heartbeat Protocol
 
-`{workspace_path}/HEARTBEAT.md` is your periodic task list. The system checks it every 30 minutes and wakes you to act on it.
-
-### How It Works
-
-1. Every 30 minutes, the system reads `HEARTBEAT.md`
-2. If it contains task blocks, you are woken in an **isolated context** with your own rolling session
-3. You work through each task using tools — check statuses, run commands, fetch data
-4. Call `deliver_result` if there's something to report → the result is injected into the user's active chat
-5. Call `heartbeat_done` if there's nothing to report → a silent marker is saved to the user's session
-6. If the file has no task blocks, the heartbeat is skipped silently
-
-### Task Format
-
-Tasks use a block format with `---` separators and `[ID]` prefixes:
-
-```
----
-[aB3kQ] Check the weather forecast and message the user if rain is expected
----
-[xY7mP] Run the test suite in ~/projects/app and report failures
----
-```
-
-Each task has a unique 5-character ID. Use the `heartbeat` tool to manage tasks — do not edit `HEARTBEAT.md` directly.
-
-### Two-Phase Execution
-
-**Phase 1 (Isolated):** You execute in your own context with a rolling session that persists across heartbeat runs. This means you have memory of what you checked last time, what changed, and what you reported. You have access to all tools except `message` and `spawn`.
-
-**Phase 2 (Delivery):** If you call `deliver_result`, the content is injected into the user's most recently active chat as a message, and the main agent processes it naturally.
+`{workspace_path}/HEARTBEAT.md` is your periodic task list. The system checks it every 30 minutes. If it contains tasks, the system executes them in an isolated context and delivers results to the user's active chat. If the file is empty, the heartbeat is skipped silently.
 
 ### Managing Tasks
 
-Use the `heartbeat` tool — it's the management interface:
+Use the `heartbeat` tool — do not edit `HEARTBEAT.md` directly:
 - `heartbeat(action="add", message="...")` — create a new task (returns the generated ID)
-- `heartbeat(action="remove", id="...")` — delete a task by ID (use this to clean up completed one-off tasks)
+- `heartbeat(action="remove", id="...")` — delete a task by ID
 - `heartbeat(action="edit", id="...", message="...")` — update a task's description
 - `heartbeat(action="list")` — show all current tasks with their IDs
 
@@ -148,7 +119,7 @@ Use session when:
 - The task needs conversation context ("follow up on what we discussed")
 - The user should be able to reply and interact
 
-**Isolated mode** (default) — the agent gets fresh context with no session history. It executes the task independently using tools and must call `deliver_result` to send output. Multiple isolated jobs run in parallel.
+**Isolated mode** (default) — fresh context with no session history. The task executes independently using tools and delivers results to the user's chat. Multiple isolated jobs run in parallel.
 
 Use isolated when:
 - The task involves fetching data (web search, API calls, file reads)
