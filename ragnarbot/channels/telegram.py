@@ -21,13 +21,64 @@ BOT_COMMANDS = [
     ("new", "Start a new conversation"),
     ("context", "Show context usage"),
     ("context_mode", "Change context mode"),
+    ("stop", "Stop agent response"),
 ]
 
 
-async def set_bot_commands(bot) -> None:
-    """Set the bot command menu. Single source of truth for all command lists."""
-    from telegram import BotCommand
-    await bot.set_my_commands([BotCommand(cmd, desc) for cmd, desc in BOT_COMMANDS])
+async def set_bot_commands(bot, chat_ids: list[int] | None = None) -> None:
+    """Ensure bot command menu is up to date across all relevant scopes.
+
+    Checks the default scope against BOT_COMMANDS and updates only if stale.
+    Clears higher-priority scopes (all_private_chats, all_group_chats) and
+    per-chat overrides for known users so the default scope is authoritative.
+    """
+    from telegram import (
+        BotCommand, BotCommandScopeAllGroupChats,
+        BotCommandScopeAllPrivateChats, BotCommandScopeChat,
+    )
+
+    target = [BotCommand(cmd, desc) for cmd, desc in BOT_COMMANDS]
+
+    def _matches(current: list) -> bool:
+        return (
+            len(current) == len(target)
+            and all(
+                a.command == b.command and a.description == b.description
+                for a, b in zip(current, target)
+            )
+        )
+
+    updated = False
+
+    # 1. Ensure default scope has current commands
+    if not _matches(await bot.get_my_commands()):
+        await bot.set_my_commands(target)
+        updated = True
+
+    # 2. Clear higher-priority scopes that would override default
+    for scope in (BotCommandScopeAllPrivateChats(), BotCommandScopeAllGroupChats()):
+        try:
+            if await bot.get_my_commands(scope=scope):
+                await bot.delete_my_commands(scope=scope)
+                updated = True
+        except Exception:
+            pass
+
+    # 3. Clear stale per-chat overrides for known users
+    for cid in (chat_ids or []):
+        try:
+            per_chat = await bot.get_my_commands(scope=BotCommandScopeChat(chat_id=cid))
+            if per_chat and not _matches(per_chat):
+                await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=cid))
+                updated = True
+                logger.info(f"Cleared stale command override for chat {cid}")
+        except Exception:
+            pass
+
+    if updated:
+        logger.info(f"Bot commands updated: {[c[0] for c in BOT_COMMANDS]}")
+    else:
+        logger.debug("Bot commands already up to date")
 
 
 def _markdown_to_telegram_html(text: str) -> str:
@@ -264,6 +315,7 @@ class TelegramChannel(BaseChannel):
         from telegram.ext import CallbackQueryHandler, CommandHandler
         self._app.add_handler(CommandHandler("start", self._on_start))
         self._app.add_handler(CommandHandler("new", self._on_new))
+        self._app.add_handler(CommandHandler("stop", self._on_stop))
         self._app.add_handler(CommandHandler("context", self._on_context))
         self._app.add_handler(CommandHandler("context_mode", self._on_context_mode))
         self._app.add_handler(CallbackQueryHandler(
@@ -280,7 +332,14 @@ class TelegramChannel(BaseChannel):
         bot_info = await self._app.bot.get_me()
         logger.info(f"Telegram bot @{bot_info.username} connected")
 
-        await set_bot_commands(self._app.bot)
+        # Pass known chat IDs (from allow_from) to clear per-chat command overrides
+        chat_ids = []
+        for uid in (self.config.allow_from or []):
+            try:
+                chat_ids.append(int(uid))
+            except (ValueError, TypeError):
+                pass
+        await set_bot_commands(self._app.bot, chat_ids=chat_ids or None)
         
         # Register media download callback
         if self.media_manager:
@@ -553,6 +612,30 @@ class TelegramChannel(BaseChannel):
             content="/context",
             metadata={
                 "command": "context_info",
+                "message_id": update.message.message_id,
+                "user_id": user.id,
+                "username": user.username,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+            },
+        )
+
+    async def _on_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /stop command — stop the current agent response."""
+        if not update.message or not update.effective_user:
+            return
+        user = update.effective_user
+        chat_id = update.message.chat_id
+        sender_id = str(user.id)
+        if user.username:
+            sender_id = f"{sender_id}|{user.username}"
+        self._chat_ids[sender_id] = chat_id
+        await self._handle_message(
+            sender_id=sender_id,
+            chat_id=str(chat_id),
+            content="/stop",
+            metadata={
+                "command": "stop",
                 "message_id": update.message.message_id,
                 "user_id": user.id,
                 "username": user.username,
