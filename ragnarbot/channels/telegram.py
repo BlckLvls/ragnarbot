@@ -27,9 +27,11 @@ BOT_COMMANDS = [
 
 async def set_bot_commands(bot) -> None:
     """Set the bot command menu. Single source of truth for all command lists."""
+    from loguru import logger as _log
     from telegram import BotCommand
-    await bot.delete_my_commands()
-    await bot.set_my_commands([BotCommand(cmd, desc) for cmd, desc in BOT_COMMANDS])
+    commands = [BotCommand(cmd, desc) for cmd, desc in BOT_COMMANDS]
+    await bot.set_my_commands(commands)
+    _log.info(f"Bot commands set: {[c.command for c in commands]}")
 
 
 def _markdown_to_telegram_html(text: str) -> str:
