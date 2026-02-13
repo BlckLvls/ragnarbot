@@ -1,16 +1,4 @@
-# Heartbeat Tasks
-
-This file is checked every 30 minutes by your ragnarbot agent.
-Add tasks below that you want the agent to work on periodically.
-
-If this file has no tasks (only headers and comments), the agent will skip the heartbeat.
-
-## Active Tasks
-
-<!-- Add your periodic tasks below this line -->
-
-
-## Completed
-
-<!-- Move completed tasks here or delete them -->
-
+<!-- Heartbeat task file — checked every 30 minutes.
+     Use the heartbeat tool to add/remove/edit tasks.
+     Format: each task is a block wrapped in --- separators with a [ID] prefix.
+     Empty file = heartbeat skipped silently. -->

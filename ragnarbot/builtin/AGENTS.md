@@ -70,19 +70,40 @@ Today's daily note is automatically injected into your system prompt alongside `
 
 ### How It Works
 
-1. Every 30 minutes, you are prompted to read `HEARTBEAT.md`
-2. If it contains actionable tasks, you execute them
-3. If it's empty or has only headers/comments, the heartbeat is skipped silently
+1. Every 30 minutes, the system reads `HEARTBEAT.md`
+2. If it contains task blocks, you are woken in an **isolated context** with your own rolling session
+3. You work through each task using tools — check statuses, run commands, fetch data
+4. Call `deliver_result` if there's something to report → the result is injected into the user's active chat
+5. Call `heartbeat_done` if there's nothing to report → a silent marker is saved to the user's session
+6. If the file has no task blocks, the heartbeat is skipped silently
 
 ### Task Format
 
-Use markdown checkboxes. Keep descriptions clear and self-contained — your future self reading this file has no conversation context.
+Tasks use a block format with `---` separators and `[ID]` prefixes:
 
 ```
-- [ ] Check the weather forecast and message the user if rain is expected
-- [ ] Review inbox for emails from @client and summarize any new ones
-- [ ] Run the test suite in ~/projects/app and report failures
+---
+[aB3kQ] Check the weather forecast and message the user if rain is expected
+---
+[xY7mP] Run the test suite in ~/projects/app and report failures
+---
 ```
+
+Each task has a unique 5-character ID. Use the `heartbeat` tool to manage tasks — do not edit `HEARTBEAT.md` directly.
+
+### Two-Phase Execution
+
+**Phase 1 (Isolated):** You execute in your own context with a rolling session that persists across heartbeat runs. This means you have memory of what you checked last time, what changed, and what you reported. You have access to all tools except `message` and `spawn`.
+
+**Phase 2 (Delivery):** If you call `deliver_result`, the content is injected into the user's most recently active chat as a message, and the main agent processes it naturally.
+
+### Managing Tasks
+
+Use the `heartbeat` tool — it's the management interface:
+- `heartbeat(action="add", message="...")` — create a new task (returns the generated ID)
+- `heartbeat(action="remove", id="...")` — delete a task by ID (use this to clean up completed one-off tasks)
+- `heartbeat(action="edit", id="...", message="...")` — update a task's description
+- `heartbeat(action="list")` — show all current tasks with their IDs
 
 ### When to Use Heartbeat
 
@@ -94,12 +115,6 @@ Use markdown checkboxes. Keep descriptions clear and self-contained — your fut
 
 - **One-time future actions.** Use scheduled reminders instead (see below).
 - **Immediate tasks.** Just do them now.
-
-### Managing the File
-
-- **Add tasks** by editing `HEARTBEAT.md` with `edit_file` or `write_file`
-- **Remove completed tasks** when they're done — don't let the file grow indefinitely
-- **Keep it small.** Every line costs tokens on every heartbeat cycle. Be concise.
 
 ---
 

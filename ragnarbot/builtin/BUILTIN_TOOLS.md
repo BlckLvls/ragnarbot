@@ -100,7 +100,7 @@ Schedule and manage tasks. Actions:
 - When in doubt and the user hasn't specified, use `isolated`.
 
 ### deliver_result
-Capture the final output of an isolated cron job. Only available during isolated cron execution. This is the ONLY way the user sees the result — if the agent doesn't call `deliver_result`, the job runs silently with no output delivered.
+Capture the final output of an isolated cron job or heartbeat check. Available during isolated cron execution and heartbeat execution. This is the ONLY way the user sees the result — if the agent doesn't call `deliver_result`, the job runs silently with no output delivered.
 
 ### Time expression reference
 
@@ -117,6 +117,18 @@ Capture the final output of an isolated cron job. Only available during isolated
 ### Cron logs
 
 Execution history is stored at `~/.ragnarbot/cron/logs/{{job_id}}.jsonl`. Each entry contains timestamp, status, duration, input, and output. Logs persist even after one-shot jobs auto-delete. Use `file_read` to inspect them.
+
+## Heartbeat
+
+### heartbeat
+Manage periodic heartbeat tasks in HEARTBEAT.md. Actions:
+- `add` — create a task. Requires `message`. Returns the generated task ID.
+- `remove` — delete a task by `id`.
+- `edit` — update a task's message. Requires `id` and `message`.
+- `list` — show all current heartbeat tasks with their IDs.
+
+### heartbeat_done
+Signal that the heartbeat check is complete with nothing to report. Only available during heartbeat execution. Call this instead of `deliver_result` when all tasks have been checked and there is nothing noteworthy to tell the user.
 
 ## Configuration
 
