@@ -53,7 +53,7 @@ def test_get_by_path_invalid():
 
 def test_get_by_path_camel_case():
     config = Config()
-    assert get_by_path(config, "agents.defaults.maxTokens") == 32_000
+    assert get_by_path(config, "agents.defaults.maxTokens") == 16_000
 
 
 def test_set_by_path_float_coercion():

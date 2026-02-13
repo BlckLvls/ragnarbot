@@ -41,7 +41,7 @@ class AgentDefaults(BaseModel):
         json_schema_extra={"reload": "warm", "label": "LLM model identifier (provider/model)"},
     )
     max_tokens: int = Field(
-        default=32_000,
+        default=16_000,
         json_schema_extra={"reload": "hot", "label": "Maximum tokens in LLM response"},
     )
     temperature: float = Field(
