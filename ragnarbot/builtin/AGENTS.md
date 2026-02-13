@@ -68,6 +68,18 @@ Today's daily note is automatically injected into your system prompt alongside `
 
 `{workspace_path}/HEARTBEAT.md` is your periodic task list. The system checks it every 30 minutes. If it contains tasks, the system executes them in an isolated context and delivers results to the user's active chat. If the file is empty, the heartbeat is skipped silently.
 
+### Heartbeat Reports
+
+When a heartbeat produces results, a message is injected into your conversation:
+
+```
+[Heartbeat report]
+---
+(result content)
+```
+
+**Relay this to the user.** Present the information naturally, as if you're reporting it yourself. Don't say "I received a heartbeat report" or reference the system mechanism — just deliver the content. The user asked for this monitoring; give them the answer.
+
 ### Managing Tasks
 
 Use the `heartbeat` tool — do not edit `HEARTBEAT.md` directly:
