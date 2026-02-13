@@ -41,7 +41,7 @@ class AgentLoop:
     5. Sends responses back
     """
 
-    READ_ONLY_COMMANDS = frozenset({"context_info", "context_mode", "list_sessions"})
+    READ_ONLY_COMMANDS = frozenset({"context_info", "context_mode", "list_sessions", "resume_session", "stop"})
 
     def __init__(
         self,
@@ -227,6 +227,17 @@ class AgentLoop:
                 response = await self._process_batch(batch)
                 if response:
                     await self.bus.publish_outbound(response)
+            except asyncio.CancelledError:
+                logger.info("Processing cancelled by user")
+                try:
+                    await self.bus.publish_outbound(OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content="",
+                        metadata={"chat_action": "typing_stop"},
+                    ))
+                except Exception:
+                    pass
             except Exception as e:
                 logger.error(f"Error processing message: {e}")
                 await self.bus.publish_outbound(OutboundMessage(
@@ -311,16 +322,25 @@ class AgentLoop:
             f"Processing batch of {len(batch)} message(s) from {msg.channel}:{msg.sender_id}"
         )
 
+        # Get or create session (before typing so we know the session_id)
+        explicit_sid = msg.metadata.get("explicit_session_id")
+        if explicit_sid:
+            session = self.sessions._load(explicit_sid, msg.session_key)
+            if session:
+                self.sessions.set_active(msg.session_key, explicit_sid)
+                self.sessions._cache[explicit_sid] = session
+            else:
+                session = self.sessions.get_or_create(msg.session_key)
+        else:
+            session = self.sessions.get_or_create(msg.session_key)
+
         # Signal typing indicator to the channel
         await self.bus.publish_outbound(OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
             content="",
-            metadata={"chat_action": "typing"},
+            metadata={"chat_action": "typing", "_session_id": session.key},
         ))
-
-        # Get or create session
-        session = self.sessions.get_or_create(msg.session_key)
 
         # Store user data in session metadata (telegram only, first time)
         if msg.channel == "telegram" and "user_data" not in session.metadata:
@@ -504,7 +524,7 @@ class AgentLoop:
                             channel=msg.channel,
                             chat_id=msg.chat_id,
                             content=response.content,
-                            metadata={"intermediate": True},
+                            metadata={"intermediate": True, "_session_id": session.key},
                         ))
 
                     tool_call_dicts = [
@@ -575,7 +595,8 @@ class AgentLoop:
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
-            content=final_content
+            content=final_content,
+            metadata={"_session_id": session.key},
         )
     
     def _handle_command(self, command: str, msg: InboundMessage) -> OutboundMessage | None:
@@ -594,6 +615,8 @@ class AgentLoop:
             return self._handle_resume_session(msg)
         if command == "delete_session":
             return self._handle_delete_session(msg)
+        if command == "stop":
+            return self._handle_stop(msg)
         logger.warning(f"Unknown command: {command}")
         return None
 
@@ -614,7 +637,7 @@ class AgentLoop:
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=f"✨ <b>New chat started</b>\n\n🤖 Model: <code>{self.model}</code>",
-            metadata={"raw_html": True},
+            metadata={"raw_html": True, "_session_id": session.key},
         )
 
     def _handle_context_mode(self, msg: InboundMessage) -> OutboundMessage:
@@ -661,7 +684,7 @@ class AgentLoop:
 
         # Compute context data after mode change
         tokens = self.get_context_tokens(
-            f"{msg.channel}:{msg.chat_id}", msg.channel, msg.chat_id
+            msg.session_key, msg.channel, msg.chat_id
         )
         threshold = Compactor.THRESHOLDS.get(mode, 0.60)
         effective_max = int(self.max_context_tokens * threshold)
@@ -688,7 +711,7 @@ class AgentLoop:
     def _handle_context_info(self, msg: InboundMessage) -> OutboundMessage:
         """Show context usage info."""
         tokens = self.get_context_tokens(
-            f"{msg.channel}:{msg.chat_id}", msg.channel, msg.chat_id
+            msg.session_key, msg.channel, msg.chat_id
         )
         threshold = Compactor.THRESHOLDS.get(self.context_mode, 0.60)
         effective_max = int(self.max_context_tokens * threshold)
@@ -696,7 +719,7 @@ class AgentLoop:
         tokens_k = f"{tokens // 1000}k"
         max_k = f"{effective_max // 1000}k"
 
-        session = self.sessions.get_or_create(f"{msg.channel}:{msg.chat_id}")
+        session = self.sessions.get_or_create(msg.session_key)
         compactions = sum(
             1 for m in session.messages
             if m.get("metadata", {}).get("type") == "compaction"
@@ -728,12 +751,12 @@ class AgentLoop:
     def _handle_list_sessions(self, msg: InboundMessage) -> OutboundMessage:
         """Return a list of all web sessions for the sidebar."""
         all_sessions = self.sessions.list_sessions()
+        active_id = msg.metadata.get("current_session_id") or self.sessions.get_active_id(msg.session_key)
         result = []
         for sess in all_sessions:
             uk = sess.get("user_key", "")
             if not uk.startswith("web:"):
                 continue
-            chat_id = uk[4:]  # strip "web:"
             session_id = sess["session_id"]
 
             # Read first user message as preview
@@ -757,14 +780,11 @@ class AgentLoop:
                         preview = " ".join(clean)[:80]
                         break
 
-            active = self.sessions.get_active_id(uk) == session_id
-
             result.append({
                 "session_id": session_id,
-                "chat_id": chat_id,
                 "updated_at": sess.get("updated_at", ""),
                 "preview": preview,
-                "active": active,
+                "active": active_id == session_id,
                 "msg_count": msg_count,
             })
 
@@ -782,7 +802,6 @@ class AgentLoop:
             return None
 
         # Try to load the session to verify it exists and is a web session
-        # We don't know the user_key yet, so scan for it
         session = None
         for sess_info in self.sessions.list_sessions():
             if sess_info["session_id"] == session_id:
@@ -799,8 +818,8 @@ class AgentLoop:
                 metadata={"error": "Session not found"},
             )
 
-        chat_id = session.user_key[4:]  # strip "web:"
-        self.sessions.set_active(session.user_key, session_id)
+        # Set active for THIS device's session_key (e.g. web:{uuid})
+        self.sessions.set_active(msg.session_key, session_id)
         self.sessions._cache[session_id] = session
 
         # Build message history for the frontend
@@ -830,7 +849,6 @@ class AgentLoop:
             content="",
             metadata={"session_resumed": {
                 "session_id": session_id,
-                "chat_id": chat_id,
                 "history": history,
             }},
         )
@@ -847,8 +865,14 @@ class AgentLoop:
                 uk = sess_info.get("user_key", "")
                 if not uk.startswith("web:"):
                     return None
-                # If this is the active session for that user_key, clear the pointer
-                if self.sessions.get_active_id(uk) == session_id:
+                # If this is the active session, clear the shared pointer
+                caller_key = msg.session_key
+                if self.sessions.get_active_id(caller_key) == session_id:
+                    active_path = self.sessions._get_active_path(caller_key)
+                    if active_path.exists():
+                        active_path.unlink()
+                # Also clear old per-device pointer if it exists
+                if uk != caller_key and self.sessions.get_active_id(uk) == session_id:
                     active_path = self.sessions._get_active_path(uk)
                     if active_path.exists():
                         active_path.unlink()
@@ -860,6 +884,18 @@ class AgentLoop:
                     metadata={"session_deleted": {"session_id": session_id}},
                 )
 
+        return None
+
+    def _handle_stop(self, msg: InboundMessage) -> OutboundMessage | None:
+        """Cancel the active processing task."""
+        if self._processing_task and not self._processing_task.done():
+            self._processing_task.cancel()
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="",
+                metadata={"stopped": True},
+            )
         return None
 
     async def _process_system_message(self, msg: InboundMessage) -> OutboundMessage | None:

@@ -335,6 +335,11 @@ class TelegramChannel(BaseChannel):
                 )
             return
 
+        # Stop typing (e.g. after processing cancelled)
+        if msg.metadata.get("chat_action") == "typing_stop":
+            self._stop_typing(chat_id)
+            return
+
         # Intermediate message — send text but keep typing active
         is_intermediate = msg.metadata.get("intermediate", False)
 

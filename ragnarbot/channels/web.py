@@ -33,7 +33,8 @@ class WebChannel(BaseChannel):
 
     def __init__(self, config: WebConfig, bus: MessageBus):
         super().__init__(config, bus)
-        self._connections: dict[str, WebSocketResponse] = {}
+        self._connections: dict[str, WebSocketResponse] = {}  # device_id → ws
+        self._device_session: dict[str, str] = {}  # device_id → session_id
         self._app: web.Application | None = None
         self._runner: web.AppRunner | None = None
         self._uploads: dict[str, dict] = {}  # file_id → {path, filename, mime_type, size}
@@ -123,54 +124,94 @@ class WebChannel(BaseChannel):
     # ------------------------------------------------------------------
 
     async def send(self, msg: OutboundMessage) -> None:
-        ws = self._connections.get(msg.chat_id)
-        if not ws or ws.closed:
+        if not self._connections:
             return
+
+        device_id = msg.chat_id  # chat_id = device_id in web channel
+        ws = self._connections.get(device_id)
+
+        # Update device→session mapping from agent metadata (fallback for new sessions)
+        session_id = msg.metadata.get("_session_id")
+        if session_id and device_id in self._connections:
+            old_session = self._device_session.get(device_id)
+            self._device_session[device_id] = session_id
+            # Notify client when server assigns/changes session_id
+            if old_session != session_id and ws and not ws.closed:
+                await self._ws_send(ws, {"type": "session_update", "session_id": session_id})
+
+        # ── Global broadcast (all devices) ───────────────────────
+
+        # Stop typing (e.g. after processing cancelled)
+        if msg.metadata.get("chat_action") == "typing_stop":
+            await self._broadcast({"type": "typing", "active": False})
+            return
+
+        # Processing stopped
+        if msg.metadata.get("stopped"):
+            await self._broadcast({"type": "stopped"})
+            await self._broadcast({"type": "typing", "active": False})
+            return
+
+        # ── Session-aware broadcast (devices on same session) ────
 
         # Typing indicator
         if msg.metadata.get("chat_action") == "typing":
-            await self._ws_send(ws, {"type": "typing", "active": True})
+            await self._send_to_session_peers(device_id, {"type": "typing", "active": True})
             return
 
-        # Session list → send to sidebar
+        # ── Per-client responses (only to requesting device) ─────
+
+        # Session list
         session_list = msg.metadata.get("session_list")
         if session_list is not None:
-            await self._ws_send(ws, {"type": "session_list", "sessions": session_list})
+            if ws and not ws.closed:
+                await self._ws_send(ws, {"type": "session_list", "sessions": session_list})
             return
 
-        # Session resumed → notify client to switch
+        # Session resumed
         session_resumed = msg.metadata.get("session_resumed")
         if session_resumed:
-            await self._ws_send(ws, {"type": "session_resumed", **session_resumed})
+            if ws and not ws.closed:
+                await self._ws_send(ws, {"type": "session_resumed", **session_resumed})
             return
 
-        # Session deleted → notify client
+        # Session deleted
         session_deleted = msg.metadata.get("session_deleted")
         if session_deleted:
-            await self._ws_send(ws, {"type": "session_deleted", **session_deleted})
+            if ws and not ws.closed:
+                await self._ws_send(ws, {"type": "session_deleted", **session_deleted})
             return
 
-        # Context data → send as context_info WS message
+        # Context data
         context_data = msg.metadata.get("context_data")
         if context_data:
-            await self._ws_send(ws, {"type": "context_info", **context_data})
-            # If message is just a context command response, don't send the HTML text
+            if ws and not ws.closed:
+                await self._ws_send(ws, {"type": "context_info", **context_data})
             if msg.metadata.get("raw_html"):
                 return
 
+        # raw_html without context_data (e.g. "New chat started") → per-client
+        if msg.metadata.get("raw_html"):
+            if ws and not ws.closed:
+                await self._ws_send(ws, {"type": "message", "content": msg.content})
+                await self._ws_send(ws, {"type": "typing", "active": False})
+            return
+
+        # ── Session-aware content (devices on same session) ──────
+
         is_intermediate = msg.metadata.get("intermediate", False)
 
-        # Reaction → send as reaction WS message
+        # Reaction
         reaction = msg.metadata.get("reaction")
         if reaction:
-            await self._ws_send(ws, {
+            await self._send_to_session_peers(device_id, {
                 "type": "reaction",
                 "emoji": reaction,
                 "msg_id": msg.metadata.get("target_message_id"),
             })
             return
 
-        # Media (photo/video/document from bot) → inline in chat
+        # Media
         media_type = msg.metadata.get("media_type")
         media_path = msg.metadata.get("media_path")
         if media_type and media_path:
@@ -178,7 +219,6 @@ class WebChannel(BaseChannel):
             if p.is_file():
                 mime = mimetypes.guess_type(str(p))[0] or "application/octet-stream"
                 if media_type == "photo" or (mime and mime.startswith("image/")):
-                    # Inline image as data URL (snapshots are typically small)
                     b64 = base64.b64encode(p.read_bytes()).decode()
                     data_url = f"data:{mime};base64,{b64}"
                     payload: dict[str, Any] = {
@@ -187,17 +227,16 @@ class WebChannel(BaseChannel):
                         "media": {"type": "image", "url": data_url, "filename": p.name},
                     }
                 else:
-                    # Non-image file — tell the user where it is
                     payload = {
                         "type": "message",
                         "content": (msg.content or "") + f"\n\n[file saved: {p}]",
                     }
-                await self._ws_send(ws, payload)
+                await self._send_to_session_peers(device_id, payload)
                 if not msg.metadata.get("keep_typing"):
-                    await self._ws_send(ws, {"type": "typing", "active": False})
+                    await self._send_to_session_peers(device_id, {"type": "typing", "active": False})
             return
 
-        # Send the message.
+        # Regular message
         payload: dict[str, Any] = {
             "type": "message",
             "content": msg.content,
@@ -205,11 +244,10 @@ class WebChannel(BaseChannel):
         if is_intermediate:
             payload["intermediate"] = True
 
-        await self._ws_send(ws, payload)
+        await self._send_to_session_peers(device_id, payload)
 
-        # Final message → stop typing.
         if not is_intermediate and not msg.metadata.get("keep_typing"):
-            await self._ws_send(ws, {"type": "typing", "active": False})
+            await self._send_to_session_peers(device_id, {"type": "typing", "active": False})
 
     # ------------------------------------------------------------------
     # HTTP handlers
@@ -272,7 +310,7 @@ class WebChannel(BaseChannel):
         ws = WebSocketResponse()
         await ws.prepare(request)
 
-        chat_id: str | None = None
+        device_id: str | None = None
 
         async for raw in ws:
             if raw.type.name == "TEXT":
@@ -285,21 +323,32 @@ class WebChannel(BaseChannel):
                 msg_type = data.get("type")
 
                 if msg_type == "hello":
-                    chat_id = data.get("chat_id", "")
-                    if chat_id:
-                        self._connections[chat_id] = ws
-                        await self._ws_send(ws, {"type": "hello", "chat_id": chat_id})
-                        logger.debug("Web client connected: {}", chat_id[:8])
+                    device_id = data.get("device_id", "")
+                    session_id = data.get("session_id")  # None on first visit
+                    if device_id:
+                        self._connections[device_id] = ws
+                        if session_id:
+                            self._device_session[device_id] = session_id
+                        await self._ws_send(ws, {"type": "hello", "device_id": device_id})
+                        logger.debug(
+                            "Web client connected: dev={} sess={}",
+                            device_id[:8],
+                            session_id[:8] if session_id else "none",
+                        )
 
                 elif msg_type == "message":
                     content = data.get("content", "").strip()
-                    if not chat_id:
+                    if not device_id:
                         continue
 
                     # Assign message ID for reaction targeting
                     self._msg_counter += 1
                     msg_id = self._msg_counter
+
+                    cur_session = self._device_session.get(device_id)
                     metadata: dict[str, Any] = {"message_id": msg_id}
+                    if cur_session:
+                        metadata["explicit_session_id"] = cur_session
 
                     # Build attachments from uploaded files
                     attachments: list[MediaAttachment] = []
@@ -322,7 +371,6 @@ class WebChannel(BaseChannel):
                         fname = info["filename"]
 
                         if att_type == "voice":
-                            # Voice: load bytes for transcription pipeline
                             attachments.append(MediaAttachment(
                                 type="voice",
                                 file_id=file_id,
@@ -332,7 +380,6 @@ class WebChannel(BaseChannel):
                             ))
                             content_parts.append(f"[voice: {fname}]")
                         elif mime.startswith("image/"):
-                            # Images: load bytes (small enough for vision)
                             attachments.append(MediaAttachment(
                                 type="photo",
                                 file_id=file_id,
@@ -342,11 +389,9 @@ class WebChannel(BaseChannel):
                             ))
                             content_parts.append(f"[image: {fname}]")
                         else:
-                            # Files: don't load into memory — pass path
-                            # Agent loop will save to session dir
                             attachments.append(MediaAttachment(
                                 type="file",
-                                file_id=str(path),  # abuse file_id to pass path
+                                file_id=str(path),
                                 data=None,
                                 filename=fname,
                                 mime_type=mime,
@@ -359,8 +404,8 @@ class WebChannel(BaseChannel):
                     final_content = "\n".join(content_parts) if content_parts else "[attachment]"
 
                     await self._handle_message(
-                        sender_id=chat_id,
-                        chat_id=chat_id,
+                        sender_id=device_id,
+                        chat_id=device_id,
                         content=final_content,
                         attachments=attachments or None,
                         metadata=metadata,
@@ -369,20 +414,38 @@ class WebChannel(BaseChannel):
                     # Send msg_id back to client for reaction targeting
                     await self._ws_send(ws, {"type": "msg_id", "msg_id": msg_id})
 
+                    # Echo user message to OTHER devices on the SAME session
+                    if cur_session:
+                        echo = {"type": "user_echo", "content": content or "[attachment]"}
+                        for other_dev, other_ws in list(self._connections.items()):
+                            if other_dev != device_id and not other_ws.closed:
+                                if self._device_session.get(other_dev) == cur_session:
+                                    try:
+                                        await other_ws.send_json(echo)
+                                    except Exception:
+                                        pass
+
                 elif msg_type == "command":
                     command = data.get("command")
-                    if not chat_id:
+                    if not device_id:
                         continue
 
+                    cur_session = self._device_session.get(device_id)
+
                     if command == "new_chat":
-                        # Remove old mapping; client will re-hello with a new chat_id.
-                        self._connections.pop(chat_id, None)
-                        chat_id = None
+                        # Session will be assigned by server → session_update sent back
+                        self._device_session.pop(device_id, None)
+                        await self._handle_message(
+                            sender_id=device_id,
+                            chat_id=device_id,
+                            content="",
+                            metadata={"command": "new_chat"},
+                        )
 
                     elif command == "context_info":
                         await self._handle_message(
-                            sender_id=chat_id,
-                            chat_id=chat_id,
+                            sender_id=device_id,
+                            chat_id=device_id,
                             content="",
                             metadata={"command": "context_info"},
                         )
@@ -390,39 +453,49 @@ class WebChannel(BaseChannel):
                     elif command == "set_context_mode":
                         mode = data.get("mode", "normal")
                         await self._handle_message(
-                            sender_id=chat_id,
-                            chat_id=chat_id,
+                            sender_id=device_id,
+                            chat_id=device_id,
                             content="",
-                            metadata={
-                                "command": "set_context_mode",
-                                "context_mode": mode,
-                            },
+                            metadata={"command": "set_context_mode", "context_mode": mode},
                         )
 
                     elif command == "list_sessions":
                         await self._handle_message(
-                            sender_id=chat_id,
-                            chat_id=chat_id,
+                            sender_id=device_id,
+                            chat_id=device_id,
                             content="",
-                            metadata={"command": "list_sessions"},
+                            metadata={
+                                "command": "list_sessions",
+                                "current_session_id": cur_session,
+                            },
                         )
 
                     elif command == "resume_session":
-                        session_id = data.get("session_id", "")
+                        new_sid = data.get("session_id", "")
+                        if new_sid:
+                            self._device_session[device_id] = new_sid
                         await self._handle_message(
-                            sender_id=chat_id,
-                            chat_id=chat_id,
+                            sender_id=device_id,
+                            chat_id=device_id,
                             content="",
-                            metadata={"command": "resume_session", "session_id": session_id},
+                            metadata={"command": "resume_session", "session_id": new_sid},
                         )
 
                     elif command == "delete_session":
-                        session_id = data.get("session_id", "")
+                        del_sid = data.get("session_id", "")
                         await self._handle_message(
-                            sender_id=chat_id,
-                            chat_id=chat_id,
+                            sender_id=device_id,
+                            chat_id=device_id,
                             content="",
-                            metadata={"command": "delete_session", "session_id": session_id},
+                            metadata={"command": "delete_session", "session_id": del_sid},
+                        )
+
+                    elif command == "stop":
+                        await self._handle_message(
+                            sender_id=device_id,
+                            chat_id=device_id,
+                            content="",
+                            metadata={"command": "stop"},
                         )
 
             elif raw.type.name == "ERROR":
@@ -430,9 +503,10 @@ class WebChannel(BaseChannel):
                 break
 
         # Cleanup on disconnect.
-        if chat_id:
-            self._connections.pop(chat_id, None)
-            logger.debug("Web client disconnected: {}", chat_id[:8])
+        if device_id:
+            self._connections.pop(device_id, None)
+            self._device_session.pop(device_id, None)
+            logger.debug("Web client disconnected: {}", device_id[:8])
 
         return ws
 
@@ -444,3 +518,31 @@ class WebChannel(BaseChannel):
     async def _ws_send(ws: WebSocketResponse, data: dict) -> None:
         if not ws.closed:
             await ws.send_json(data)
+
+    async def _broadcast(self, data: dict) -> None:
+        """Send to all connected web clients."""
+        for ws in list(self._connections.values()):
+            if not ws.closed:
+                try:
+                    await ws.send_json(data)
+                except Exception:
+                    pass
+
+    async def _send_to_session_peers(self, device_id: str, data: dict) -> None:
+        """Send to all devices viewing the same session as device_id."""
+        my_session = self._device_session.get(device_id)
+        if not my_session:
+            # Fallback: send only to the requesting device
+            ws = self._connections.get(device_id)
+            if ws and not ws.closed:
+                try:
+                    await ws.send_json(data)
+                except Exception:
+                    pass
+            return
+        for dev, ws in list(self._connections.items()):
+            if self._device_session.get(dev) == my_session and not ws.closed:
+                try:
+                    await ws.send_json(data)
+                except Exception:
+                    pass

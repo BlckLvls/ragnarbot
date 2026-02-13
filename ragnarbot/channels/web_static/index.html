@@ -589,7 +589,7 @@
   #input:focus { border-color: var(--accent); }
   #input::placeholder { color: var(--text-dim); }
 
-  #send-btn {
+  #send-btn, #stop-btn {
     background: var(--accent);
     border: none;
     color: #fff;
@@ -607,7 +607,10 @@
   #send-btn:hover { background: var(--accent-dim); }
   #send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-  #send-btn svg { width: 18px; height: 18px; }
+  #send-btn svg, #stop-btn svg { width: 18px; height: 18px; }
+
+  #stop-btn { background: var(--danger); display: none; }
+  #stop-btn:hover { background: #c0392b; }
 </style>
 </head>
 <body>
@@ -660,6 +663,9 @@
       <button id="send-btn" disabled>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
       </button>
+      <button id="stop-btn" title="Stop">
+        <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+      </button>
     </div>
   </div>
 </div>
@@ -668,7 +674,8 @@ document.addEventListener("DOMContentLoaded", function() {
   // --- Config ---
   var wsProto = location.protocol === "https:" ? "wss:" : "ws:";
   var WS_URL = wsProto + "//" + location.host + "/ws";
-  var STORAGE_KEY = "ragnarbot_chat_id";
+  var DEVICE_KEY = "ragnarbot_device_id";
+  var SESSION_KEY = "ragnarbot_session_id";
   var HISTORY_KEY = "ragnarbot_history_";
 
   // --- Elements ---
@@ -691,6 +698,7 @@ document.addEventListener("DOMContentLoaded", function() {
   const fileInput = document.getElementById("file-input");
   const attachPreview = document.getElementById("attach-preview");
   const voiceBtn = document.getElementById("voice-btn");
+  const stopBtn = document.getElementById("stop-btn");
 
   // --- Helpers ---
   function generateId() {
@@ -701,11 +709,18 @@ document.addEventListener("DOMContentLoaded", function() {
   }
 
   // --- State ---
-  let chatId = localStorage.getItem(STORAGE_KEY);
-  if (!chatId) {
-    chatId = generateId();
-    localStorage.setItem(STORAGE_KEY, chatId);
+  // Migrate old single chatId to deviceId
+  var oldChatId = localStorage.getItem("ragnarbot_chat_id");
+  if (oldChatId && !localStorage.getItem(DEVICE_KEY)) {
+    localStorage.setItem(DEVICE_KEY, oldChatId);
   }
+
+  let deviceId = localStorage.getItem(DEVICE_KEY);
+  if (!deviceId) {
+    deviceId = generateId();
+    localStorage.setItem(DEVICE_KEY, deviceId);
+  }
+  let sessionId = localStorage.getItem(SESSION_KEY); // null on first visit
 
   let ws = null;
   let connected = false;
@@ -719,6 +734,12 @@ document.addEventListener("DOMContentLoaded", function() {
 
   // Uploaded files pending send
   let pendingAttachments = [];  // [{file_id, filename, mime_type, type, dataUrl?}]
+
+  // Processing state (bot is working)
+  let isProcessing = false;
+
+  // Tracks if initial session load is done (prevents repeated auto-resumes)
+  let initialLoadDone = false;
 
   // Voice recording
   let mediaRecorder = null;
@@ -753,7 +774,7 @@ document.addEventListener("DOMContentLoaded", function() {
     ws.onopen = function() {
       connected = true;
       reconnectDelay = 500;
-      ws.send(JSON.stringify({ type: "hello", chat_id: chatId }));
+      ws.send(JSON.stringify({ type: "hello", device_id: deviceId, session_id: sessionId }));
     };
 
     ws.onmessage = function(e) {
@@ -782,24 +803,67 @@ document.addEventListener("DOMContentLoaded", function() {
   function setStatus(s) {
     statusText.textContent = s;
     statusDot.className = "dot" + (s === "connected" ? " connected" : "");
-    sendBtn.disabled = s !== "connected";
+    if (!isProcessing) {
+      sendBtn.disabled = s !== "connected";
+    }
   }
+
+  function setProcessing(active) {
+    isProcessing = active;
+    if (active) {
+      sendBtn.style.display = "none";
+      stopBtn.style.display = "flex";
+      inputEl.disabled = true;
+      inputEl.placeholder = "Waiting for response...";
+    } else {
+      sendBtn.style.display = "flex";
+      stopBtn.style.display = "none";
+      inputEl.disabled = false;
+      inputEl.placeholder = "Send a message...";
+      sendBtn.disabled = !connected;
+    }
+  }
+
+  stopBtn.addEventListener("click", function() {
+    if (connected) {
+      ws.send(JSON.stringify({ type: "command", command: "stop" }));
+    }
+  });
 
   function handleMessage(data) {
     switch (data.type) {
       case "hello":
         setStatus("connected");
-        // Request context info on connect
+        // Request context info and session list on connect
         ws.send(JSON.stringify({ type: "command", command: "context_info" }));
+        ws.send(JSON.stringify({ type: "command", command: "list_sessions" }));
+        break;
+
+      case "session_update":
+        // Server assigned or changed session_id (e.g. after new_chat or first message)
+        sessionId = data.session_id;
+        localStorage.setItem(SESSION_KEY, sessionId);
         break;
 
       case "typing":
         typingEl.classList.toggle("active", data.active);
+        setProcessing(data.active);
         scrollBottom();
+        break;
+
+      case "stopped":
+        typingEl.classList.remove("active");
+        setProcessing(false);
         break;
 
       case "message":
         addMessage("bot", data.content, data.intermediate, null, data.media);
+        break;
+
+      case "user_echo":
+        // Message sent from another device — show it as a user message
+        addMessage("user", data.content);
+        saveHistory("user", data.content, null);
         break;
 
       case "error":
@@ -828,6 +892,19 @@ document.addEventListener("DOMContentLoaded", function() {
 
       case "session_list":
         renderSessionList(data.sessions || []);
+        // Auto-resume active session ONCE on initial connect
+        // (e.g. new device, or page load without localStorage history)
+        if (!initialLoadDone && messagesEl.querySelectorAll(".msg-wrapper").length === 0 && data.sessions) {
+          initialLoadDone = true;
+          var active = data.sessions.find(function(s) { return s.active; });
+          if (active) {
+            ws.send(JSON.stringify({
+              type: "command",
+              command: "resume_session",
+              session_id: active.session_id,
+            }));
+          }
+        }
         break;
 
       case "session_resumed":
@@ -911,7 +988,7 @@ document.addEventListener("DOMContentLoaded", function() {
       return;
     }
     sessions.forEach(function(s) {
-      var isCurrent = s.chat_id === chatId && s.active;
+      var isCurrent = s.active;
       var item = document.createElement("div");
       item.className = "session-item" + (isCurrent ? " active" : "");
 
@@ -980,13 +1057,14 @@ document.addEventListener("DOMContentLoaded", function() {
   }
 
   function handleSessionResumed(data) {
-    // Update chatId
-    chatId = data.chat_id;
-    localStorage.setItem(STORAGE_KEY, chatId);
+    // Update sessionId to the resumed session
+    sessionId = data.session_id;
+    localStorage.setItem(SESSION_KEY, sessionId);
 
     // Clear current messages
     messagesEl.querySelectorAll(".msg-wrapper").forEach(function(m) { m.remove(); });
     typingEl.classList.remove("active");
+    setProcessing(false);
 
     // Reset state
     localMsgCounter = 0;
@@ -995,19 +1073,17 @@ document.addEventListener("DOMContentLoaded", function() {
 
     // Render server-side history
     var history = data.history || [];
-    // Clear localStorage history for this chat and rebuild from server
+    // Clear localStorage history for this session and rebuild from server
     clearHistory();
     history.forEach(function(h) {
       var role = h.role === "assistant" ? "bot" : h.role;
       addMessage(role, h.content, false, null, null, true);
-      // Save to localStorage so it persists on refresh
       saveHistory(role, h.content, null);
     });
 
-    // Re-connect WS with new chatId
+    // Request updated context info
     if (connected) {
-      ws.send(JSON.stringify({ type: "command", command: "new_chat" }));
-      ws.send(JSON.stringify({ type: "hello", chat_id: chatId }));
+      ws.send(JSON.stringify({ type: "command", command: "context_info" }));
     }
 
     closeSidebar();
@@ -1357,11 +1433,13 @@ document.addEventListener("DOMContentLoaded", function() {
 
   newChatBtn.addEventListener("click", function() {
     clearHistory();
-    chatId = generateId();
-    localStorage.setItem(STORAGE_KEY, chatId);
+    // Clear sessionId — server will assign new one via session_update
+    sessionId = null;
+    localStorage.removeItem(SESSION_KEY);
     // Clear messages
     messagesEl.querySelectorAll(".msg-wrapper").forEach(function(m) { m.remove(); });
     typingEl.classList.remove("active");
+    setProcessing(false);
     // Reset state
     localMsgCounter = 0;
     pendingMsgIds = [];
@@ -1369,10 +1447,9 @@ document.addEventListener("DOMContentLoaded", function() {
     pendingAttachments = [];
     renderAttachPreview();
     contextPanel.classList.remove("visible");
-    // Notify server
+    // Notify server — creates a new session
     if (connected) {
       ws.send(JSON.stringify({ type: "command", command: "new_chat" }));
-      ws.send(JSON.stringify({ type: "hello", chat_id: chatId }));
     }
     closeSidebar();
   });
@@ -1380,7 +1457,7 @@ document.addEventListener("DOMContentLoaded", function() {
   // --- Chat history persistence ---
   var MAX_HISTORY = 200;
 
-  function historyKey() { return HISTORY_KEY + chatId; }
+  function historyKey() { return HISTORY_KEY + (sessionId || deviceId); }
 
   function saveHistory(role, content, mediaUrl) {
     try {
@@ -1425,6 +1502,10 @@ document.addEventListener("DOMContentLoaded", function() {
 
   // --- Init ---
   loadHistory();
+  // If we loaded messages from localStorage, no need for auto-resume
+  if (messagesEl.querySelectorAll(".msg-wrapper").length > 0) {
+    initialLoadDone = true;
+  }
   connect();
 });
 </script>

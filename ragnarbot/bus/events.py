@@ -30,6 +30,9 @@ class InboundMessage:
     @property
     def session_key(self) -> str:
         """Unique key for session identification."""
+        override = self.metadata.get("session_key_override")
+        if override:
+            return override
         return f"{self.channel}:{self.chat_id}"
 
 
