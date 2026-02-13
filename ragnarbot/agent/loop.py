@@ -58,6 +58,7 @@ class AgentLoop:
     5. Sends responses back
     """
 
+    COMPACT_MIN_MESSAGES = 60
     READ_ONLY_COMMANDS = frozenset({"context_info", "context_mode", "stop"})
 
     def __init__(
@@ -219,11 +220,16 @@ class AgentLoop:
                 )
                 continue
 
-            # Mutating commands (new_chat, set_context_mode)
+            # Mutating commands (new_chat, set_context_mode, compact)
             if command:
-                response = self._handle_command(command, msg)
-                if response:
-                    await self.bus.publish_outbound(response)
+                if command == "compact":
+                    self._processing_task = asyncio.create_task(
+                        self._handle_compact_async(msg),
+                    )
+                else:
+                    response = self._handle_command(command, msg)
+                    if response:
+                        await self.bus.publish_outbound(response)
                 continue
 
             # Regular messages: debounce, then process in background
@@ -895,6 +901,117 @@ class AgentLoop:
             content=text,
             metadata={"raw_html": True},
         )
+
+    async def _handle_compact_async(self, msg: InboundMessage) -> None:
+        """Handle /compact command — forced compaction as a blocking task."""
+        session_key = f"{msg.channel}:{msg.chat_id}"
+        session = self.sessions.get_or_create(session_key)
+
+        # Check minimum threshold — count only messages after last compaction
+        last_idx = self.compactor._find_last_compaction_idx(session.messages)
+        after_compaction = len(session.messages) - (last_idx + 1 if last_idx is not None else 0)
+
+        if after_compaction < self.COMPACT_MIN_MESSAGES:
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=(
+                    f"📦 Not enough new messages to compact "
+                    f"({after_compaction}/{self.COMPACT_MIN_MESSAGES})"
+                ),
+            ))
+            return
+
+        # Check compactable range (messages between last compaction and tail)
+        compact_start = last_idx if last_idx is not None else 0
+        tail_count = self.compactor._determine_tail(session.messages)
+        compact_end = len(session.messages) - tail_count
+        compactable = compact_end - compact_start
+
+        if compactable <= 0:
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="📦 Nothing to compact — all messages are in the tail.",
+            ))
+            return
+
+        # Send "compacting" status message
+        logger.info(
+            f"Manual compaction started for {session_key}: "
+            f"{compactable} messages to compact, {tail_count} in tail"
+        )
+        await self.bus.publish_outbound(OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=f"📦 Compacting {compactable} messages...",
+            metadata={"keep_typing": True},
+        ))
+
+        # Send typing indicator
+        await self.bus.publish_outbound(OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content="",
+            metadata={"chat_action": "typing"},
+        ))
+
+        # Build messages (system + history, no current message)
+        messages = self.context.build_messages(
+            history=session.get_history(),
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            session_key=session.key,
+            session_metadata=session.metadata,
+        )
+
+        compactions_before = sum(
+            1 for m in session.messages
+            if m.get("metadata", {}).get("type") == "compaction"
+        )
+
+        # Run compaction
+        try:
+            messages, _ = await self.compactor.compact(
+                session=session,
+                context_mode=self.context_mode,
+                context_builder=self.context,
+                messages=messages,
+                new_start=len(messages),
+                tools=self.tools.get_definitions(),
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                session_metadata=session.metadata,
+            )
+        except Exception as e:
+            logger.error(f"Manual compaction failed for {session_key}: {e}")
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=f"❌ Compaction failed: {e}",
+            ))
+            return
+
+        compactions_after = sum(
+            1 for m in session.messages
+            if m.get("metadata", {}).get("type") == "compaction"
+        )
+
+        self.sessions.save(session)
+
+        if compactions_after > compactions_before:
+            logger.info(f"Manual compaction completed for {session_key}")
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="✅ Conversation compacted",
+            ))
+        else:
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="📦 Compaction skipped — nothing to compact.",
+            ))
 
     async def _process_system_message(self, msg: InboundMessage) -> OutboundMessage | None:
         """
