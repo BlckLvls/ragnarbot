@@ -19,15 +19,16 @@ from ragnarbot.providers.transcription import TranscriptionError, TranscriptionP
 
 BOT_COMMANDS = [
     ("new", "Start a new conversation"),
-    ("stop", "Stop agent response"),
     ("context", "Show context usage"),
     ("context_mode", "Change context mode"),
+    ("stop", "Stop agent response"),
 ]
 
 
 async def set_bot_commands(bot) -> None:
     """Set the bot command menu. Single source of truth for all command lists."""
     from telegram import BotCommand
+    await bot.delete_my_commands()
     await bot.set_my_commands([BotCommand(cmd, desc) for cmd, desc in BOT_COMMANDS])
 
 

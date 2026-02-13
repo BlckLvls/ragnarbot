@@ -195,7 +195,9 @@ class AgentLoop:
             if command in self.READ_ONLY_COMMANDS:
                 response = self._handle_command(command, msg)
                 if response:
-                    if self._processing_task and not self._processing_task.done():
+                    if (command != "stop"
+                            and self._processing_task
+                            and not self._processing_task.done()):
                         response.metadata["keep_typing"] = True
                     await self.bus.publish_outbound(response)
                 continue
@@ -246,12 +248,47 @@ class AgentLoop:
         """Returns True if there was something to stop."""
         if (self._processing_task and not self._processing_task.done()
                 and self._processing_session_key == session_key):
-            self._stop_events.setdefault(session_key, asyncio.Event()).set()
-            return True
+            event = self._stop_events.get(session_key)
+            if event:
+                event.set()
+                return True
         return False
 
     def _clear_stop(self, session_key: str):
-        self._stop_events.pop(session_key, None)
+        """Reset stop state with a fresh (unset) event for this session."""
+        self._stop_events[session_key] = asyncio.Event()
+
+    async def _chat_or_stop(self, session_key: str, **chat_kwargs):
+        """Race provider.chat() against the stop event.
+
+        Returns the LLM response, or None if stopped mid-call.
+        """
+        event = self._stop_events.get(session_key)
+        chat_task = asyncio.create_task(self.provider.chat(**chat_kwargs))
+
+        if not event:
+            return await chat_task
+
+        stop_task = asyncio.create_task(event.wait())
+        done, pending = await asyncio.wait(
+            [chat_task, stop_task], return_when=asyncio.FIRST_COMPLETED,
+        )
+        for t in pending:
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        if stop_task in done:
+            # Consume result to avoid unhandled-exception warnings
+            if chat_task in done:
+                try:
+                    chat_task.result()
+                except Exception:
+                    pass
+            return None
+        return chat_task.result()
 
     def _reap_processing_task(self):
         """Check for completed/failed background task."""
@@ -310,6 +347,7 @@ class AgentLoop:
                     ))
         finally:
             self._processing_session_key = None
+            self._stop_events.pop(session_key, None)
 
     async def _debounce(self, first: InboundMessage) -> list[InboundMessage]:
         """Collect rapid-fire messages from the same session into a batch.
@@ -589,40 +627,29 @@ class AgentLoop:
                 api_messages = [
                     {k: v for k, v in m.items() if k != "_ts"} for m in messages
                 ]
-                response = await self.provider.chat(
+                response = await self._chat_or_stop(
+                    session_key,
                     messages=api_messages,
                     tools=tools_defs,
-                    model=self.model
+                    model=self.model,
                 )
+
+                # LLM call cancelled by stop
+                if response is None:
+                    logger.info(f"LLM call cancelled by stop for {session_key}")
+                    stopped = True
+                    break
 
                 # Track cache creation/read for flush scheduling
                 self.cache_manager.mark_cache_created(session, response.usage)
 
-                if response.has_tool_calls:
-                    # CHECKPOINT 2 — after LLM returns tool_calls, before execution
-                    if self._is_stopped(session_key):
-                        logger.info(f"Stop requested before tool execution for {session_key}")
-                        stopped = True
-                        tool_call_dicts = [
-                            {
-                                "id": tc.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tc.name,
-                                    "arguments": json.dumps(tc.arguments)
-                                }
-                            }
-                            for tc in response.tool_calls
-                        ]
-                        messages = self.context.add_assistant_message(
-                            messages, response.content, tool_call_dicts
-                        )
-                        for tc in response.tool_calls:
-                            messages = self.context.add_tool_result(
-                                messages, tc.id, tc.name, "[Stopped by user]"
-                            )
-                        break
+                # Stop check after LLM returns (covers final text response)
+                if self._is_stopped(session_key):
+                    logger.info(f"Stop requested after LLM call for {session_key}")
+                    stopped = True
+                    break
 
+                if response.has_tool_calls:
                     if self.stream_steps and response.content:
                         await self.bus.publish_outbound(OutboundMessage(
                             channel=msg.channel,
@@ -647,7 +674,7 @@ class AgentLoop:
                     )
 
                     for idx, tool_call in enumerate(response.tool_calls):
-                        # CHECKPOINT 3 — before each individual tool execution
+                        # Stop check before each individual tool execution
                         if self._is_stopped(session_key):
                             logger.info(
                                 f"Stop requested during tool execution for {session_key}"
@@ -988,42 +1015,29 @@ class AgentLoop:
                 api_messages = [
                     {k: v for k, v in m.items() if k != "_ts"} for m in messages
                 ]
-                response = await self.provider.chat(
+                response = await self._chat_or_stop(
+                    session_key,
                     messages=api_messages,
                     tools=tools_defs,
-                    model=self.model
+                    model=self.model,
                 )
+
+                # LLM call cancelled by stop
+                if response is None:
+                    logger.info(f"LLM call cancelled by stop for {session_key}")
+                    stopped = True
+                    break
 
                 # Track cache creation/read for flush scheduling
                 self.cache_manager.mark_cache_created(session, response.usage)
 
-                if response.has_tool_calls:
-                    # CHECKPOINT 2 — after LLM returns tool_calls, before execution
-                    if self._is_stopped(session_key):
-                        logger.info(
-                            f"Stop requested before tool execution for {session_key}"
-                        )
-                        stopped = True
-                        tool_call_dicts = [
-                            {
-                                "id": tc.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tc.name,
-                                    "arguments": json.dumps(tc.arguments)
-                                }
-                            }
-                            for tc in response.tool_calls
-                        ]
-                        messages = self.context.add_assistant_message(
-                            messages, response.content, tool_call_dicts
-                        )
-                        for tc in response.tool_calls:
-                            messages = self.context.add_tool_result(
-                                messages, tc.id, tc.name, "[Stopped by user]"
-                            )
-                        break
+                # Stop check after LLM returns (covers final text response)
+                if self._is_stopped(session_key):
+                    logger.info(f"Stop requested after LLM call for {session_key}")
+                    stopped = True
+                    break
 
+                if response.has_tool_calls:
                     # Stream intermediate content to user if enabled
                     if self.stream_steps and response.content:
                         await self.bus.publish_outbound(OutboundMessage(
@@ -1049,7 +1063,7 @@ class AgentLoop:
                     )
 
                     for idx, tool_call in enumerate(response.tool_calls):
-                        # CHECKPOINT 3 — before each individual tool execution
+                        # Stop check before each individual tool execution
                         if self._is_stopped(session_key):
                             logger.info(
                                 f"Stop requested during tool execution for {session_key}"
