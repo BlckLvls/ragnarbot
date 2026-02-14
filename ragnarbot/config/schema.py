@@ -22,9 +22,19 @@ class TelegramConfig(BaseModel):
     )
 
 
+class WebConfig(BaseModel):
+    """Web channel configuration."""
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 8080
+    title: str = "ragnarbot"
+    allowed_networks: list[str] = []  # CIDR list, e.g. ["192.168.123.0/24"]
+
+
 class ChannelsConfig(BaseModel):
     """Configuration for chat channels."""
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    web: WebConfig = Field(default_factory=WebConfig)
 
 
 OAUTH_SUPPORTED_PROVIDERS = {"anthropic"}

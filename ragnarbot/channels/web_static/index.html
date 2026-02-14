@@ -1,0 +1,1533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{title}}</title>
+<link rel="icon" type="image/png" href="/static/favicon.png">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js" defer crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer crossorigin="anonymous"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0a0a0f;
+    --surface: #12121a;
+    --surface-2: #1a1a25;
+    --border: #2a2a3a;
+    --text: #e0e0e8;
+    --text-dim: #7a7a8a;
+    --accent: #6c5ce7;
+    --accent-dim: #5a4bd6;
+    --user-bg: #1e1e30;
+    --bot-bg: #161620;
+    --scrollbar: #2a2a3a;
+    --scrollbar-hover: #3a3a4a;
+    --eco: #27ae60;
+    --normal: #6c5ce7;
+    --full: #e74c3c;
+    --danger: #e74c3c;
+  }
+
+  html, body {
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+
+  #app {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    flex-direction: column;
+    max-width: 800px;
+    margin: 0 auto;
+    overflow: hidden;
+  }
+
+  /* Header */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    flex-shrink: 0;
+    gap: 12px;
+  }
+
+  .header-left {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .header-avatar {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    object-fit: cover;
+  }
+
+  header .title {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+  }
+
+  header .status {
+    font-size: 11px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  header .status .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #555;
+    transition: background 0.3s;
+  }
+
+  header .status .dot.connected { background: #44cc66; }
+
+  /* Context bar */
+  .header-center {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+
+  .header-center.visible { opacity: 1; }
+
+  .context-bar {
+    width: 100%;
+    max-width: 260px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .context-track {
+    flex: 1;
+    height: 4px;
+    background: var(--surface-2);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .context-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    width: 0%;
+    transition: width 0.4s ease, background 0.3s;
+  }
+
+  .context-fill.high { background: #e67e22; }
+  .context-fill.critical { background: var(--danger); }
+
+  .context-label {
+    font-size: 10px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Mode toggle */
+  .mode-toggle {
+    display: flex;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .mode-btn {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    padding: 3px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s;
+    border-right: 1px solid var(--border);
+  }
+
+  .mode-btn:last-child { border-right: none; }
+
+  .mode-btn:hover { color: var(--text); background: var(--surface-2); }
+
+  .mode-btn.active-eco { background: rgba(39,174,96,0.15); color: var(--eco); }
+  .mode-btn.active-normal { background: rgba(108,92,231,0.15); color: var(--normal); }
+  .mode-btn.active-full { background: rgba(231,76,60,0.15); color: var(--full); }
+
+  .header-right {
+    flex-shrink: 0;
+  }
+
+  .header-right button {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    padding: 5px 12px;
+    border-radius: 6px;
+    font-size: 16px;
+    cursor: pointer;
+    transition: all 0.15s;
+    line-height: 1;
+  }
+
+  .header-right button:hover {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+
+  #compact-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  /* Sidebar */
+  #sidebar-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 99;
+  }
+
+  #sidebar-overlay.open { display: block; }
+
+  #sidebar {
+    position: fixed;
+    left: -300px;
+    top: 0;
+    bottom: 0;
+    width: 280px;
+    z-index: 100;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    transition: left 0.2s ease;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  #sidebar.open { left: 0; }
+
+  .sidebar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+    font-size: 15px;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+
+  #new-chat-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  #new-chat-btn:hover {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+
+  #session-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+  }
+
+  #session-list::-webkit-scrollbar { width: 4px; }
+  #session-list::-webkit-scrollbar-track { background: transparent; }
+  #session-list::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 2px; }
+
+  .session-item {
+    padding: 10px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.15s;
+    margin-bottom: 2px;
+  }
+
+  .session-item:hover { background: var(--surface-2); }
+
+  .session-item.active {
+    background: rgba(108,92,231,0.12);
+    border-left: 3px solid var(--accent);
+  }
+
+  .session-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .session-info {
+    flex: 1;
+    min-width: 0;
+    cursor: pointer;
+  }
+
+  .session-delete {
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 16px;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    opacity: 0;
+    transition: opacity 0.15s, color 0.15s, background 0.15s;
+  }
+
+  .session-item:hover .session-delete { opacity: 0.7; }
+  .session-delete:hover { opacity: 1 !important; color: var(--danger); background: rgba(231,76,60,0.1); }
+
+  .session-preview {
+    font-size: 13px;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .session-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  .session-badge {
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: rgba(108,92,231,0.2);
+    color: var(--accent);
+  }
+
+  .session-empty {
+    padding: 20px;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+
+  /* Messages */
+  #messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  #messages::-webkit-scrollbar { width: 6px; }
+  #messages::-webkit-scrollbar-track { background: transparent; }
+  #messages::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 3px; }
+  #messages::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-hover); }
+
+  .msg-wrapper {
+    display: flex;
+    flex-direction: column;
+    max-width: 85%;
+    animation: fadeIn 0.15s ease;
+  }
+
+  .msg-wrapper.user { align-self: flex-end; }
+  .msg-wrapper.bot { align-self: flex-start; flex-direction: row; align-items: flex-start; gap: 8px; }
+
+  .bot-avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+
+  .msg-body {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .msg {
+    padding: 10px 14px;
+    border-radius: 12px;
+    font-size: 14px;
+    line-height: 1.55;
+    word-wrap: break-word;
+  }
+
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+  .msg-wrapper.user .msg {
+    background: var(--user-bg);
+    border: 1px solid var(--border);
+    border-bottom-right-radius: 4px;
+  }
+
+  .msg-wrapper.bot .msg {
+    background: var(--bot-bg);
+    border: 1px solid var(--border);
+    border-bottom-left-radius: 4px;
+  }
+
+  .msg-wrapper.bot.intermediate .msg {
+    opacity: 0.6;
+    border-style: dashed;
+  }
+
+  /* Reaction badge */
+  .reaction-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    font-size: 16px;
+    margin-top: 2px;
+    animation: popIn 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  }
+
+  @keyframes popIn { from { transform: scale(0); } to { transform: scale(1); } }
+
+  /* Attachment preview in messages */
+  .msg-attachment {
+    margin-top: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .msg-attachment img {
+    max-width: 200px;
+    max-height: 150px;
+    border-radius: 8px;
+    object-fit: cover;
+  }
+
+  .msg-attachment .file-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    background: var(--surface-2);
+    border-radius: 6px;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  /* Markdown content */
+  .msg p { margin: 0.4em 0; }
+  .msg p:first-child { margin-top: 0; }
+  .msg p:last-child { margin-bottom: 0; }
+  .msg ul, .msg ol { margin: 0.4em 0; padding-left: 1.4em; }
+  .msg code { background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  .msg pre { margin: 0.5em 0; border-radius: 8px; overflow-x: auto; }
+  .msg pre code { display: block; padding: 12px; background: rgba(0,0,0,0.4); font-size: 13px; }
+  .msg blockquote { border-left: 3px solid var(--accent); padding-left: 10px; margin: 0.4em 0; color: var(--text-dim); }
+  .msg a { color: var(--accent); text-decoration: none; }
+  .msg a:hover { text-decoration: underline; }
+  .msg table { border-collapse: collapse; margin: 0.5em 0; font-size: 13px; }
+  .msg th, .msg td { border: 1px solid var(--border); padding: 4px 8px; }
+
+  /* Typing indicator */
+  #typing {
+    display: none;
+    align-self: flex-start;
+    padding: 10px 14px;
+    color: var(--text-dim);
+    font-size: 13px;
+    font-style: italic;
+  }
+
+  #typing.active { display: block; }
+
+  #typing span::after {
+    content: "";
+    animation: dots 1.2s steps(4, end) infinite;
+  }
+
+  @keyframes dots {
+    0%  { content: ""; }
+    25% { content: "."; }
+    50% { content: ".."; }
+    75% { content: "..."; }
+  }
+
+  /* Input */
+  #input-area {
+    padding: 12px 20px 16px;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+    flex-shrink: 0;
+  }
+
+  /* Attachment preview bar */
+  #attach-preview {
+    display: none;
+    padding: 6px 0 8px;
+    gap: 6px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  #attach-preview.active { display: flex; }
+
+  .attach-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  .attach-chip img {
+    width: 24px;
+    height: 24px;
+    border-radius: 4px;
+    object-fit: cover;
+  }
+
+  .attach-chip .remove-attach {
+    cursor: pointer;
+    margin-left: 2px;
+    opacity: 0.5;
+    font-size: 13px;
+  }
+
+  .attach-chip .remove-attach:hover { opacity: 1; }
+
+  #input-wrap {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+  }
+
+  .input-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: all 0.15s;
+  }
+
+  .input-btn:hover {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+
+  .input-btn svg { width: 18px; height: 18px; }
+
+  /* Voice recording state */
+  #voice-btn.recording {
+    border-color: var(--danger);
+    color: var(--danger);
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(231,76,60,0.3); }
+    50% { box-shadow: 0 0 0 6px rgba(231,76,60,0); }
+  }
+
+  #input {
+    flex: 1;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 14px;
+    color: var(--text);
+    font-size: 14px;
+    font-family: inherit;
+    resize: none;
+    min-height: 40px;
+    max-height: 160px;
+    line-height: 1.4;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+
+  #input:focus { border-color: var(--accent); }
+  #input::placeholder { color: var(--text-dim); }
+
+  #send-btn, #stop-btn {
+    background: var(--accent);
+    border: none;
+    color: #fff;
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: background 0.15s;
+  }
+
+  #send-btn:hover { background: var(--accent-dim); }
+  #send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  #send-btn svg, #stop-btn svg { width: 18px; height: 18px; }
+
+  #stop-btn { background: var(--danger); display: none; }
+  #stop-btn:hover { background: #c0392b; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="header-left">
+      <img class="header-avatar" src="/static/avatar.jpg" alt="">
+      <div>
+        <div class="title">{{title}}</div>
+        <div class="status"><span class="dot" id="status-dot"></span><span id="status-text">connecting</span></div>
+      </div>
+    </div>
+    <div class="header-center" id="context-panel">
+      <div class="context-bar">
+        <div class="context-track"><div class="context-fill" id="ctx-fill"></div></div>
+        <span class="context-label" id="ctx-label">—</span>
+      </div>
+      <div class="mode-toggle" id="mode-toggle">
+        <button class="mode-btn" data-mode="eco">eco</button>
+        <button class="mode-btn" data-mode="normal">normal</button>
+        <button class="mode-btn" data-mode="full">full</button>
+      </div>
+    </div>
+    <div class="header-right">
+      <button id="compact-btn" title="Compact conversation">&#128230;</button>
+      <button id="sidebar-btn" title="Chats">&#9776;</button>
+    </div>
+  </header>
+  <div id="sidebar-overlay"></div>
+  <div id="sidebar">
+    <div class="sidebar-header">
+      <span>Chats</span>
+      <button id="new-chat-btn">+ New</button>
+    </div>
+    <div id="session-list"></div>
+  </div>
+  <div id="messages">
+    <div id="typing"><span>Thinking</span></div>
+  </div>
+  <div id="input-area">
+    <div id="attach-preview"></div>
+    <div id="input-wrap">
+      <button class="input-btn" id="attach-btn" title="Attach file">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+      </button>
+      <input type="file" id="file-input" hidden multiple>
+      <textarea id="input" rows="1" placeholder="Send a message..." autocomplete="off"></textarea>
+      <button class="input-btn" id="voice-btn" title="Voice message">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+      </button>
+      <button id="send-btn" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+      </button>
+      <button id="stop-btn" title="Stop">
+        <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+      </button>
+    </div>
+  </div>
+</div>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  // --- Config ---
+  var wsProto = location.protocol === "https:" ? "wss:" : "ws:";
+  var WS_URL = wsProto + "//" + location.host + "/ws";
+  var DEVICE_KEY = "ragnarbot_device_id";
+  var SESSION_KEY = "ragnarbot_session_id";
+  var HISTORY_KEY = "ragnarbot_history_";
+
+  // --- Elements ---
+  const messagesEl = document.getElementById("messages");
+  const typingEl = document.getElementById("typing");
+  const inputEl = document.getElementById("input");
+  const sendBtn = document.getElementById("send-btn");
+  const newChatBtn = document.getElementById("new-chat-btn");
+  const sidebarBtn = document.getElementById("sidebar-btn");
+  const compactBtn = document.getElementById("compact-btn");
+  const sidebar = document.getElementById("sidebar");
+  const sidebarOverlay = document.getElementById("sidebar-overlay");
+  const sessionListEl = document.getElementById("session-list");
+  const statusDot = document.getElementById("status-dot");
+  const statusText = document.getElementById("status-text");
+  const contextPanel = document.getElementById("context-panel");
+  const ctxFill = document.getElementById("ctx-fill");
+  const ctxLabel = document.getElementById("ctx-label");
+  const modeToggle = document.getElementById("mode-toggle");
+  const attachBtn = document.getElementById("attach-btn");
+  const fileInput = document.getElementById("file-input");
+  const attachPreview = document.getElementById("attach-preview");
+  const voiceBtn = document.getElementById("voice-btn");
+  const stopBtn = document.getElementById("stop-btn");
+
+  // --- Helpers ---
+  function generateId() {
+    if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+    return "xxxx-xxxx-xxxx-xxxx".replace(/x/g, function() {
+      return ((Math.random() * 16) | 0).toString(16);
+    });
+  }
+
+  // --- State ---
+  // Migrate old single chatId to deviceId
+  var oldChatId = localStorage.getItem("ragnarbot_chat_id");
+  if (oldChatId && !localStorage.getItem(DEVICE_KEY)) {
+    localStorage.setItem(DEVICE_KEY, oldChatId);
+  }
+
+  let deviceId = localStorage.getItem(DEVICE_KEY);
+  if (!deviceId) {
+    deviceId = generateId();
+    localStorage.setItem(DEVICE_KEY, deviceId);
+  }
+  let sessionId = localStorage.getItem(SESSION_KEY); // null on first visit
+
+  let ws = null;
+  let connected = false;
+  let reconnectDelay = 500;
+  const MAX_RECONNECT = 15000;
+
+  let localMsgCounter = 0;
+  // Map localMsgId → server msg_id (for reactions)
+  let pendingMsgIds = [];  // queue of local IDs waiting for server msg_id
+  let msgIdMap = {};       // server_msg_id → DOM element
+
+  // Uploaded files pending send
+  let pendingAttachments = [];  // [{file_id, filename, mime_type, type, dataUrl?}]
+
+  // Processing state (bot is working)
+  let isProcessing = false;
+
+  // Tracks if initial session load is done (prevents repeated auto-resumes)
+  let initialLoadDone = false;
+
+  // Voice recording
+  let mediaRecorder = null;
+  let audioChunks = [];
+  let isRecording = false;
+
+  // --- Markdown (graceful fallback if CDN unavailable) ---
+  var hasMarked = typeof marked !== "undefined";
+  var hasHljs = typeof hljs !== "undefined";
+
+  if (hasMarked) {
+    marked.setOptions({
+      highlight: function(code, lang) {
+        if (hasHljs && lang && hljs.getLanguage(lang)) return hljs.highlight(code, { language: lang }).value;
+        if (hasHljs) return hljs.highlightAuto(code).value;
+        return code;
+      },
+      breaks: true,
+    });
+  }
+
+  function renderMarkdown(text) {
+    if (hasMarked) return marked.parse(text);
+    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>");
+  }
+
+  // --- WebSocket ---
+  function connect() {
+    setStatus("connecting");
+    ws = new WebSocket(WS_URL);
+
+    ws.onopen = function() {
+      connected = true;
+      reconnectDelay = 500;
+      ws.send(JSON.stringify({ type: "hello", device_id: deviceId, session_id: sessionId }));
+    };
+
+    ws.onmessage = function(e) {
+      const data = JSON.parse(e.data);
+      handleMessage(data);
+    };
+
+    ws.onclose = function() {
+      connected = false;
+      setStatus("disconnected");
+      scheduleReconnect();
+    };
+
+    ws.onerror = function() {
+      ws.close();
+    };
+  }
+
+  function scheduleReconnect() {
+    setTimeout(function() {
+      reconnectDelay = Math.min(reconnectDelay * 1.5, MAX_RECONNECT);
+      connect();
+    }, reconnectDelay);
+  }
+
+  function setStatus(s) {
+    statusText.textContent = s;
+    statusDot.className = "dot" + (s === "connected" ? " connected" : "");
+    if (!isProcessing) {
+      sendBtn.disabled = s !== "connected";
+    }
+  }
+
+  function setProcessing(active) {
+    isProcessing = active;
+    if (active) {
+      sendBtn.style.display = "none";
+      stopBtn.style.display = "flex";
+      inputEl.disabled = true;
+      inputEl.placeholder = "Waiting for response...";
+    } else {
+      sendBtn.style.display = "flex";
+      stopBtn.style.display = "none";
+      inputEl.disabled = false;
+      inputEl.placeholder = "Send a message...";
+      sendBtn.disabled = !connected;
+    }
+  }
+
+  stopBtn.addEventListener("click", function() {
+    if (connected) {
+      ws.send(JSON.stringify({ type: "command", command: "stop" }));
+    }
+  });
+
+  function handleMessage(data) {
+    switch (data.type) {
+      case "hello":
+        setStatus("connected");
+        // Request context info and session list on connect
+        ws.send(JSON.stringify({ type: "command", command: "context_info" }));
+        ws.send(JSON.stringify({ type: "command", command: "list_sessions" }));
+        break;
+
+      case "session_update":
+        // Server assigned or changed session_id (e.g. after new_chat or first message)
+        sessionId = data.session_id;
+        localStorage.setItem(SESSION_KEY, sessionId);
+        break;
+
+      case "typing":
+        typingEl.classList.toggle("active", data.active);
+        setProcessing(data.active);
+        scrollBottom();
+        break;
+
+      case "stopped":
+        typingEl.classList.remove("active");
+        setProcessing(false);
+        break;
+
+      case "message":
+        addMessage("bot", data.content, data.intermediate, null, data.media);
+        // Reset compact button and refresh context bar when result arrives
+        if (data.content && (data.content.indexOf("Compact") !== -1 || data.content.indexOf("compact") !== -1)) {
+          compactBtn.disabled = false;
+          compactBtn.title = "Compact conversation";
+          ws.send(JSON.stringify({ type: "command", command: "context_info" }));
+        }
+        break;
+
+      case "user_echo":
+        // Message sent from another device — show it as a user message
+        addMessage("user", data.content);
+        saveHistory("user", data.content, null);
+        break;
+
+      case "error":
+        addMessage("bot", "Error: " + data.content);
+        break;
+
+      case "context_info":
+        updateContextBar(data);
+        break;
+
+      case "msg_id":
+        // Server assigned msg_id to the last user message
+        if (pendingMsgIds.length > 0) {
+          var localId = pendingMsgIds.shift();
+          var el = document.querySelector('[data-local-id="' + localId + '"]');
+          if (el) {
+            el.setAttribute("data-msg-id", data.msg_id);
+            msgIdMap[data.msg_id] = el;
+          }
+        }
+        break;
+
+      case "reaction":
+        showReaction(data.emoji, data.msg_id);
+        break;
+
+      case "session_list":
+        renderSessionList(data.sessions || []);
+        // Auto-resume active session ONCE on initial connect
+        // (e.g. new device, or page load without localStorage history)
+        if (!initialLoadDone && messagesEl.querySelectorAll(".msg-wrapper").length === 0 && data.sessions) {
+          initialLoadDone = true;
+          var active = data.sessions.find(function(s) { return s.active; });
+          if (active) {
+            ws.send(JSON.stringify({
+              type: "command",
+              command: "resume_session",
+              session_id: active.session_id,
+            }));
+          }
+        }
+        break;
+
+      case "session_resumed":
+        handleSessionResumed(data);
+        break;
+
+      case "session_deleted":
+        // Re-fetch session list after deletion
+        if (connected) {
+          ws.send(JSON.stringify({ type: "command", command: "list_sessions" }));
+        }
+        break;
+    }
+  }
+
+  // --- Context bar ---
+  function updateContextBar(data) {
+    contextPanel.classList.add("visible");
+
+    var pct = data.pct || 0;
+    ctxFill.style.width = pct + "%";
+    ctxFill.className = "context-fill" + (pct >= 85 ? " critical" : pct >= 65 ? " high" : "");
+    ctxLabel.textContent = pct + "% " + (data.tokens_k || "0k") + " / " + (data.max_k || "0k");
+
+    // Update mode buttons
+    var mode = data.mode || "normal";
+    modeToggle.querySelectorAll(".mode-btn").forEach(function(btn) {
+      btn.className = "mode-btn" + (btn.dataset.mode === mode ? " active-" + mode : "");
+    });
+  }
+
+  modeToggle.addEventListener("click", function(e) {
+    var btn = e.target.closest(".mode-btn");
+    if (!btn || !connected) return;
+    ws.send(JSON.stringify({ type: "command", command: "set_context_mode", mode: btn.dataset.mode }));
+  });
+
+  // --- Reactions ---
+  function showReaction(emoji, serverMsgId) {
+    var el = msgIdMap[serverMsgId];
+    if (!el) return;
+
+    // Check if reaction already exists on this message
+    var existing = el.querySelector(".reaction-badge");
+    if (existing) {
+      existing.textContent = emoji;
+      return;
+    }
+
+    var badge = document.createElement("div");
+    badge.className = "reaction-badge";
+    badge.textContent = emoji;
+    el.appendChild(badge);
+  }
+
+  // --- Sidebar ---
+  function openSidebar() {
+    sidebar.classList.add("open");
+    sidebarOverlay.classList.add("open");
+    if (connected) {
+      ws.send(JSON.stringify({ type: "command", command: "list_sessions" }));
+    }
+  }
+
+  function closeSidebar() {
+    sidebar.classList.remove("open");
+    sidebarOverlay.classList.remove("open");
+  }
+
+  sidebarBtn.addEventListener("click", function() {
+    if (sidebar.classList.contains("open")) closeSidebar();
+    else openSidebar();
+  });
+
+  sidebarOverlay.addEventListener("click", closeSidebar);
+
+  compactBtn.addEventListener("click", function() {
+    if (!connected || compactBtn.disabled) return;
+    compactBtn.disabled = true;
+    compactBtn.title = "Compacting...";
+    ws.send(JSON.stringify({ type: "command", command: "compact" }));
+  });
+
+  function renderSessionList(sessions) {
+    sessionListEl.innerHTML = "";
+    if (sessions.length === 0) {
+      sessionListEl.innerHTML = '<div class="session-empty">No chats yet</div>';
+      return;
+    }
+    sessions.forEach(function(s) {
+      var isCurrent = s.active;
+      var item = document.createElement("div");
+      item.className = "session-item" + (isCurrent ? " active" : "");
+
+      var dateStr = "";
+      if (s.updated_at) {
+        try {
+          var d = new Date(s.updated_at);
+          dateStr = d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" })
+            + " " + d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+        } catch(e) { dateStr = s.updated_at; }
+      }
+
+      var preview = s.preview || "(empty chat)";
+      if (preview.length > 50) preview = preview.substring(0, 50) + "\u2026";
+
+      var row = document.createElement("div");
+      row.className = "session-row";
+
+      var info = document.createElement("div");
+      info.className = "session-info";
+      info.innerHTML =
+        '<div class="session-preview">' + escapeHtml(preview) + '</div>' +
+        '<div class="session-meta">' +
+          '<span>' + dateStr + '</span>' +
+          (s.msg_count ? '<span>\u00B7 ' + s.msg_count + ' msgs</span>' : '') +
+          (isCurrent ? '<span class="session-badge">current</span>' : '') +
+        '</div>';
+
+      info.addEventListener("click", function() {
+        if (isCurrent) {
+          closeSidebar();
+          return;
+        }
+        ws.send(JSON.stringify({
+          type: "command",
+          command: "resume_session",
+          session_id: s.session_id,
+        }));
+      });
+
+      var delBtn = document.createElement("button");
+      delBtn.className = "session-delete";
+      delBtn.title = "Delete";
+      delBtn.textContent = "\u00D7";
+      delBtn.addEventListener("click", function(e) {
+        e.stopPropagation();
+        if (!confirm("Delete this chat?")) return;
+        ws.send(JSON.stringify({
+          type: "command",
+          command: "delete_session",
+          session_id: s.session_id,
+        }));
+      });
+
+      row.appendChild(info);
+      row.appendChild(delBtn);
+      item.appendChild(row);
+      sessionListEl.appendChild(item);
+    });
+  }
+
+  function escapeHtml(text) {
+    var div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  function handleSessionResumed(data) {
+    // Update sessionId to the resumed session
+    sessionId = data.session_id;
+    localStorage.setItem(SESSION_KEY, sessionId);
+
+    // Clear current messages
+    messagesEl.querySelectorAll(".msg-wrapper").forEach(function(m) { m.remove(); });
+    typingEl.classList.remove("active");
+    setProcessing(false);
+
+    // Reset state
+    localMsgCounter = 0;
+    pendingMsgIds = [];
+    msgIdMap = {};
+
+    // Render server-side history
+    var history = data.history || [];
+    // Clear localStorage history for this session and rebuild from server
+    clearHistory();
+    history.forEach(function(h) {
+      var role = h.role === "assistant" ? "bot" : h.role;
+      addMessage(role, h.content, false, null, null, true);
+      saveHistory(role, h.content, null);
+    });
+
+    // Request updated context info
+    if (connected) {
+      ws.send(JSON.stringify({ type: "command", command: "context_info" }));
+    }
+
+    closeSidebar();
+  }
+
+  // --- Messages ---
+  function addMessage(role, content, intermediate, attachments, media, fromHistory) {
+    // If intermediate, replace previous intermediate message
+    if (role === "bot" && intermediate) {
+      var prev = messagesEl.querySelector(".msg-wrapper.bot.intermediate");
+      if (prev) prev.remove();
+    }
+    // If final bot message, remove intermediate
+    if (role === "bot" && !intermediate) {
+      var prev = messagesEl.querySelector(".msg-wrapper.bot.intermediate");
+      if (prev) prev.remove();
+    }
+
+    var wrapper = document.createElement("div");
+    wrapper.className = "msg-wrapper " + role + (intermediate ? " intermediate" : "");
+    if (fromHistory) wrapper.style.animation = "none";
+
+    // Bot avatar
+    if (role === "bot") {
+      var avatarImg = document.createElement("img");
+      avatarImg.className = "bot-avatar";
+      avatarImg.src = "/static/avatar.jpg";
+      wrapper.appendChild(avatarImg);
+    }
+
+    var msgBody = document.createElement("div");
+    msgBody.className = "msg-body";
+
+    var div = document.createElement("div");
+    div.className = "msg";
+
+    if (role === "bot") {
+      div.innerHTML = renderMarkdown(content || "");
+      if (hasHljs) {
+        div.querySelectorAll("pre code").forEach(function(block) {
+          hljs.highlightElement(block);
+        });
+      }
+    } else {
+      div.textContent = content;
+    }
+
+    msgBody.appendChild(div);
+
+    // Bot media (image from server)
+    if (media && media.type === "image" && media.url) {
+      var mediaDiv = document.createElement("div");
+      mediaDiv.className = "msg-attachment";
+      var img = document.createElement("img");
+      img.src = media.url;
+      img.style.maxWidth = "100%";
+      img.style.maxHeight = "400px";
+      img.style.borderRadius = "8px";
+      img.style.marginTop = "8px";
+      img.style.cursor = "pointer";
+      img.title = media.filename || "image";
+      img.addEventListener("click", function() {
+        window.open(media.url, "_blank");
+      });
+      mediaDiv.appendChild(img);
+      msgBody.appendChild(mediaDiv);
+    }
+
+    // Show attachment previews in message (user uploads)
+    if (attachments && attachments.length > 0) {
+      attachments.forEach(function(att) {
+        var attDiv = document.createElement("div");
+        attDiv.className = "msg-attachment";
+        if (att.dataUrl && att.mime_type && att.mime_type.startsWith("image/")) {
+          var img = document.createElement("img");
+          img.src = att.dataUrl;
+          attDiv.appendChild(img);
+        } else {
+          var chip = document.createElement("span");
+          chip.className = "file-chip";
+          chip.textContent = (att.type === "voice" ? "\uD83C\uDF99 " : "\uD83D\uDCCE ") + att.filename;
+          attDiv.appendChild(chip);
+        }
+        msgBody.appendChild(attDiv);
+      });
+    }
+
+    wrapper.appendChild(msgBody);
+
+    // Assign local ID for user messages (for reaction targeting)
+    if (role === "user") {
+      localMsgCounter++;
+      wrapper.setAttribute("data-local-id", localMsgCounter);
+      pendingMsgIds.push(localMsgCounter);
+    }
+
+    messagesEl.insertBefore(wrapper, typingEl);
+    scrollBottom();
+
+    // Persist to localStorage (skip intermediate and already-restored)
+    if (!intermediate && !fromHistory) {
+      var mediaUrl = (media && media.type === "image") ? media.url : null;
+      // Don't save huge base64 data URLs (bot snapshots)
+      if (mediaUrl && mediaUrl.length > 50000) mediaUrl = null;
+      saveHistory(role, content, mediaUrl);
+    }
+
+    return wrapper;
+  }
+
+  function scrollBottom() {
+    requestAnimationFrame(function() {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    });
+  }
+
+  // --- File upload ---
+  attachBtn.addEventListener("click", function() {
+    fileInput.click();
+  });
+
+  fileInput.addEventListener("change", function() {
+    Array.from(fileInput.files).forEach(function(file) {
+      uploadFile(file, "file");
+    });
+    fileInput.value = "";
+  });
+
+  async function uploadFile(file, type) {
+    var formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      var resp = await fetch("/upload", { method: "POST", body: formData });
+      if (!resp.ok) {
+        var err = await resp.json();
+        console.error("Upload error:", err);
+        return;
+      }
+      var data = await resp.json();
+      var att = {
+        file_id: data.file_id,
+        filename: data.filename,
+        mime_type: data.mime_type,
+        type: type,
+        dataUrl: null,
+      };
+
+      // For images, create a preview data URL
+      if (data.mime_type && data.mime_type.startsWith("image/")) {
+        att.dataUrl = await readDataUrl(file);
+      }
+
+      pendingAttachments.push(att);
+      renderAttachPreview();
+    } catch (e) {
+      console.error("Upload failed:", e);
+    }
+  }
+
+  function readDataUrl(file) {
+    return new Promise(function(resolve) {
+      var reader = new FileReader();
+      reader.onload = function() { resolve(reader.result); };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function renderAttachPreview() {
+    attachPreview.innerHTML = "";
+    if (pendingAttachments.length === 0) {
+      attachPreview.classList.remove("active");
+      return;
+    }
+    attachPreview.classList.add("active");
+
+    pendingAttachments.forEach(function(att, i) {
+      var chip = document.createElement("span");
+      chip.className = "attach-chip";
+
+      if (att.dataUrl && att.mime_type.startsWith("image/")) {
+        var img = document.createElement("img");
+        img.src = att.dataUrl;
+        chip.appendChild(img);
+      }
+
+      var name = document.createElement("span");
+      name.textContent = att.type === "voice" ? "\uD83C\uDF99 Voice" : att.filename;
+      chip.appendChild(name);
+
+      var rm = document.createElement("span");
+      rm.className = "remove-attach";
+      rm.textContent = "\u00D7";
+      rm.addEventListener("click", function() {
+        pendingAttachments.splice(i, 1);
+        renderAttachPreview();
+      });
+      chip.appendChild(rm);
+
+      attachPreview.appendChild(chip);
+    });
+  }
+
+  // --- Voice recording ---
+  voiceBtn.addEventListener("click", async function() {
+    if (isRecording) {
+      stopRecording();
+    } else {
+      await startRecording();
+    }
+  });
+
+  async function startRecording() {
+    try {
+      var stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunks = [];
+      mediaRecorder = new MediaRecorder(stream, { mimeType: getSupportedMimeType() });
+
+      mediaRecorder.ondataavailable = function(e) {
+        if (e.data.size > 0) audioChunks.push(e.data);
+      };
+
+      mediaRecorder.onstop = async function() {
+        // Stop all tracks
+        stream.getTracks().forEach(function(t) { t.stop(); });
+
+        var mime = mediaRecorder.mimeType || "audio/webm";
+        var ext = mime.includes("webm") ? ".webm" : mime.includes("ogg") ? ".ogg" : ".wav";
+        var blob = new Blob(audioChunks, { type: mime });
+        var file = new File([blob], "voice" + ext, { type: mime });
+
+        // Upload as voice
+        var formData = new FormData();
+        formData.append("file", file);
+
+        try {
+          var resp = await fetch("/upload", { method: "POST", body: formData });
+          if (resp.ok) {
+            var data = await resp.json();
+            pendingAttachments.push({
+              file_id: data.file_id,
+              filename: data.filename,
+              mime_type: data.mime_type,
+              type: "voice",
+              dataUrl: null,
+            });
+            renderAttachPreview();
+            // Auto-send voice message
+            sendMessage();
+          }
+        } catch (e) {
+          console.error("Voice upload failed:", e);
+        }
+      };
+
+      mediaRecorder.start();
+      isRecording = true;
+      voiceBtn.classList.add("recording");
+    } catch (e) {
+      console.error("Mic access denied:", e);
+    }
+  }
+
+  function stopRecording() {
+    if (mediaRecorder && mediaRecorder.state !== "inactive") {
+      mediaRecorder.stop();
+    }
+    isRecording = false;
+    voiceBtn.classList.remove("recording");
+  }
+
+  function getSupportedMimeType() {
+    var types = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/ogg"];
+    for (var i = 0; i < types.length; i++) {
+      if (MediaRecorder.isTypeSupported(types[i])) return types[i];
+    }
+    return "";
+  }
+
+  // --- Send ---
+  function sendMessage() {
+    var text = inputEl.value.trim();
+    if (!connected) return;
+    if (!text && pendingAttachments.length === 0) return;
+
+    // Show in chat
+    addMessage("user", text || (pendingAttachments.length > 0 ? "[attachment]" : ""), false, pendingAttachments);
+
+    // Build WS payload
+    var payload = { type: "message", content: text };
+    if (pendingAttachments.length > 0) {
+      payload.attachments = pendingAttachments.map(function(att) {
+        return {
+          file_id: att.file_id,
+          filename: att.filename,
+          mime_type: att.mime_type,
+          type: att.type,
+        };
+      });
+    }
+
+    ws.send(JSON.stringify(payload));
+
+    // Reset
+    inputEl.value = "";
+    pendingAttachments = [];
+    renderAttachPreview();
+    autoResize();
+    inputEl.focus();
+  }
+
+  // --- Auto-resize textarea ---
+  function autoResize() {
+    inputEl.style.height = "auto";
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + "px";
+  }
+
+  // --- Events ---
+  inputEl.addEventListener("input", autoResize);
+
+  inputEl.addEventListener("keydown", function(e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+
+  // --- Paste images from clipboard ---
+  document.addEventListener("paste", function(e) {
+    var items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf("image/") === 0) {
+        e.preventDefault();
+        var blob = items[i].getAsFile();
+        if (blob) {
+          var ext = blob.type.split("/")[1] || "png";
+          var file = new File([blob], "paste." + ext, { type: blob.type });
+          uploadFile(file, "file");
+        }
+        return;
+      }
+    }
+  });
+
+  sendBtn.addEventListener("click", sendMessage);
+
+  newChatBtn.addEventListener("click", function() {
+    clearHistory();
+    // Clear sessionId — server will assign new one via session_update
+    sessionId = null;
+    localStorage.removeItem(SESSION_KEY);
+    // Clear messages
+    messagesEl.querySelectorAll(".msg-wrapper").forEach(function(m) { m.remove(); });
+    typingEl.classList.remove("active");
+    setProcessing(false);
+    // Reset state
+    localMsgCounter = 0;
+    pendingMsgIds = [];
+    msgIdMap = {};
+    pendingAttachments = [];
+    renderAttachPreview();
+    contextPanel.classList.remove("visible");
+    // Notify server — creates a new session
+    if (connected) {
+      ws.send(JSON.stringify({ type: "command", command: "new_chat" }));
+    }
+    closeSidebar();
+  });
+
+  // --- Chat history persistence ---
+  var MAX_HISTORY = 200;
+
+  function historyKey() { return HISTORY_KEY + (sessionId || deviceId); }
+
+  function saveHistory(role, content, mediaUrl) {
+    try {
+      var arr = JSON.parse(localStorage.getItem(historyKey()) || "[]");
+      arr.push({ r: role, c: content, m: mediaUrl || null });
+      if (arr.length > MAX_HISTORY) arr = arr.slice(-MAX_HISTORY);
+      localStorage.setItem(historyKey(), JSON.stringify(arr));
+    } catch (e) {}
+  }
+
+  function loadHistory() {
+    try {
+      var arr = JSON.parse(localStorage.getItem(historyKey()) || "[]");
+      arr.forEach(function(h) {
+        var media = h.m ? { type: "image", url: h.m, filename: "image" } : null;
+        addMessage(h.r, h.c, false, null, media, true);
+      });
+    } catch (e) {}
+  }
+
+  function clearHistory() {
+    try { localStorage.removeItem(historyKey()); } catch (e) {}
+  }
+
+  // --- Mobile keyboard viewport fix ---
+  var appEl = document.getElementById("app");
+
+  function adjustViewport() {
+    if (window.visualViewport) {
+      var vv = window.visualViewport;
+      appEl.style.height = vv.height + "px";
+      appEl.style.top = vv.offsetTop + "px";
+      scrollBottom();
+    }
+  }
+
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", adjustViewport);
+    window.visualViewport.addEventListener("scroll", adjustViewport);
+    adjustViewport();
+  }
+
+  // --- Init ---
+  loadHistory();
+  // If we loaded messages from localStorage, no need for auto-resume
+  if (messagesEl.querySelectorAll(".msg-wrapper").length > 0) {
+    initialLoadDone = true;
+  }
+  connect();
+});
+</script>
+</body>
+</html>

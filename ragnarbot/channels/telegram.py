@@ -396,8 +396,8 @@ class TelegramChannel(BaseChannel):
                 )
             return
 
-        # Stop typing signal — agent finished without sending a final message
-        if msg.metadata.get("stop_typing"):
+        # Stop typing signal — cooperative stop or explicit typing_stop
+        if msg.metadata.get("stop_typing") or msg.metadata.get("chat_action") == "typing_stop":
             self._stop_typing(chat_id)
             return
 

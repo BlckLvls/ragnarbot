@@ -59,7 +59,7 @@ class AgentLoop:
     """
 
     COMPACT_MIN_MESSAGES = 60
-    READ_ONLY_COMMANDS = frozenset({"context_info", "context_mode", "stop"})
+    READ_ONLY_COMMANDS = frozenset({"context_info", "context_mode", "list_sessions", "resume_session", "stop"})
 
     def __init__(
         self,
@@ -455,16 +455,25 @@ class AgentLoop:
             f"Processing batch of {len(batch)} message(s) from {msg.channel}:{msg.sender_id}"
         )
 
+        # Get or create session (before typing so we know the session_id)
+        explicit_sid = msg.metadata.get("explicit_session_id")
+        if explicit_sid:
+            session = self.sessions._load(explicit_sid, msg.session_key)
+            if session:
+                self.sessions.set_active(msg.session_key, explicit_sid)
+                self.sessions._cache[explicit_sid] = session
+            else:
+                session = self.sessions.get_or_create(msg.session_key)
+        else:
+            session = self.sessions.get_or_create(msg.session_key)
+
         # Signal typing indicator to the channel
         await self.bus.publish_outbound(OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
             content="",
-            metadata={"chat_action": "typing"},
+            metadata={"chat_action": "typing", "_session_id": session.key},
         ))
-
-        # Get or create session
-        session = self.sessions.get_or_create(msg.session_key)
 
         # Store user data in session metadata (telegram only, first time)
         if msg.channel == "telegram" and "user_data" not in session.metadata:
@@ -690,7 +699,7 @@ class AgentLoop:
                             channel=msg.channel,
                             chat_id=msg.chat_id,
                             content=response.content,
-                            metadata={"intermediate": True},
+                            metadata={"intermediate": True, "_session_id": session.key},
                         ))
 
                     tool_call_dicts = [
@@ -780,7 +789,8 @@ class AgentLoop:
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
-            content=final_content
+            content=final_content,
+            metadata={"_session_id": session.key},
         )
     
     def _handle_command(self, command: str, msg: InboundMessage) -> OutboundMessage | None:
@@ -795,6 +805,14 @@ class AgentLoop:
             return self._handle_set_context_mode(msg)
         if command == "context_info":
             return self._handle_context_info(msg)
+        if command == "list_sessions":
+            return self._handle_list_sessions(msg)
+        if command == "resume_session":
+            return self._handle_resume_session(msg)
+        if command == "delete_session":
+            return self._handle_delete_session(msg)
+        if command == "stop":
+            return self._handle_stop(msg)
         logger.warning(f"Unknown command: {command}")
         return None
 
@@ -815,7 +833,7 @@ class AgentLoop:
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=f"✨ <b>New chat started</b>\n\n🤖 Model: <code>{self.model}</code>",
-            metadata={"raw_html": True},
+            metadata={"raw_html": True, "_session_id": session.key},
         )
 
     def _handle_stop(self, msg: InboundMessage) -> OutboundMessage:
@@ -874,6 +892,17 @@ class AgentLoop:
             "full": "🔥 full (85%)",
         }
         text = f"✅ Context mode set to: {mode_labels[mode]}"
+
+        # Compute context data after mode change
+        tokens = self.get_context_tokens(
+            msg.session_key, msg.channel, msg.chat_id
+        )
+        threshold = Compactor.THRESHOLDS.get(mode, 0.60)
+        effective_max = int(self.max_context_tokens * threshold)
+        pct = min(int(tokens / effective_max * 100), 100) if effective_max > 0 else 0
+        tokens_k = f"{tokens // 1000}k"
+        max_k = f"{effective_max // 1000}k"
+
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
@@ -881,13 +910,19 @@ class AgentLoop:
             metadata={
                 "raw_html": True,
                 "edit_message_id": msg.metadata.get("callback_message_id"),
+                "context_data": {
+                    "pct": pct,
+                    "tokens_k": tokens_k,
+                    "max_k": max_k,
+                    "mode": mode,
+                },
             },
         )
 
     def _handle_context_info(self, msg: InboundMessage) -> OutboundMessage:
         """Show context usage info."""
         tokens = self.get_context_tokens(
-            f"{msg.channel}:{msg.chat_id}", msg.channel, msg.chat_id
+            msg.session_key, msg.channel, msg.chat_id
         )
         threshold = Compactor.THRESHOLDS.get(self.context_mode, 0.60)
         effective_max = int(self.max_context_tokens * threshold)
@@ -895,7 +930,7 @@ class AgentLoop:
         tokens_k = f"{tokens // 1000}k"
         max_k = f"{effective_max // 1000}k"
 
-        session = self.sessions.get_or_create(f"{msg.channel}:{msg.chat_id}")
+        session = self.sessions.get_or_create(msg.session_key)
         compactions = sum(
             1 for m in session.messages
             if m.get("metadata", {}).get("type") == "compaction"
@@ -913,8 +948,154 @@ class AgentLoop:
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=text,
-            metadata={"raw_html": True},
+            metadata={
+                "raw_html": True,
+                "context_data": {
+                    "pct": pct,
+                    "tokens_k": tokens_k,
+                    "max_k": max_k,
+                    "mode": self.context_mode,
+                },
+            },
         )
+
+    def _handle_list_sessions(self, msg: InboundMessage) -> OutboundMessage:
+        """Return a list of all web sessions for the sidebar."""
+        all_sessions = self.sessions.list_sessions()
+        active_id = msg.metadata.get("current_session_id") or self.sessions.get_active_id(msg.session_key)
+        result = []
+        for sess in all_sessions:
+            uk = sess.get("user_key", "")
+            if not uk.startswith("web:"):
+                continue
+            session_id = sess["session_id"]
+
+            # Read first user message as preview
+            preview = ""
+            msg_count = 0
+            loaded = self.sessions._load(session_id, uk)
+            if loaded:
+                msg_count = sum(1 for m in loaded.messages if m.get("role") in ("user", "assistant"))
+                for m in loaded.messages:
+                    if m.get("role") == "user":
+                        text = m.get("content", "")
+                        # Strip prefix tags (lines starting with [ or > or ---)
+                        lines = text.split("\n")
+                        clean = []
+                        for ln in lines:
+                            stripped = ln.strip()
+                            if stripped.startswith("[") or stripped.startswith(">") or stripped == "---":
+                                continue
+                            if stripped:
+                                clean.append(stripped)
+                        preview = " ".join(clean)[:80]
+                        break
+
+            result.append({
+                "session_id": session_id,
+                "updated_at": sess.get("updated_at", ""),
+                "preview": preview,
+                "active": active_id == session_id,
+                "msg_count": msg_count,
+            })
+
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content="",
+            metadata={"session_list": result},
+        )
+
+    def _handle_resume_session(self, msg: InboundMessage) -> OutboundMessage | None:
+        """Switch to an existing web session."""
+        session_id = msg.metadata.get("session_id", "")
+        if not session_id:
+            return None
+
+        # Try to load the session to verify it exists and is a web session
+        session = None
+        for sess_info in self.sessions.list_sessions():
+            if sess_info["session_id"] == session_id:
+                uk = sess_info.get("user_key", "")
+                if uk.startswith("web:"):
+                    session = self.sessions._load(session_id, uk)
+                break
+
+        if not session or not session.user_key.startswith("web:"):
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="",
+                metadata={"error": "Session not found"},
+            )
+
+        # Set active for THIS device's session_key (e.g. web:{uuid})
+        self.sessions.set_active(msg.session_key, session_id)
+        self.sessions._cache[session_id] = session
+
+        # Build message history for the frontend
+        history = []
+        for m in session.messages:
+            role = m.get("role")
+            if role not in ("user", "assistant"):
+                continue
+            content = m.get("content", "")
+            # Strip prefix tags from user messages
+            if role == "user":
+                lines = content.split("\n")
+                clean = []
+                for ln in lines:
+                    stripped = ln.strip()
+                    if stripped.startswith("[") or stripped.startswith(">") or stripped == "---":
+                        continue
+                    if stripped:
+                        clean.append(stripped)
+                content = "\n".join(clean)
+            if content:
+                history.append({"role": role, "content": content})
+
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content="",
+            metadata={"session_resumed": {
+                "session_id": session_id,
+                "history": history,
+            }},
+        )
+
+    def _handle_delete_session(self, msg: InboundMessage) -> OutboundMessage | None:
+        """Delete a web session."""
+        session_id = msg.metadata.get("session_id", "")
+        if not session_id:
+            return None
+
+        # Verify it's a web session before deleting
+        for sess_info in self.sessions.list_sessions():
+            if sess_info["session_id"] == session_id:
+                uk = sess_info.get("user_key", "")
+                if not uk.startswith("web:"):
+                    return None
+                # If this is the active session, clear the shared pointer
+                caller_key = msg.session_key
+                if self.sessions.get_active_id(caller_key) == session_id:
+                    active_path = self.sessions._get_active_path(caller_key)
+                    if active_path.exists():
+                        active_path.unlink()
+                # Also clear old per-device pointer if it exists
+                if uk != caller_key and self.sessions.get_active_id(uk) == session_id:
+                    active_path = self.sessions._get_active_path(uk)
+                    if active_path.exists():
+                        active_path.unlink()
+                self.sessions.delete(session_id)
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content="",
+                    metadata={"session_deleted": {"session_id": session_id}},
+                )
+
+        return None
 
     async def _handle_compact_async(self, msg: InboundMessage) -> None:
         """Handle /compact command — forced compaction as a blocking task."""

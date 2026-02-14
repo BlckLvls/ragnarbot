@@ -131,7 +131,7 @@ class LiteLLMProvider(LLMProvider):
                     user_count += 1
                     if user_count == 2:
                         content = messages[i]["content"]
-                        if isinstance(content, str):
+                        if isinstance(content, str) and content:
                             messages[i]["content"] = [{
                                 "type": "text",
                                 "text": content,
