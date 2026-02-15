@@ -67,14 +67,22 @@ def _onboarding_loop(console: Console) -> None:
         elif step == 3:
             provider_id = PROVIDERS[provider_idx]["id"]
             auth_method = "oauth" if auth_idx == 0 else "api_key"
-            token = token_input_screen(console, provider_id, auth_method)
-            if token is None:
-                # Go back to auth or provider
-                if supports_oauth(provider_id):
+
+            if auth_method == "oauth" and provider_id in ("gemini", "openai"):
+                # Browser-based OAuth flow
+                success = _run_oauth_flow(console, provider_id)
+                if not success:
                     step = 2
-                else:
-                    step = 1
-                continue
+                    continue
+                token = "oauth"  # placeholder — tokens stored in oauth files
+            else:
+                token = token_input_screen(console, provider_id, auth_method)
+                if token is None:
+                    if supports_oauth(provider_id):
+                        step = 2
+                    else:
+                        step = 1
+                    continue
             step = 4
 
         elif step == 4:
@@ -155,6 +163,17 @@ def _onboarding_loop(console: Console) -> None:
             return
 
 
+def _run_oauth_flow(console: Console, provider_id: str) -> bool:
+    """Run the browser-based OAuth flow for a provider. Returns True on success."""
+    if provider_id == "gemini":
+        from ragnarbot.auth.gemini_oauth import authenticate
+        return authenticate(console)
+    elif provider_id == "openai":
+        from ragnarbot.auth.openai_oauth import authenticate
+        return authenticate(console)
+    return False
+
+
 def _save_results(
     console: Console,
     provider_id: str,
@@ -202,11 +221,13 @@ def _save_results(
     save_config(config)
 
     # Update credentials (targeted — only touch the selected provider)
-    provider_creds = getattr(creds.providers, provider_id)
-    if auth_method == "oauth":
-        provider_creds.oauth_key = token
-    else:
-        provider_creds.api_key = token
+    # For gemini/openai OAuth, authenticate() already set the oauth_key marker
+    if not (auth_method == "oauth" and provider_id in ("gemini", "openai")):
+        provider_creds = getattr(creds.providers, provider_id)
+        if auth_method == "oauth":
+            provider_creds.oauth_key = token
+        else:
+            provider_creds.api_key = token
 
     if telegram_token:
         creds.channels.telegram.bot_token = telegram_token

@@ -27,13 +27,13 @@ CONFIG_DEPENDENCIES = [
     ),
     ConfigDependency(
         "agents.defaults.model", "gemini/", "prefix",
-        ["providers.gemini.api_key"],
-        "requires secrets.providers.gemini.api_key",
+        ["providers.gemini.api_key", "providers.gemini.oauth_key"],
+        "requires secrets.providers.gemini (api_key or oauth_key)",
     ),
     ConfigDependency(
         "agents.defaults.model", "openai/", "prefix",
-        ["providers.openai.api_key"],
-        "requires secrets.providers.openai.api_key",
+        ["providers.openai.api_key", "providers.openai.oauth_key"],
+        "requires secrets.providers.openai (api_key or oauth_key)",
     ),
     ConfigDependency(
         "agents.defaults.model", "openrouter/", "prefix",
