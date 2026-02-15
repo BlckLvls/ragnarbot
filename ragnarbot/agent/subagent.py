@@ -98,7 +98,7 @@ class SubagentManager:
         try:
             # Build subagent tools (no message tool, no spawn tool)
             tools = ToolRegistry()
-            tools.register(ReadFileTool())
+            tools.register(ReadFileTool(model=self.model))
             tools.register(WriteFileTool())
             tools.register(ListDirTool())
             tools.register(ExecTool(

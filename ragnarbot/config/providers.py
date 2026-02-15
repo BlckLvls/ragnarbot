@@ -62,6 +62,56 @@ PROVIDERS = [
             },
         ],
     },
+    {
+        "id": "openrouter",
+        "name": "OpenRouter",
+        "description": "Multi-provider gateway (Minimax, Kimi, GLM, and more)",
+        "api_key_url": "https://openrouter.ai/keys",
+        "models": [
+            {
+                "id": "openrouter/minimax/minimax-m2.5",
+                "name": "Minimax M2.5",
+                "description": "Fast reasoning model",
+                "vision": False,
+                "providers": ["minimax", "novita"],
+            },
+            {
+                "id": "openrouter/z-ai/glm-5",
+                "name": "GLM-5",
+                "description": "Strong multilingual reasoning",
+                "vision": False,
+                "providers": [
+                    "siliconflow", "atlas-cloud", "gmicloud", "friendli",
+                    "together", "z-ai", "fireworks", "novita",
+                ],
+            },
+            {
+                "id": "openrouter/moonshotai/kimi-k2.5",
+                "name": "Kimi K2.5",
+                "description": "Long-context reasoning & coding",
+            },
+            {
+                "id": "openrouter/anthropic/claude-opus-4.6",
+                "name": "Claude Opus 4.6",
+                "description": "Most intelligent — via OpenRouter",
+            },
+            {
+                "id": "openrouter/google/gemini-3-flash-preview",
+                "name": "Gemini 3 Flash",
+                "description": "Fast — via OpenRouter",
+            },
+            {
+                "id": "openrouter/openai/gpt-5.2",
+                "name": "GPT-5.2",
+                "description": "Most capable — via OpenRouter",
+            },
+            {
+                "id": "openrouter/google/gemini-3-pro-preview",
+                "name": "Gemini 3 Pro",
+                "description": "Advanced reasoning — via OpenRouter",
+            },
+        ],
+    },
 ]
 
 
@@ -84,3 +134,20 @@ def get_models(provider_id: str) -> list[dict]:
 def supports_oauth(provider_id: str) -> bool:
     """Check if a provider supports OAuth authentication."""
     return provider_id in OAUTH_SUPPORTED_PROVIDERS
+
+
+def get_model_info(model_id: str) -> dict | None:
+    """Get model dict by its full ID (e.g. 'openrouter/minimax/minimax-m2.5')."""
+    for p in PROVIDERS:
+        for m in p["models"]:
+            if m["id"] == model_id:
+                return m
+    return None
+
+
+def model_supports_vision(model_id: str) -> bool:
+    """Check if a model supports vision. Unknown models default to True."""
+    info = get_model_info(model_id)
+    if info is None:
+        return True
+    return info.get("vision", True)

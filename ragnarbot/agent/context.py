@@ -27,6 +27,7 @@ class ContextBuilder:
     def __init__(self, workspace: Path, heartbeat_interval_m: int = 30):
         self.workspace = workspace
         self.heartbeat_interval_m = heartbeat_interval_m
+        self.model: str | None = None  # Set by AgentLoop for vision checks
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
         self._ensure_bootstrap_files()
@@ -327,6 +328,18 @@ Skills with available="false" need dependencies installed first - you can try in
 
         if not images:
             return text
+
+        # Replace images with placeholder for non-vision models
+        if self.model:
+            from ragnarbot.config.providers import model_supports_vision
+            if not model_supports_vision(self.model):
+                count = len(images)
+                placeholder = (
+                    f"[User sent {count} image{'s' if count > 1 else ''}, "
+                    f"but the current model does not support vision]"
+                )
+                return text + "\n\n" + placeholder if text else placeholder
+
         return images + [{"type": "text", "text": text}]
     
     def build_user_message(

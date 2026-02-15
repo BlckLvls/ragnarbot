@@ -36,6 +36,11 @@ CONFIG_DEPENDENCIES = [
         "requires secrets.providers.openai.api_key",
     ),
     ConfigDependency(
+        "agents.defaults.model", "openrouter/", "prefix",
+        ["providers.openrouter.api_key"],
+        "requires secrets.providers.openrouter.api_key",
+    ),
+    ConfigDependency(
         "tools.web.search.engine", "brave", "exact",
         ["services.brave_search.api_key"],
         "requires secrets.services.brave_search.api_key",

@@ -26,8 +26,12 @@ class LiteLLMProvider(LLMProvider):
         self.default_model = default_model
 
         # Configure LiteLLM env vars based on provider
+        # Check openrouter first — model strings like openrouter/anthropic/...
+        # contain provider substrings that would match the wrong branch.
         if api_key:
-            if "anthropic" in default_model:
+            if "openrouter" in default_model:
+                os.environ.setdefault("OPENROUTER_API_KEY", api_key)
+            elif "anthropic" in default_model:
                 os.environ.setdefault("ANTHROPIC_API_KEY", api_key)
             elif "openai" in default_model or "gpt" in default_model:
                 os.environ.setdefault("OPENAI_API_KEY", api_key)
@@ -62,12 +66,14 @@ class LiteLLMProvider(LLMProvider):
         max_tokens = max_tokens if max_tokens is not None else self.default_max_tokens
         temperature = temperature if temperature is not None else self.default_temperature
 
-        # For Gemini, ensure gemini/ prefix if not already present
-        if "gemini" in model.lower() and not model.startswith("gemini/"):
+        is_openrouter = model.startswith("openrouter/")
+
+        # For Gemini, ensure gemini/ prefix if not already present (skip for OpenRouter)
+        if not is_openrouter and "gemini" in model.lower() and not model.startswith("gemini/"):
             model = f"gemini/{model}"
-        
-        # Inject cache_control for Anthropic and Gemini models
-        if "anthropic" in model or "gemini" in model.lower():
+
+        # Inject cache_control for Anthropic and Gemini models (skip for OpenRouter)
+        if not is_openrouter and ("anthropic" in model or "gemini" in model.lower()):
             messages = self._inject_cache_control(messages)
 
         kwargs: dict[str, Any] = {
@@ -81,8 +87,32 @@ class LiteLLMProvider(LLMProvider):
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
+        # OpenRouter provider routing
+        if is_openrouter:
+            from ragnarbot.config.providers import get_model_info
+            provider_config: dict = {"sort": "throughput", "allow_fallbacks": True}
+            model_info = get_model_info(model)
+            if model_info and model_info.get("providers"):
+                provider_config["only"] = model_info["providers"]
+            kwargs["extra_body"] = {
+                "provider": provider_config,
+                "reasoning": {"enabled": True},
+            }
+
         # Strip internal metadata keys (e.g. _image_path) from content blocks
         kwargs["messages"] = self._sanitize_messages(kwargs["messages"])
+
+        # Strip images for models that don't support vision — catches
+        # historical images in session that predate a model switch.
+        from ragnarbot.config.providers import model_supports_vision
+        if not model_supports_vision(model):
+            kwargs["messages"] = self._strip_images(kwargs["messages"])
+
+        # OpenRouter: downgrade multimodal tool results to text-only and
+        # re-inject stripped images as synthetic user messages so the LLM
+        # can still see them.
+        if is_openrouter:
+            kwargs["messages"] = self._adapt_tool_images(kwargs["messages"])
 
         try:
             response = await acompletion(**kwargs)
@@ -113,6 +143,102 @@ class LiteLLMProvider(LLMProvider):
                 msg = {**msg, "content": new_content}
             cleaned.append(msg)
         return cleaned
+
+    @staticmethod
+    def _strip_images(messages: list[dict]) -> list[dict]:
+        """Remove image_url blocks from all messages for non-vision models.
+
+        Replaces stripped images with a short placeholder so the LLM
+        knows content was omitted.
+        """
+        result = []
+        for msg in messages:
+            content = msg.get("content")
+            if not isinstance(content, list):
+                result.append(msg)
+                continue
+
+            non_image = [
+                b for b in content
+                if not (isinstance(b, dict) and b.get("type") == "image_url")
+            ]
+            n_removed = len(content) - len(non_image)
+
+            if n_removed == 0:
+                result.append(msg)
+                continue
+
+            label = "image" if n_removed == 1 else f"{n_removed} images"
+            non_image.append({
+                "type": "text",
+                "text": f"[{label} omitted — current model does not support vision]",
+            })
+            result.append({**msg, "content": non_image})
+
+        return result
+
+    @staticmethod
+    def _adapt_tool_images(messages: list[dict]) -> list[dict]:
+        """Adapt multimodal tool results for OpenRouter.
+
+        OpenRouter tool messages only accept string content. This method:
+        1. Downgrades ALL tool results with list content to text-only
+        2. After each consecutive tool block that contained images,
+           inserts a synthetic user message carrying those images
+
+        Images remain visible to the LLM until tool flushing converts
+        the multimodal content to text (via apply_previous_flush).
+        After that, no list content remains → no injection occurs.
+        """
+        result: list[dict] = []
+        i = 0
+
+        while i < len(messages):
+            msg = messages[i]
+
+            # Not a tool message — pass through
+            if msg.get("role") != "tool":
+                result.append(msg)
+                i += 1
+                continue
+
+            # Collect consecutive tool block, downgrade and extract images
+            block_images: list[dict] = []
+            while i < len(messages) and messages[i].get("role") == "tool":
+                tool_msg = messages[i]
+                content = tool_msg.get("content")
+
+                if isinstance(content, list):
+                    # Extract images
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "image_url":
+                            block_images.append(block)
+                    # Downgrade to text
+                    text_parts = [
+                        b.get("text", "") for b in content
+                        if isinstance(b, dict) and b.get("type") == "text"
+                    ]
+                    tool_msg = {
+                        **tool_msg,
+                        "content": " ".join(text_parts) if text_parts else "[image]",
+                    }
+
+                result.append(tool_msg)
+                i += 1
+
+            # Inject synthetic user message with collected images
+            if block_images:
+                count = len(block_images)
+                label = "image" if count == 1 else f"{count} images"
+                result.append({
+                    "role": "user",
+                    "content": block_images + [{
+                        "type": "text",
+                        "text": f"[{label} from tool result above]",
+                    }],
+                })
+
+        return result
 
     @staticmethod
     def _inject_cache_control(messages: list[dict]) -> list[dict]:

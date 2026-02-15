@@ -14,6 +14,9 @@ MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20 MB (Anthropic limit)
 class ReadFileTool(Tool):
     """Tool to read file contents."""
 
+    def __init__(self, model: str | None = None):
+        self._model = model
+
     @property
     def name(self) -> str:
         return "file_read"
@@ -49,6 +52,13 @@ class ReadFileTool(Tool):
 
             # Image files → multimodal visual content
             if file_path.suffix.lower() in IMAGE_EXTENSIONS:
+                if self._model:
+                    from ragnarbot.config.providers import model_supports_vision
+                    if not model_supports_vision(self._model):
+                        return (
+                            f"Vision is not supported by the current model. "
+                            f"Cannot display image: {path}"
+                        )
                 return self._read_image(file_path, path)
 
             content = file_path.read_text(encoding="utf-8")

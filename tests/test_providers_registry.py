@@ -3,10 +3,10 @@
 from ragnarbot.config.providers import PROVIDERS, get_provider, get_models, supports_oauth
 
 
-def test_providers_has_three_entries():
-    assert len(PROVIDERS) == 3
+def test_providers_has_expected_entries():
+    assert len(PROVIDERS) == 4
     ids = [p["id"] for p in PROVIDERS]
-    assert ids == ["anthropic", "openai", "gemini"]
+    assert ids == ["anthropic", "openai", "gemini", "openrouter"]
 
 
 def test_each_provider_has_required_fields():

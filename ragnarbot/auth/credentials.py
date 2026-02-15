@@ -18,6 +18,7 @@ class ProvidersCredentials(BaseModel):
     anthropic: ProviderCredentials = Field(default_factory=ProviderCredentials)
     openai: ProviderCredentials = Field(default_factory=ProviderCredentials)
     gemini: ProviderCredentials = Field(default_factory=ProviderCredentials)
+    openrouter: ProviderCredentials = Field(default_factory=ProviderCredentials)
 
 
 class ServiceCredential(BaseModel):
