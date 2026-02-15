@@ -137,7 +137,11 @@ def discover_project(access_token: str) -> str | None:
         resp = httpx.post(url, headers=headers, json={}, timeout=30)
         resp.raise_for_status()
         data = resp.json()
-        return data.get("billingProject") or data.get("project")
+        return (
+            data.get("cloudaicompanionProject")
+            or data.get("billingProject")
+            or data.get("project")
+        )
     except httpx.HTTPError:
         return None
 

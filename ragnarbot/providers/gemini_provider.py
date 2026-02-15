@@ -7,6 +7,7 @@ Gemini requests in an envelope format and returns SSE responses.
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from typing import Any
 
@@ -17,7 +18,17 @@ from ragnarbot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 CODE_ASSIST_BASE = "https://cloudcode-pa.googleapis.com"
 STREAM_URL = f"{CODE_ASSIST_BASE}/v1internal:streamGenerateContent"
 
-_CLIENT_METADATA = "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI"
+_CLIENT_METADATA = json.dumps({
+    "ideType": "IDE_UNSPECIFIED",
+    "platform": "PLATFORM_UNSPECIFIED",
+    "pluginType": "GEMINI",
+})
+
+# Gemini 3 models require thinkingConfig — without it the API returns empty body.
+_GEMINI3_THINKING = {
+    "pro": {"includeThoughts": True, "thinkingLevel": "LOW"},
+    "flash": {"includeThoughts": True, "thinkingLevel": "MEDIUM"},
+}
 
 
 class GeminiCodeAssistProvider(LLMProvider):
@@ -55,30 +66,42 @@ class GeminiCodeAssistProvider(LLMProvider):
                 finish_reason="error",
             )
 
-        # Build Gemini native request
-        contents = self._convert_messages(messages)
-        gemini_request: dict[str, Any] = {
-            "contents": contents,
-            "generationConfig": {
-                "maxOutputTokens": max_tokens,
-                "temperature": temperature,
-            },
-        }
+        # Build request
+        system_instruction, contents = self._convert_messages(messages)
 
+        generation_config: dict[str, Any] = {}
+        if max_tokens:
+            generation_config["maxOutputTokens"] = max_tokens
+        if temperature is not None:
+            generation_config["temperature"] = temperature
+
+        # Gemini 3 models require thinkingConfig
+        thinking = _get_thinking_config(model)
+        if thinking:
+            generation_config["thinkingConfig"] = thinking
+
+        gemini_request: dict[str, Any] = {"contents": contents}
+        if system_instruction:
+            gemini_request["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+        if generation_config:
+            gemini_request["generationConfig"] = generation_config
         if tools:
             gemini_request["tools"] = self._convert_tools(tools)
+            gemini_request["toolConfig"] = {"functionCallingConfig": {"mode": "AUTO"}}
 
         # Wrap in Code Assist envelope
         envelope = {
             "project": self._project_id,
             "model": model,
-            "user_prompt_id": str(uuid.uuid4()),
+            "requestId": f"ragnarbot-{uuid.uuid4().hex[:12]}",
+            "userAgent": "ragnarbot",
             "request": gemini_request,
         }
 
         headers = {
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json",
+            "Accept": "text/event-stream",
             "Client-Metadata": _CLIENT_METADATA,
         }
 
@@ -121,19 +144,24 @@ class GeminiCodeAssistProvider(LLMProvider):
                     except json.JSONDecodeError:
                         continue
 
-                    # Unwrap Code Assist envelope — response is nested
+                    # Unwrap Code Assist envelope
                     inner = event.get("response", event)
 
-                    # Extract candidates
                     for candidate in inner.get("candidates", []):
                         content = candidate.get("content", {})
                         for part in content.get("parts", []):
+                            # Skip thinking parts
+                            if part.get("thought"):
+                                continue
                             if "text" in part:
                                 text_parts.append(part["text"])
                             elif "functionCall" in part:
                                 fc = part["functionCall"]
+                                call_id = fc.get("id") or (
+                                    f"{fc.get('name', 'fn')}_{int(time.time())}_{len(tool_calls)}"
+                                )
                                 tool_calls.append(ToolCallRequest(
-                                    id=f"call_{uuid.uuid4().hex[:24]}",
+                                    id=call_id,
                                     name=fc.get("name", ""),
                                     arguments=fc.get("args", {}),
                                 ))
@@ -144,9 +172,8 @@ class GeminiCodeAssistProvider(LLMProvider):
                         elif fr == "MAX_TOKENS":
                             finish_reason = "length"
 
-                    # Usage metadata
                     usage_meta = inner.get("usageMetadata", {})
-                    if usage_meta:
+                    if usage_meta and usage_meta.get("totalTokenCount"):
                         usage = {
                             "prompt_tokens": usage_meta.get("promptTokenCount", 0),
                             "completion_tokens": usage_meta.get("candidatesTokenCount", 0),
@@ -164,8 +191,13 @@ class GeminiCodeAssistProvider(LLMProvider):
         )
 
     @staticmethod
-    def _convert_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Convert OpenAI-format messages to Gemini contents array."""
+    def _convert_messages(
+        messages: list[dict[str, Any]],
+    ) -> tuple[str | None, list[dict[str, Any]]]:
+        """Convert OpenAI-format messages to Gemini contents array.
+
+        Returns (system_instruction, contents).
+        """
         contents: list[dict[str, Any]] = []
         system_parts: list[str] = []
 
@@ -194,45 +226,42 @@ class GeminiCodeAssistProvider(LLMProvider):
                             args = json.loads(args)
                         except (json.JSONDecodeError, ValueError):
                             args = {"raw": args}
-                    parts.append({
+                    fc_item: dict[str, Any] = {
                         "functionCall": {
                             "name": fn.get("name", ""),
                             "args": args,
                         }
-                    })
+                    }
+                    # Preserve ID for round-trip
+                    tc_id = tc.get("id")
+                    if tc_id:
+                        fc_item["functionCall"]["id"] = tc_id
+                    parts.append(fc_item)
                 if parts:
                     contents.append({"role": "model", "parts": parts})
 
             elif role == "tool":
                 tool_name = msg.get("name", "unknown")
                 tool_content = content if isinstance(content, str) else str(content)
+                fr_item: dict[str, Any] = {
+                    "functionResponse": {
+                        "name": tool_name,
+                        "response": {"output": tool_content},
+                    }
+                }
+                tc_id = msg.get("tool_call_id")
+                if tc_id:
+                    fr_item["functionResponse"]["id"] = tc_id
                 contents.append({
                     "role": "user",
-                    "parts": [{
-                        "functionResponse": {
-                            "name": tool_name,
-                            "response": {"result": tool_content},
-                        }
-                    }],
+                    "parts": [fr_item],
                 })
 
-        # Prepend system instruction as first user message if present
-        if system_parts:
-            system_text = "\n\n".join(system_parts)
-            system_entry = {"role": "user", "parts": [{"text": system_text}]}
-            # Gemini requires alternating roles — if first content is also user, merge
-            if contents and contents[0].get("role") == "user":
-                contents[0]["parts"] = system_entry["parts"] + contents[0]["parts"]
-            else:
-                contents.insert(0, system_entry)
-                # Add empty model response to maintain alternation
-                if contents and len(contents) > 1 and contents[1].get("role") == "user":
-                    contents.insert(1, {"role": "model", "parts": [{"text": "Understood."}]})
-
         # Merge consecutive same-role messages (Gemini requires alternation)
-        contents = _merge_consecutive_gemini(contents)
+        contents = _merge_consecutive(contents)
 
-        return contents
+        system_instruction = "\n\n".join(system_parts) if system_parts else None
+        return system_instruction, contents
 
     @staticmethod
     def _convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -244,12 +273,23 @@ class GeminiCodeAssistProvider(LLMProvider):
             declarations.append({
                 "name": fn.get("name", ""),
                 "description": fn.get("description", ""),
-                "parameters": params,
+                "parametersJsonSchema": params,
             })
         return [{"functionDeclarations": declarations}]
 
     def get_default_model(self) -> str:
         return self.default_model
+
+
+def _get_thinking_config(model: str) -> dict[str, Any] | None:
+    """Return thinkingConfig for Gemini 3 models, None for others."""
+    if "gemini-3" not in model:
+        return None
+    if "pro" in model:
+        return _GEMINI3_THINKING["pro"]
+    if "flash" in model:
+        return _GEMINI3_THINKING["flash"]
+    return _GEMINI3_THINKING["flash"]
 
 
 def _content_to_parts(content: Any) -> list[dict]:
@@ -283,7 +323,7 @@ def _content_to_parts(content: Any) -> list[dict]:
     return [{"text": str(content)}]
 
 
-def _merge_consecutive_gemini(contents: list[dict]) -> list[dict]:
+def _merge_consecutive(contents: list[dict]) -> list[dict]:
     """Merge consecutive same-role messages for Gemini's alternation requirement."""
     if not contents:
         return contents
