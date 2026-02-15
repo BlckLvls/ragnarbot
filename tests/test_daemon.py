@@ -1,5 +1,7 @@
 """Tests for the daemon management module."""
 
+import os
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -9,9 +11,12 @@ import pytest
 from ragnarbot.daemon.base import DaemonError, DaemonInfo, DaemonStatus
 from ragnarbot.daemon.resolve import (
     UnsupportedPlatformError,
+    _probe_path_helper,
+    _well_known_dirs,
     detect_platform,
     get_log_dir,
     resolve_executable,
+    resolve_path,
 )
 
 
@@ -231,3 +236,112 @@ class TestDaemonConfig:
         config = Config()
         config.daemon.enabled = True
         assert config.daemon.enabled is True
+
+
+class TestResolvePath:
+    def test_login_shell_paths_merged(self):
+        shell_paths = "/usr/local/bin:/opt/homebrew/bin:/custom/bin"
+        result = subprocess.CompletedProcess(args=[], returncode=0, stdout=shell_paths + "\n")
+        with patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"}, clear=False):
+            with patch("ragnarbot.daemon.resolve.subprocess.run", return_value=result):
+                resolve_path()
+                path = os.environ["PATH"]
+                assert "/custom/bin" in path
+                assert "/opt/homebrew/bin" in path
+
+    def test_deduplication(self):
+        shell_paths = "/custom/bin:/custom/bin:/other/bin:/other/bin"
+        result = subprocess.CompletedProcess(args=[], returncode=0, stdout=shell_paths + "\n")
+        with patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"}, clear=False):
+            with patch("ragnarbot.daemon.resolve.subprocess.run", return_value=result):
+                resolve_path()
+                path = os.environ["PATH"]
+                # Count occurrences — each new entry should appear only once
+                entries = path.split(":")
+                assert entries.count("/custom/bin") == 1
+                assert entries.count("/other/bin") == 1
+
+    def test_shell_probe_failure_falls_through(self):
+        with patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"}, clear=False):
+            with patch(
+                "ragnarbot.daemon.resolve.subprocess.run",
+                side_effect=OSError("no shell"),
+            ):
+                with patch(
+                    "ragnarbot.daemon.resolve._well_known_dirs",
+                    return_value=["/fallback/bin"],
+                ):
+                    resolve_path()
+                    assert "/fallback/bin" in os.environ["PATH"]
+
+    def test_path_helper_parsed(self):
+        helper_output = 'PATH="/helper/bin:/helper/sbin"; export PATH;\n'
+        result = subprocess.CompletedProcess(args=[], returncode=0, stdout=helper_output)
+        with patch.dict(os.environ, {"PATH": "/usr/bin", "SHELL": "/bin/zsh"}, clear=False):
+            with patch("ragnarbot.daemon.resolve.sys.platform", "darwin"):
+                with patch("ragnarbot.daemon.resolve.os.path.isfile", return_value=True):
+                    with patch("ragnarbot.daemon.resolve.subprocess.run", return_value=result):
+                        paths = _probe_path_helper()
+                        assert "/helper/bin" in paths
+                        assert "/helper/sbin" in paths
+
+    def test_well_known_dirs_only_existing(self, tmp_path):
+        real_dir = tmp_path / "real"
+        real_dir.mkdir()
+        fake_dirs = [str(real_dir), "/nonexistent/fake/path"]
+        with patch("ragnarbot.daemon.resolve._WELL_KNOWN_DIRS", fake_dirs):
+            dirs = _well_known_dirs()
+            assert str(real_dir) in dirs
+            assert "/nonexistent/fake/path" not in dirs
+
+    def test_existing_path_preserved(self):
+        original = "/usr/bin:/bin:/usr/sbin"
+        shell_paths = "/custom/bin"
+        result = subprocess.CompletedProcess(args=[], returncode=0, stdout=shell_paths + "\n")
+        with patch.dict(os.environ, {"PATH": original, "SHELL": "/bin/zsh"}, clear=False):
+            with patch("ragnarbot.daemon.resolve.subprocess.run", return_value=result):
+                resolve_path()
+                path = os.environ["PATH"]
+                # Original entries must still be present
+                for entry in original.split(":"):
+                    assert entry in path.split(":")
+
+    def test_new_paths_prepended(self):
+        original = "/usr/bin:/bin"
+        shell_paths = "/custom/bin"
+        result = subprocess.CompletedProcess(args=[], returncode=0, stdout=shell_paths + "\n")
+        with patch.dict(os.environ, {"PATH": original, "SHELL": "/bin/zsh"}, clear=False):
+            with patch("ragnarbot.daemon.resolve.subprocess.run", return_value=result):
+                resolve_path()
+                path = os.environ["PATH"]
+                # New paths should come before original
+                assert path.startswith("/custom/bin:")
+
+    def test_never_raises_on_total_failure(self):
+        with patch.dict(os.environ, {"PATH": "/usr/bin", "SHELL": "/bin/zsh"}, clear=False):
+            with patch(
+                "ragnarbot.daemon.resolve._probe_login_shell",
+                side_effect=Exception("boom"),
+            ):
+                # Should not raise
+                resolve_path()
+                assert "/usr/bin" in os.environ["PATH"]
+
+    def test_noop_when_nothing_discovered(self):
+        original = "/usr/bin:/bin"
+        with patch.dict(os.environ, {"PATH": original, "SHELL": "/bin/zsh"}, clear=False):
+            with patch("ragnarbot.daemon.resolve._probe_login_shell", return_value=[]):
+                with patch("ragnarbot.daemon.resolve._probe_path_helper", return_value=[]):
+                    with patch("ragnarbot.daemon.resolve._well_known_dirs", return_value=[]):
+                        resolve_path()
+                        assert os.environ["PATH"] == original
+
+    def test_already_present_paths_not_duplicated(self):
+        original = "/usr/bin:/opt/homebrew/bin"
+        shell_paths = "/opt/homebrew/bin:/new/bin"
+        result = subprocess.CompletedProcess(args=[], returncode=0, stdout=shell_paths + "\n")
+        with patch.dict(os.environ, {"PATH": original, "SHELL": "/bin/zsh"}, clear=False):
+            with patch("ragnarbot.daemon.resolve.subprocess.run", return_value=result):
+                resolve_path()
+                entries = os.environ["PATH"].split(":")
+                assert entries.count("/opt/homebrew/bin") == 1
