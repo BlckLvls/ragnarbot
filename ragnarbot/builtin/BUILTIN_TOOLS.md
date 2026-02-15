@@ -5,6 +5,8 @@
 ### file_read
 Read a file's contents. Always read a file before editing it — you need to see the current content to construct an accurate edit.
 
+Also works with image files (jpg, png, gif, webp, bmp, tiff) — the image is returned as visual content you can see and describe. Use this to inspect screenshots, generated images, local photos, or any visual file on disk.
+
 ### write_file
 Write content to a file (creates parent directories automatically). Use for creating new files. For modifying existing files, prefer `edit_file` instead.
 
