@@ -1,22 +1,31 @@
 """File system tools: read, write, edit."""
 
+import base64
+import mimetypes
 from pathlib import Path
 from typing import Any
 
 from ragnarbot.agent.tools.base import Tool
 
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".tif"}
+MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20 MB (Anthropic limit)
+
 
 class ReadFileTool(Tool):
     """Tool to read file contents."""
-    
+
     @property
     def name(self) -> str:
         return "file_read"
-    
+
     @property
     def description(self) -> str:
-        return "Read the contents of a file at the given path."
-    
+        return (
+            "Read the contents of a file at the given path. "
+            "For image files (jpg, png, gif, webp, bmp, tiff) the content "
+            "is returned as a visual image so you can see and describe it."
+        )
+
     @property
     def parameters(self) -> dict[str, Any]:
         return {
@@ -29,21 +38,48 @@ class ReadFileTool(Tool):
             },
             "required": ["path"]
         }
-    
-    async def execute(self, path: str, **kwargs: Any) -> str:
+
+    async def execute(self, path: str, **kwargs: Any) -> str | list[dict[str, Any]]:
         try:
-            file_path = Path(path).expanduser()
+            file_path = Path(path).expanduser().resolve()
             if not file_path.exists():
                 return f"Error: File not found: {path}"
             if not file_path.is_file():
                 return f"Error: Not a file: {path}"
-            
+
+            # Image files → multimodal visual content
+            if file_path.suffix.lower() in IMAGE_EXTENSIONS:
+                return self._read_image(file_path, path)
+
             content = file_path.read_text(encoding="utf-8")
             return content
         except PermissionError:
             return f"Error: Permission denied: {path}"
         except Exception as e:
             return f"Error reading file: {str(e)}"
+
+    @staticmethod
+    def _read_image(file_path: Path, display_path: str) -> str | list[dict[str, Any]]:
+        """Read an image file and return multimodal content blocks."""
+        size = file_path.stat().st_size
+        if size > MAX_IMAGE_SIZE:
+            size_mb = size / (1024 * 1024)
+            return f"Error: Image too large ({size_mb:.1f} MB). Maximum is 20 MB."
+
+        mime, _ = mimetypes.guess_type(str(file_path))
+        mime = mime or "image/jpeg"
+        b64 = base64.b64encode(file_path.read_bytes()).decode()
+        size_kb = size / 1024
+
+        return [
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{b64}"},
+                "_image_path": str(file_path),
+                "_mime_type": mime,
+            },
+            {"type": "text", "text": f"Image: {display_path} ({size_kb:.0f} KB)"},
+        ]
 
 
 class WriteFileTool(Tool):

@@ -1,6 +1,8 @@
 """Session management for conversation history."""
 
+import base64
 import json
+import mimetypes
 import shutil
 import uuid
 from dataclasses import dataclass, field
@@ -34,15 +36,38 @@ class Session:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def add_message(
-        self, role: str, content: str | None, msg_metadata: dict | None = None, **kwargs: Any
+        self, role: str, content: str | list | None, msg_metadata: dict | None = None,
+        **kwargs: Any,
     ) -> None:
-        """Add a message to the session."""
+        """Add a message to the session.
+
+        For tool messages with multimodal content (images), the base64 data
+        is stripped and replaced with lightweight ``image_refs`` entries that
+        point back to the original file on disk.
+        """
+        # Auto-strip image data from multimodal tool results
+        if role == "tool" and isinstance(content, list):
+            image_refs: list[dict[str, str]] = []
+            text_parts: list[str] = []
+            for block in content:
+                if isinstance(block, dict):
+                    if block.get("type") == "image_url" and "_image_path" in block:
+                        image_refs.append({
+                            "path": block["_image_path"],
+                            "mime": block.get("_mime_type", "image/jpeg"),
+                        })
+                    elif block.get("type") == "text":
+                        text_parts.append(block.get("text", ""))
+            if image_refs:
+                kwargs["image_refs"] = image_refs
+                content = " ".join(text_parts) if text_parts else "[image]"
+
         meta: dict[str, Any] = {"timestamp": datetime.now().isoformat()}
         if msg_metadata:
             meta.update(msg_metadata)
         msg = {
             "role": role,
-            "content": content or "",
+            "content": content if isinstance(content, str) else (content or ""),
             "metadata": meta,
             **kwargs
         }
@@ -96,6 +121,9 @@ class Session:
                 msg["name"] = m["name"]
             if "media_refs" in m:
                 msg["media_refs"] = m["media_refs"]
+            # Re-encode tool image_refs from disk
+            if role == "tool" and "image_refs" in m:
+                msg = _resolve_tool_image_refs(msg, m["image_refs"])
             ts = m.get("metadata", {}).get("timestamp")
             if ts:
                 msg["_ts"] = ts
@@ -106,6 +134,38 @@ class Session:
         """Clear all messages in the session."""
         self.messages = []
         self.updated_at = datetime.now()
+
+
+def _resolve_tool_image_refs(msg: dict, refs: list[dict]) -> dict:
+    """Re-encode tool image_refs from disk into multimodal content blocks.
+
+    If a referenced file no longer exists the message keeps its text content
+    as-is (graceful degradation).
+    """
+    blocks: list[dict[str, Any]] = []
+    for ref in refs:
+        p = Path(ref["path"])
+        if not p.is_file():
+            continue
+        mime = ref.get("mime") or mimetypes.guess_type(str(p))[0] or "image/jpeg"
+        try:
+            b64 = base64.b64encode(p.read_bytes()).decode()
+        except Exception:
+            continue
+        blocks.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime};base64,{b64}"},
+            "_image_path": ref["path"],
+            "_mime_type": mime,
+        })
+
+    if not blocks:
+        return msg
+
+    # Rebuild content as multimodal list: images + original text
+    text = msg.get("content", "")
+    blocks.append({"type": "text", "text": text})
+    return {**msg, "content": blocks}
 
 
 def _format_user_ref(data: dict) -> str:
