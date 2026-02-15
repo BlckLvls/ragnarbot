@@ -55,13 +55,6 @@ Search the web using the configured search engine (Brave Search or DuckDuckGo). 
 ### web_fetch
 Fetch a URL and extract its content as markdown or plain text. Use when you have a specific URL to read (from search results, user-provided links, documentation). Set `extractMode` to "text" for simpler output or "markdown" (default) for structured content.
 
-## Message
-
-### message
-Send a message to a specific channel and chat. In normal conversation, you do NOT need this tool — just respond with text directly. Use `message` only when:
-- You need to send an intermediate status update during a multi-step tool operation
-- You need to deliver a message to a different channel or chat than the current one
-
 ## Subagents
 
 ### spawn

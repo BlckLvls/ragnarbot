@@ -96,7 +96,7 @@ class SubagentManager:
         logger.info(f"Subagent [{task_id}] starting task: {label}")
         
         try:
-            # Build subagent tools (no message tool, no spawn tool)
+            # Build subagent tools (no spawn tool)
             tools = ToolRegistry()
             tools.register(ReadFileTool(model=self.model))
             tools.register(WriteFileTool())
@@ -226,7 +226,6 @@ You are a subagent spawned by the main agent to complete a specific task.
 - Complete the task thoroughly
 
 ## What You Cannot Do
-- Send messages directly to users (no message tool available)
 - Spawn other subagents
 - Access the main agent's conversation history
 

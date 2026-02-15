@@ -21,7 +21,7 @@ When a message was forwarded from another user, you will see `[forwarded_from:@u
 
 ## Responding to Messages
 
-By default, respond with plain text — no tool needed for normal conversation. The system automatically converts markdown to Telegram-compatible HTML. Use the `message` tool ONLY when you need to send an intermediate message during a multi-step operation.
+By default, respond with plain text — no tool needed for normal conversation. The system automatically converts markdown to Telegram-compatible HTML.
 
 ## Sending Media
 

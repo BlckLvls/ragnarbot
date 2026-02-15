@@ -222,14 +222,6 @@ This is the right choice for:
 - Reporting results
 - Any direct back-and-forth
 
-### The `message` Tool
-
-Use `message` only when:
-- You need to send an **intermediate status update** during a long multi-step operation ("Reading 15 files, this will take a moment...")
-- You need to deliver a message to a **different channel or chat** than the current conversation
-
-Do NOT use `message` for your final response. Just respond with text.
-
 ### Subagents (`spawn`)
 
 Spawn a subagent when:
