@@ -211,6 +211,15 @@ class CacheManager:
                 if not msg_ts or msg_ts > before_ts:
                     continue
             content = msg.get("content", "")
+            # Multimodal tool results (images): downgrade to text-only
+            if isinstance(content, list):
+                text_parts = [
+                    b.get("text", "") for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                ]
+                msg["content"] = " ".join(text_parts) if text_parts else "[image tool result flushed]"
+                count += 1
+                continue
             if not isinstance(content, str) or len(content) <= threshold:
                 continue
             if is_extra_hard:

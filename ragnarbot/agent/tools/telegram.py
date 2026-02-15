@@ -63,7 +63,7 @@ class SendPhotoTool(Tool):
             channel=self._channel,
             chat_id=self._chat_id,
             content=caption,
-            metadata={"media_type": "photo", "media_path": file_path},
+            metadata={"media_type": "photo", "media_path": file_path, "keep_typing": True},
         )
         try:
             await self._send_callback(msg)
@@ -125,7 +125,7 @@ class SendVideoTool(Tool):
             channel=self._channel,
             chat_id=self._chat_id,
             content=caption,
-            metadata={"media_type": "video", "media_path": file_path},
+            metadata={"media_type": "video", "media_path": file_path, "keep_typing": True},
         )
         try:
             await self._send_callback(msg)
@@ -187,7 +187,7 @@ class SendFileTool(Tool):
             channel=self._channel,
             chat_id=self._chat_id,
             content=caption,
-            metadata={"media_type": "document", "media_path": file_path},
+            metadata={"media_type": "document", "media_path": file_path, "keep_typing": True},
         )
         try:
             await self._send_callback(msg)

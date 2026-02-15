@@ -207,12 +207,15 @@ class AnthropicProvider(LLMProvider):
                     anthropic_msgs.append({"role": "assistant", "content": blocks})
 
             elif role == "tool":
+                tool_content = content or ""
+                if isinstance(content, list):
+                    tool_content = _convert_user_content(content)
                 anthropic_msgs.append({
                     "role": "user",
                     "content": [{
                         "type": "tool_result",
                         "tool_use_id": msg.get("tool_call_id", ""),
-                        "content": content or "",
+                        "content": tool_content,
                     }],
                 })
 

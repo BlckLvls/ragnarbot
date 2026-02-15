@@ -81,6 +81,9 @@ class LiteLLMProvider(LLMProvider):
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
+        # Strip internal metadata keys (e.g. _image_path) from content blocks
+        kwargs["messages"] = self._sanitize_messages(kwargs["messages"])
+
         try:
             response = await acompletion(**kwargs)
             return self._parse_response(response)
@@ -91,6 +94,26 @@ class LiteLLMProvider(LLMProvider):
                 finish_reason="error",
             )
     
+    @staticmethod
+    def _sanitize_messages(messages: list[dict]) -> list[dict]:
+        """Strip internal underscore-prefixed keys from content block dicts.
+
+        Keys like ``_image_path`` and ``_mime_type`` are used internally
+        for session persistence but must not reach the LLM API.
+        """
+        cleaned = []
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                new_content = []
+                for block in content:
+                    if isinstance(block, dict) and any(k.startswith("_") for k in block):
+                        block = {k: v for k, v in block.items() if not k.startswith("_")}
+                    new_content.append(block)
+                msg = {**msg, "content": new_content}
+            cleaned.append(msg)
+        return cleaned
+
     @staticmethod
     def _inject_cache_control(messages: list[dict]) -> list[dict]:
         """Add cache_control breakpoints to messages for Anthropic/Gemini via LiteLLM."""
