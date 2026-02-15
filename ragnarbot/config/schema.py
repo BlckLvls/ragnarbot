@@ -71,9 +71,38 @@ class AgentDefaults(BaseModel):
     )
 
 
+class FallbackConfig(BaseModel):
+    """Fallback model configuration."""
+    model: str | None = Field(
+        default=None,
+        json_schema_extra={"reload": "warm", "label": "Fallback model identifier"},
+    )
+    auth_method: str = Field(
+        default="api_key",
+        json_schema_extra={"reload": "warm", "label": "Fallback auth method"},
+    )
+    max_tokens: int | None = Field(
+        default=None,
+        json_schema_extra={"reload": "hot", "label": "Fallback max tokens"},
+    )
+    temperature: float | None = Field(
+        default=None,
+        json_schema_extra={"reload": "hot", "label": "Fallback temperature"},
+    )
+    consecutive_failures_threshold: int = Field(
+        default=3,
+        json_schema_extra={"reload": "hot", "label": "Failures before fallback mode"},
+    )
+    recovery_probe_interval: int = Field(
+        default=60,
+        json_schema_extra={"reload": "hot", "label": "Seconds between primary recovery probes"},
+    )
+
+
 class AgentsConfig(BaseModel):
     """Agent configuration."""
     defaults: AgentDefaults = Field(default_factory=AgentDefaults)
+    fallback: FallbackConfig = Field(default_factory=FallbackConfig)
 
 
 class DaemonConfig(BaseModel):

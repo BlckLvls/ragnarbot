@@ -202,8 +202,13 @@ class ConfigTool(Tool):
                 result["status"] = "applied"
                 result["detail"] = apply_msg or "Applied immediately."
             elif reload_level == "warm":
-                result["status"] = "saved"
-                result["detail"] = "Saved. Use the `restart` tool to apply."
+                warm_msg = self._apply_warm_reload(path, new_value)
+                if warm_msg:
+                    result["status"] = "applied"
+                    result["detail"] = warm_msg
+                else:
+                    result["status"] = "saved"
+                    result["detail"] = "Saved. Use the `restart` tool to apply."
             else:
                 result["status"] = "saved"
                 result["detail"] = "Saved. Requires full re-onboard to apply."
@@ -298,6 +303,50 @@ class ConfigTool(Tool):
                 val = bool(value) if isinstance(value, bool) else str(value).lower() in ("true", "1")
                 exec_tool.restrict_to_workspace = val
             return "Exec restrict_to_workspace updated."
+
+        # Fallback config — hot reloadable fields
+        if path == "agents.fallback.consecutive_failures_threshold":
+            if agent._fallback_config:
+                agent._fallback_config.consecutive_failures_threshold = int(value)
+            return "Fallback consecutive failures threshold updated."
+
+        if path == "agents.fallback.recovery_probe_interval":
+            if agent._fallback_config:
+                agent._fallback_config.recovery_probe_interval = int(value)
+            return "Fallback recovery probe interval updated."
+
+        if path == "agents.fallback.max_tokens":
+            if agent._fallback_config:
+                agent._fallback_config.max_tokens = int(value) if value else None
+            if agent._fallback_provider:
+                agent._fallback_provider.set_max_tokens(int(value))
+            return "Fallback max tokens updated."
+
+        if path == "agents.fallback.temperature":
+            if agent._fallback_config:
+                agent._fallback_config.temperature = float(value) if value else None
+            if agent._fallback_provider:
+                agent._fallback_provider.set_temperature(float(value))
+            return "Fallback temperature updated."
+
+        return None
+
+    def _apply_warm_reload(self, path: str, value: Any) -> str | None:
+        """Apply warm-reloadable fallback config changes without restart."""
+        agent = self._agent
+
+        if path == "agents.fallback.model":
+            agent._fallback_model = str(value) if value else None
+            agent._fallback_provider = None
+            if agent._fallback_config:
+                agent._fallback_config.model = str(value) if value else None
+            return "Fallback model updated. Will use new provider on next fallback."
+
+        if path == "agents.fallback.auth_method":
+            agent._fallback_provider = None
+            if agent._fallback_config:
+                agent._fallback_config.auth_method = str(value)
+            return "Fallback auth method updated. Will use new provider on next fallback."
 
         return None
 

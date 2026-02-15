@@ -19,32 +19,27 @@ app = typer.Typer(
 console = Console()
 
 
-def _resolve_provider_auth(config, creds):
-    """Resolve API key and OAuth token from credentials for the active provider.
+def _create_provider(model: str, auth_method: str, creds):
+    """Create an LLM provider from model string and auth method."""
+    from ragnarbot.providers.litellm_provider import LiteLLMProvider
 
-    Returns (api_key, oauth_token, provider_name).
-    """
-    model = config.agents.defaults.model
     provider_name = model.split("/")[0] if "/" in model else "anthropic"
-    auth_method = config.agents.defaults.auth_method
-
     provider_creds = getattr(creds.providers, provider_name, None)
-    oauth_token = None
-    api_key = None
 
     if auth_method == "oauth":
-        if provider_name == "gemini":
-            from ragnarbot.auth.gemini_oauth import get_access_token
-            oauth_token = get_access_token()
+        if provider_name == "anthropic":
+            oauth_token = provider_creds.oauth_key if provider_creds else None
+            from ragnarbot.providers.anthropic_provider import AnthropicProvider
+            return AnthropicProvider(oauth_token=oauth_token, default_model=model)
+        elif provider_name == "gemini":
+            from ragnarbot.providers.gemini_provider import GeminiCodeAssistProvider
+            return GeminiCodeAssistProvider(default_model=model)
         elif provider_name == "openai":
-            from ragnarbot.auth.openai_oauth import get_access_token
-            oauth_token = get_access_token()
-        elif provider_creds and provider_creds.oauth_key:
-            oauth_token = provider_creds.oauth_key  # anthropic path
-    elif provider_creds and provider_creds.api_key:
-        api_key = provider_creds.api_key
+            from ragnarbot.providers.openai_chatgpt_provider import OpenAIChatGPTProvider
+            return OpenAIChatGPTProvider(default_model=model)
 
-    return api_key, oauth_token, provider_name
+    api_key = provider_creds.api_key if provider_creds else None
+    return LiteLLMProvider(api_key=api_key, default_model=model)
 
 
 def _validate_auth(config, creds):
@@ -219,7 +214,6 @@ def gateway_main(
     from ragnarbot.cron.types import CronJob
     from ragnarbot.heartbeat.service import HeartbeatService
     from ragnarbot.media.manager import MediaManager
-    from ragnarbot.providers.litellm_provider import LiteLLMProvider
 
     if verbose:
         import logging
@@ -246,34 +240,16 @@ def gateway_main(
         console.print(f"[red]Error: {error}[/red]")
         raise typer.Exit(1)
 
-    api_key, oauth_token, provider_name = _resolve_provider_auth(config, creds)
-
-    auth_method = config.agents.defaults.auth_method
-    if provider_name == "anthropic" and oauth_token:
-        from ragnarbot.providers.anthropic_provider import AnthropicProvider
-        provider = AnthropicProvider(
-            oauth_token=oauth_token,
-            default_model=config.agents.defaults.model,
-        )
-    elif provider_name == "gemini" and auth_method == "oauth":
-        from ragnarbot.providers.gemini_provider import GeminiCodeAssistProvider
-        provider = GeminiCodeAssistProvider(
-            default_model=config.agents.defaults.model,
-        )
-    elif provider_name == "openai" and auth_method == "oauth":
-        from ragnarbot.providers.openai_chatgpt_provider import OpenAIChatGPTProvider
-        provider = OpenAIChatGPTProvider(
-            default_model=config.agents.defaults.model,
-        )
-    else:
-        provider = LiteLLMProvider(
-            api_key=api_key,
-            default_model=config.agents.defaults.model,
-        )
+    provider = _create_provider(
+        config.agents.defaults.model, config.agents.defaults.auth_method, creds,
+    )
 
     # Apply config defaults to provider (base class starts with hardcoded values)
     provider.set_temperature(config.agents.defaults.temperature)
     provider.set_max_tokens(config.agents.defaults.max_tokens)
+
+    # Fallback config
+    fallback_config = config.agents.fallback
 
     # Service credentials
     brave_api_key = creds.services.brave_search.api_key or None
@@ -304,6 +280,9 @@ def gateway_main(
         max_context_tokens=config.agents.defaults.max_context_tokens,
         context_mode=config.agents.defaults.context_mode,
         heartbeat_interval_m=config.heartbeat.interval_m,
+        fallback_model=fallback_config.model,
+        fallback_config=fallback_config,
+        provider_factory=lambda model, auth_method: _create_provider(model, auth_method, creds),
     )
 
     # Set cron callback (needs agent)

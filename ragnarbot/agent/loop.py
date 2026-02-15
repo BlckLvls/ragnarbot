@@ -3,7 +3,7 @@
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from loguru import logger
 
@@ -11,6 +11,7 @@ from ragnarbot.agent.background import BackgroundProcessManager
 from ragnarbot.agent.cache import CacheManager
 from ragnarbot.agent.compactor import Compactor
 from ragnarbot.agent.context import ContextBuilder
+from ragnarbot.agent.fallback import FallbackState
 from ragnarbot.agent.subagent import SubagentManager
 from ragnarbot.agent.tools.background import (
     DismissTool,
@@ -41,7 +42,7 @@ from ragnarbot.agent.tools.web import WebFetchTool, WebSearchTool
 from ragnarbot.bus.events import InboundMessage, OutboundMessage
 from ragnarbot.bus.queue import MessageBus
 from ragnarbot.media.manager import MediaManager
-from ragnarbot.providers.base import LLMProvider
+from ragnarbot.providers.base import LLMProvider, LLMResponse
 from ragnarbot.session.manager import SessionManager
 
 
@@ -76,6 +77,9 @@ class AgentLoop:
         max_context_tokens: int = 200_000,
         context_mode: str = "normal",
         heartbeat_interval_m: int = 30,
+        fallback_model: str | None = None,
+        fallback_config: "FallbackConfig | None" = None,
+        provider_factory: "Callable | None" = None,
     ):
         from ragnarbot.config.schema import ExecToolConfig
         from ragnarbot.cron.service import CronService
@@ -93,6 +97,13 @@ class AgentLoop:
         self.max_context_tokens = max_context_tokens
         self.context_mode = context_mode
         self.cache_manager = CacheManager(max_context_tokens=max_context_tokens)
+
+        # Fallback model support
+        self._fallback_state = FallbackState()
+        self._fallback_provider: LLMProvider | None = None
+        self._fallback_model: str | None = fallback_model
+        self._fallback_config = fallback_config
+        self._provider_factory = provider_factory
         self.compactor = Compactor(
             provider=provider,
             cache_manager=self.cache_manager,
@@ -267,13 +278,16 @@ class AgentLoop:
         """Reset stop state with a fresh (unset) event for this session."""
         self._stop_events[session_key] = asyncio.Event()
 
-    async def _chat_or_stop(self, session_key: str, **chat_kwargs):
+    async def _chat_or_stop(
+        self, session_key: str, provider: LLMProvider | None = None, **chat_kwargs,
+    ):
         """Race provider.chat() against the stop event.
 
         Returns the LLM response, or None if stopped mid-call.
         """
+        provider = provider or self.provider
         event = self._stop_events.get(session_key)
-        chat_task = asyncio.create_task(self.provider.chat(**chat_kwargs))
+        chat_task = asyncio.create_task(provider.chat(**chat_kwargs))
 
         if not event:
             return await chat_task
@@ -298,6 +312,142 @@ class AgentLoop:
                     pass
             return None
         return chat_task.result()
+
+    def _get_or_create_fallback_provider(self) -> LLMProvider | None:
+        """Lazily create the fallback provider on first use."""
+        if self._fallback_provider is not None:
+            return self._fallback_provider
+        if not self._provider_factory or not self._fallback_model:
+            return None
+        try:
+            auth_method = (
+                self._fallback_config.auth_method if self._fallback_config else "api_key"
+            )
+            self._fallback_provider = self._provider_factory(
+                self._fallback_model, auth_method,
+            )
+            # Apply fallback-specific or inherited settings
+            if self._fallback_config and self._fallback_config.temperature is not None:
+                self._fallback_provider.set_temperature(self._fallback_config.temperature)
+            if self._fallback_config and self._fallback_config.max_tokens is not None:
+                self._fallback_provider.set_max_tokens(self._fallback_config.max_tokens)
+            return self._fallback_provider
+        except Exception as e:
+            logger.error(f"Failed to create fallback provider: {e}")
+            return None
+
+    async def _chat_with_fallback(
+        self,
+        session_key: str | None,
+        msg: InboundMessage | None,
+        **chat_kwargs,
+    ) -> LLMResponse | None:
+        """Call primary LLM with automatic fallback on error.
+
+        For channel paths (session_key set): uses _chat_or_stop race.
+        For direct paths: calls provider.chat() directly.
+        Returns None only if stopped by user.
+        """
+
+        state = self._fallback_state
+        has_fallback = self._fallback_model is not None
+
+        # Decide which provider to try first
+        probe_interval = (
+            self._fallback_config.recovery_probe_interval if self._fallback_config else 60
+        )
+        use_primary = not state.fallback_mode or state.should_probe_primary(probe_interval)
+        primary_error = None
+        response = None
+
+        if use_primary:
+            if state.fallback_mode:
+                state.mark_primary_probed()
+
+            chat_kwargs["model"] = self.model
+            if session_key:
+                response = await self._chat_or_stop(
+                    session_key, provider=self.provider, **chat_kwargs,
+                )
+            else:
+                response = await self.provider.chat(**chat_kwargs)
+
+            if response is None:
+                return None  # stopped by user
+
+            if response.finish_reason != "error":
+                was_fallback = state.record_primary_success()
+                if was_fallback and msg:
+                    await self.bus.publish_outbound(OutboundMessage(
+                        channel=msg.channel, chat_id=msg.chat_id,
+                        content=(
+                            "\u2705 Primary model is back online. "
+                            "Switched back to normal mode."
+                        ),
+                        metadata={"intermediate": True},
+                    ))
+                return response
+
+            # Primary failed
+            if not has_fallback:
+                return response  # no fallback configured
+
+            primary_error = response.content or "Unknown error"
+
+        # Fallback path
+        fb_provider = self._get_or_create_fallback_provider()
+        if fb_provider is None:
+            if response is not None:
+                return response
+            # Shouldn't happen but guard: no primary tried, no fallback
+            return LLMResponse(content="No provider available.", finish_reason="error")
+
+        if msg and use_primary and primary_error:
+            short_error = primary_error[:200]
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=msg.channel, chat_id=msg.chat_id,
+                content=f"\u26a0\ufe0f Primary model error: {short_error}\nRetrying with fallback...",
+                metadata={"intermediate": True},
+            ))
+
+        chat_kwargs["model"] = self._fallback_model
+        if session_key:
+            fb_response = await self._chat_or_stop(
+                session_key, provider=fb_provider, **chat_kwargs,
+            )
+        else:
+            fb_response = await fb_provider.chat(**chat_kwargs)
+
+        if fb_response is None:
+            return None  # stopped by user
+
+        if fb_response.finish_reason == "error":
+            # Fallback also failed — return the error
+            return fb_response
+
+        # Track primary failure
+        threshold = (
+            self._fallback_config.consecutive_failures_threshold
+            if self._fallback_config else 3
+        )
+        just_entered = state.record_primary_failure(threshold)
+
+        if just_entered and msg:
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=msg.channel, chat_id=msg.chat_id,
+                content=(
+                    f"\U0001f504 Switching to fallback mode ({self._fallback_model}). "
+                    "Normal mode will be restored automatically when the primary "
+                    "model becomes available."
+                ),
+                metadata={"intermediate": True},
+            ))
+
+        # Tag the fallback response
+        if fb_response.content:
+            fb_response.content += f"\n\n_\u26a1 fallback: {self._fallback_model}_"
+
+        return fb_response
 
     def _reap_processing_task(self):
         """Check for completed/failed background task."""
@@ -654,11 +804,10 @@ class AgentLoop:
                 api_messages = [
                     {k: v for k, v in m.items() if k != "_ts"} for m in messages
                 ]
-                response = await self._chat_or_stop(
-                    session_key,
+                response = await self._chat_with_fallback(
+                    session_key, msg,
                     messages=api_messages,
                     tools=tools_defs,
-                    model=self.model,
                 )
 
                 # LLM call cancelled by stop
@@ -896,12 +1045,16 @@ class AgentLoop:
         )
 
         mode_labels = {"eco": "🌿 eco", "normal": "⚖️ normal", "full": "🔥 full"}
+        if self._fallback_state.fallback_mode and self._fallback_model:
+            model_line = f"\U0001f504 Fallback mode \u26a1 <code>{self._fallback_model}</code>"
+        else:
+            model_line = f"\U0001f916 <code>{self.model}</code>"
         text = (
-            f"📊 <b>Context</b>\n\n"
-            f"🤖 <code>{self.model}</code>\n"
-            f"📦 {mode_labels[self.context_mode]} ({int(threshold * 100)}%)\n\n"
-            f"📈 Usage: <b>{pct}%</b>  ({tokens_k} / {max_k})\n"
-            f"💾 Compactions: {compactions}"
+            f"\U0001f4ca <b>Context</b>\n\n"
+            f"{model_line}\n"
+            f"\U0001f4e6 {mode_labels[self.context_mode]} ({int(threshold * 100)}%)\n\n"
+            f"\U0001f4c8 Usage: <b>{pct}%</b>  ({tokens_k} / {max_k})\n"
+            f"\U0001f4be Compactions: {compactions}"
         )
         return OutboundMessage(
             channel=msg.channel,
@@ -1039,7 +1192,15 @@ class AgentLoop:
             # Fallback
             origin_channel = "cli"
             origin_chat_id = msg.chat_id
-        
+
+        # Proxy msg with correct routing for fallback notifications
+        origin_msg = InboundMessage(
+            channel=origin_channel,
+            sender_id=msg.sender_id,
+            chat_id=origin_chat_id,
+            content=msg.content,
+        )
+
         # Signal typing indicator to the channel
         await self.bus.publish_outbound(OutboundMessage(
             channel=origin_channel,
@@ -1153,11 +1314,10 @@ class AgentLoop:
                 api_messages = [
                     {k: v for k, v in m.items() if k != "_ts"} for m in messages
                 ]
-                response = await self._chat_or_stop(
-                    session_key,
+                response = await self._chat_with_fallback(
+                    session_key, origin_msg,
                     messages=api_messages,
                     tools=tools_defs,
-                    model=self.model,
                 )
 
                 # LLM call cancelled by stop
@@ -1421,9 +1581,13 @@ class AgentLoop:
             api_messages = [
                 {k: v for k, v in m.items() if k != "_ts"} for m in messages
             ]
-            response = await self.provider.chat(
-                messages=api_messages, tools=tools_defs, model=self.model,
+            response = await self._chat_with_fallback(
+                None, None,
+                messages=api_messages, tools=tools_defs,
             )
+
+            if response is None:
+                return None
 
             if response.has_tool_calls:
                 tool_call_dicts = []
@@ -1543,9 +1707,13 @@ class AgentLoop:
             api_messages = [
                 {k: v for k, v in m.items() if k != "_ts"} for m in messages
             ]
-            response = await self.provider.chat(
-                messages=api_messages, tools=tools_defs, model=self.model,
+            response = await self._chat_with_fallback(
+                None, None,
+                messages=api_messages, tools=tools_defs,
             )
+
+            if response is None:
+                break
 
             if response.has_tool_calls:
                 tool_call_dicts = []
