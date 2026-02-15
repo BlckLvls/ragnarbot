@@ -183,6 +183,9 @@ def gateway_main(
 
     console.print(f"{__logo__} Starting ragnarbot gateway on port {port}...")
 
+    from ragnarbot.daemon.resolve import resolve_path
+    resolve_path()
+
     from ragnarbot.config.migration import run_startup_migration
     if not run_startup_migration(console):
         raise typer.Exit(0)
