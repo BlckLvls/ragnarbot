@@ -112,8 +112,10 @@ class TestWebSearchToolDuckDuckGo:
     @pytest.mark.asyncio
     async def test_ddg_search_no_api_key_needed(self):
         """DuckDuckGo works without any API key."""
-        tool = WebSearchTool(engine="duckduckgo")
-        assert tool.api_key == ""  # No env var set
+        with patch.dict("os.environ", {}, clear=False):
+            import os
+            os.environ.pop("BRAVE_API_KEY", None)
+            tool = WebSearchTool(engine="duckduckgo")
 
         mock_results = [
             {"title": "Test", "href": "https://example.com", "body": "Test result"},

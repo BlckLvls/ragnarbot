@@ -60,5 +60,6 @@ def test_supports_oauth_anthropic():
 
 
 def test_supports_oauth_others():
-    assert supports_oauth("openai") is False
-    assert supports_oauth("gemini") is False
+    assert supports_oauth("openai") is True
+    assert supports_oauth("gemini") is True
+    assert supports_oauth("openrouter") is False
