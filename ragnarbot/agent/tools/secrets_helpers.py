@@ -19,27 +19,22 @@ class ConfigDependency:
     error_msg: str = ""
 
 
+_MODEL_DEPENDENCIES = [
+    ("anthropic/", ["providers.anthropic.api_key", "providers.anthropic.oauth_key"],
+     "requires secrets.providers.anthropic (api_key or oauth_key)"),
+    ("gemini/", ["providers.gemini.api_key", "providers.gemini.oauth_key"],
+     "requires secrets.providers.gemini (api_key or oauth_key)"),
+    ("openai/", ["providers.openai.api_key", "providers.openai.oauth_key"],
+     "requires secrets.providers.openai (api_key or oauth_key)"),
+    ("openrouter/", ["providers.openrouter.api_key"],
+     "requires secrets.providers.openrouter.api_key"),
+]
+
 CONFIG_DEPENDENCIES = [
-    ConfigDependency(
-        "agents.defaults.model", "anthropic/", "prefix",
-        ["providers.anthropic.api_key", "providers.anthropic.oauth_key"],
-        "requires secrets.providers.anthropic (api_key or oauth_key)",
-    ),
-    ConfigDependency(
-        "agents.defaults.model", "gemini/", "prefix",
-        ["providers.gemini.api_key", "providers.gemini.oauth_key"],
-        "requires secrets.providers.gemini (api_key or oauth_key)",
-    ),
-    ConfigDependency(
-        "agents.defaults.model", "openai/", "prefix",
-        ["providers.openai.api_key", "providers.openai.oauth_key"],
-        "requires secrets.providers.openai (api_key or oauth_key)",
-    ),
-    ConfigDependency(
-        "agents.defaults.model", "openrouter/", "prefix",
-        ["providers.openrouter.api_key"],
-        "requires secrets.providers.openrouter.api_key",
-    ),
+    ConfigDependency(path, prefix, "prefix", creds, msg)
+    for path in ("agents.defaults.model", "agents.fallback.model")
+    for prefix, creds, msg in _MODEL_DEPENDENCIES
+] + [
     ConfigDependency(
         "tools.web.search.engine", "brave", "exact",
         ["services.brave_search.api_key"],
