@@ -246,7 +246,7 @@ class OpenAIChatGPTProvider(LLMProvider):
                 items.append({
                     "type": "function_call_output",
                     "call_id": msg.get("tool_call_id", ""),
-                    "output": content if isinstance(content, str) else str(content),
+                    "output": _format_tool_output(content),
                 })
 
         instructions = "\n\n".join(system_parts) if system_parts else None
@@ -271,7 +271,7 @@ class OpenAIChatGPTProvider(LLMProvider):
 
 
 def _format_content(content: Any) -> Any:
-    """Format message content for Responses API."""
+    """Format user message content for Responses API."""
     if isinstance(content, str):
         return content
 
@@ -287,5 +287,45 @@ def _format_content(content: Any) -> Any:
                     url = block.get("image_url", {}).get("url", "")
                     parts.append({"type": "input_image", "image_url": url})
         return parts or content
+
+    return str(content)
+
+
+def _format_tool_output(content: Any) -> Any:
+    """Format tool output for Responses API function_call_output.
+
+    The Responses API accepts either a string or an array of
+    input_text / input_image objects as function_call_output.output.
+    """
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        has_images = any(
+            isinstance(b, dict) and b.get("type") == "image_url"
+            for b in content
+        )
+        if not has_images:
+            # No images — just join text parts into a string
+            texts = []
+            for block in content:
+                if isinstance(block, str):
+                    texts.append(block)
+                elif isinstance(block, dict) and block.get("type") == "text":
+                    texts.append(block.get("text", ""))
+            return "\n".join(texts) if texts else str(content)
+
+        # Has images — return array format
+        parts: list[dict[str, Any]] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append({"type": "input_text", "text": block})
+            elif isinstance(block, dict):
+                if block.get("type") == "image_url":
+                    url = block.get("image_url", {}).get("url", "")
+                    parts.append({"type": "input_image", "image_url": url})
+                elif block.get("type") == "text":
+                    parts.append({"type": "input_text", "text": block.get("text", "")})
+        return parts or str(content)
 
     return str(content)
