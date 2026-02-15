@@ -94,7 +94,10 @@ class LiteLLMProvider(LLMProvider):
             model_info = get_model_info(model)
             if model_info and model_info.get("providers"):
                 provider_config["only"] = model_info["providers"]
-            kwargs["extra_body"] = {"provider": provider_config}
+            kwargs["extra_body"] = {
+                "provider": provider_config,
+                "reasoning": {"enabled": True},
+            }
 
         # Strip internal metadata keys (e.g. _image_path) from content blocks
         kwargs["messages"] = self._sanitize_messages(kwargs["messages"])
