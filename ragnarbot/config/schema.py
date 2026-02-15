@@ -54,6 +54,7 @@ class AgentDefaults(BaseModel):
     )
     auth_method: str = Field(
         default="api_key",
+        pattern="^(api_key|oauth)$",
         json_schema_extra={"reload": "warm", "label": "Authentication method (api_key or oauth)"},
     )
     stream_steps: bool = Field(
@@ -79,6 +80,7 @@ class FallbackConfig(BaseModel):
     )
     auth_method: str = Field(
         default="api_key",
+        pattern="^(api_key|oauth)$",
         json_schema_extra={"reload": "warm", "label": "Fallback auth method"},
     )
     max_tokens: int | None = Field(
