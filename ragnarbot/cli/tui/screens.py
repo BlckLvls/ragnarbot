@@ -21,8 +21,14 @@ def provider_screen(console: Console) -> int | None:
 
 def auth_method_screen(console: Console, provider_id: str) -> int | None:
     """Select auth method. Returns index (0=oauth, 1=api_key) or None."""
+    oauth_descriptions = {
+        "anthropic": "Recommended — uses Claude CLI token",
+        "gemini": "Sign in with Google account",
+        "openai": "Sign in with OpenAI account",
+    }
+    oauth_desc = oauth_descriptions.get(provider_id, "OAuth authentication")
     options = [
-        ("OAuth Token", "Recommended — uses Claude CLI token"),
+        ("OAuth", oauth_desc),
         ("API Key", "Traditional API key authentication"),
     ]
     return select_menu(

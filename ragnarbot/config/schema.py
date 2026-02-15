@@ -27,7 +27,7 @@ class ChannelsConfig(BaseModel):
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
 
 
-OAUTH_SUPPORTED_PROVIDERS = {"anthropic"}
+OAUTH_SUPPORTED_PROVIDERS = {"anthropic", "gemini", "openai"}
 
 
 class AgentDefaults(BaseModel):

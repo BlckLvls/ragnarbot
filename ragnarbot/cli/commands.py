@@ -32,11 +32,17 @@ def _resolve_provider_auth(config, creds):
     oauth_token = None
     api_key = None
 
-    if provider_creds:
-        if auth_method == "oauth" and provider_creds.oauth_key:
-            oauth_token = provider_creds.oauth_key
-        elif provider_creds.api_key:
-            api_key = provider_creds.api_key
+    if auth_method == "oauth":
+        if provider_name == "gemini":
+            from ragnarbot.auth.gemini_oauth import get_access_token
+            oauth_token = get_access_token()
+        elif provider_name == "openai":
+            from ragnarbot.auth.openai_oauth import get_access_token
+            oauth_token = get_access_token()
+        elif provider_creds and provider_creds.oauth_key:
+            oauth_token = provider_creds.oauth_key  # anthropic path
+    elif provider_creds and provider_creds.api_key:
+        api_key = provider_creds.api_key
 
     return api_key, oauth_token, provider_name
 
@@ -61,15 +67,29 @@ def _validate_auth(config, creds):
             f"Supported: {', '.join(OAUTH_SUPPORTED_PROVIDERS)}"
         )
 
+    if auth_method == "oauth":
+        if provider_name == "gemini":
+            from ragnarbot.auth.gemini_oauth import is_authenticated
+            if not is_authenticated():
+                return "Gemini OAuth not configured. Run: ragnarbot oauth gemini"
+        elif provider_name == "openai":
+            from ragnarbot.auth.openai_oauth import is_authenticated
+            if not is_authenticated():
+                return "OpenAI OAuth not configured. Run: ragnarbot oauth openai"
+        else:
+            # Anthropic — uses credentials file
+            provider_creds = getattr(creds.providers, provider_name, None)
+            if not provider_creds or not provider_creds.oauth_key:
+                return f"No OAuth token for '{provider_name}'. Run: claude setup-token"
+        return None
+
+    # api_key path
     provider_creds = getattr(creds.providers, provider_name, None)
     if not provider_creds:
         return f"No credentials configured for provider '{provider_name}'"
 
-    if auth_method == "api_key" and not provider_creds.api_key:
+    if not provider_creds.api_key:
         return f"No API key configured for '{provider_name}'. Set it in ~/.ragnarbot/credentials.json"
-
-    if auth_method == "oauth" and not provider_creds.oauth_key:
-        return f"No OAuth token for '{provider_name}'. Run: claude setup-token"
 
     return None
 
@@ -102,6 +122,30 @@ def onboard():
     run_onboarding(console)
 
 
+# ============================================================================
+# OAuth Commands
+# ============================================================================
+
+oauth_app = typer.Typer(help="OAuth authentication")
+app.add_typer(oauth_app, name="oauth")
+
+
+@oauth_app.command("gemini")
+def oauth_gemini():
+    """Authenticate with Google Gemini via OAuth."""
+    from ragnarbot.auth.gemini_oauth import authenticate
+    success = authenticate(console)
+    if not success:
+        raise typer.Exit(1)
+
+
+@oauth_app.command("openai")
+def oauth_openai():
+    """Authenticate with OpenAI via OAuth."""
+    from ragnarbot.auth.openai_oauth import authenticate
+    success = authenticate(console)
+    if not success:
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -204,10 +248,21 @@ def gateway_main(
 
     api_key, oauth_token, provider_name = _resolve_provider_auth(config, creds)
 
+    auth_method = config.agents.defaults.auth_method
     if provider_name == "anthropic" and oauth_token:
         from ragnarbot.providers.anthropic_provider import AnthropicProvider
         provider = AnthropicProvider(
             oauth_token=oauth_token,
+            default_model=config.agents.defaults.model,
+        )
+    elif provider_name == "gemini" and auth_method == "oauth":
+        from ragnarbot.providers.gemini_provider import GeminiCodeAssistProvider
+        provider = GeminiCodeAssistProvider(
+            default_model=config.agents.defaults.model,
+        )
+    elif provider_name == "openai" and auth_method == "oauth":
+        from ragnarbot.providers.openai_chatgpt_provider import OpenAIChatGPTProvider
+        provider = OpenAIChatGPTProvider(
             default_model=config.agents.defaults.model,
         )
     else:
@@ -838,8 +893,17 @@ def status():
 
         for name in ("anthropic", "openai", "gemini"):
             pc = getattr(creds.providers, name)
-            if name == provider_name and auth_method == "oauth" and pc.oauth_key:
-                auth_info = "[green]oauth[/green]"
+            if name == provider_name and auth_method == "oauth":
+                if name == "gemini":
+                    from ragnarbot.auth.gemini_oauth import is_authenticated as _gem_auth
+                    auth_info = "[green]oauth[/green]" if _gem_auth() else "[dim]not set[/dim]"
+                elif name == "openai":
+                    from ragnarbot.auth.openai_oauth import is_authenticated as _oai_auth
+                    auth_info = "[green]oauth[/green]" if _oai_auth() else "[dim]not set[/dim]"
+                elif pc.oauth_key:
+                    auth_info = "[green]oauth[/green]"
+                else:
+                    auth_info = "[dim]not set[/dim]"
             elif pc.api_key:
                 auth_info = "[green]api_key[/green]"
             else:

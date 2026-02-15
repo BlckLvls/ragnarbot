@@ -26,7 +26,6 @@ from ragnarbot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFile
 from ragnarbot.agent.tools.heartbeat import HeartbeatTool, parse_blocks
 from ragnarbot.agent.tools.heartbeat_done import HeartbeatDoneTool
 from ragnarbot.agent.tools.media import DownloadFileTool
-from ragnarbot.agent.tools.message import MessageTool
 from ragnarbot.agent.tools.registry import ToolRegistry
 from ragnarbot.agent.tools.restart import RestartTool
 from ragnarbot.agent.tools.shell import ExecTool
@@ -145,10 +144,6 @@ class AgentLoop:
         self.tools.register(WebSearchTool(engine=self.search_engine, api_key=self.brave_api_key))
         self.tools.register(WebFetchTool())
         
-        # Message tool
-        message_tool = MessageTool(send_callback=self.bus.publish_outbound)
-        self.tools.register(message_tool)
-
         # Telegram media & reaction tools
         send_cb = self.bus.publish_outbound
         self.tools.register(SendPhotoTool(send_callback=send_cb))
@@ -477,10 +472,6 @@ class AgentLoop:
             }
 
         # Update tool contexts
-        message_tool = self.tools.get("message")
-        if isinstance(message_tool, MessageTool):
-            message_tool.set_context(msg.channel, msg.chat_id)
-
         spawn_tool = self.tools.get("spawn")
         if isinstance(spawn_tool, SpawnTool):
             spawn_tool.set_context(msg.channel, msg.chat_id)
@@ -694,17 +685,19 @@ class AgentLoop:
                             metadata={"intermediate": True},
                         ))
 
-                    tool_call_dicts = [
-                        {
+                    tool_call_dicts = []
+                    for tc in response.tool_calls:
+                        _tc = {
                             "id": tc.id,
                             "type": "function",
                             "function": {
                                 "name": tc.name,
-                                "arguments": json.dumps(tc.arguments)
-                            }
+                                "arguments": json.dumps(tc.arguments),
+                            },
                         }
-                        for tc in response.tool_calls
-                    ]
+                        if tc.metadata:
+                            _tc["metadata"] = tc.metadata
+                        tool_call_dicts.append(_tc)
                     messages = self.context.add_assistant_message(
                         messages, response.content, tool_call_dicts
                     )
@@ -1060,10 +1053,6 @@ class AgentLoop:
         session = self.sessions.get_or_create(session_key)
 
         # Update tool contexts
-        message_tool = self.tools.get("message")
-        if isinstance(message_tool, MessageTool):
-            message_tool.set_context(origin_channel, origin_chat_id)
-
         spawn_tool = self.tools.get("spawn")
         if isinstance(spawn_tool, SpawnTool):
             spawn_tool.set_context(origin_channel, origin_chat_id)
@@ -1196,17 +1185,19 @@ class AgentLoop:
                             metadata={"intermediate": True},
                         ))
 
-                    tool_call_dicts = [
-                        {
+                    tool_call_dicts = []
+                    for tc in response.tool_calls:
+                        _tc = {
                             "id": tc.id,
                             "type": "function",
                             "function": {
                                 "name": tc.name,
-                                "arguments": json.dumps(tc.arguments)
-                            }
+                                "arguments": json.dumps(tc.arguments),
+                            },
                         }
-                        for tc in response.tool_calls
-                    ]
+                        if tc.metadata:
+                            _tc["metadata"] = tc.metadata
+                        tool_call_dicts.append(_tc)
                     messages = self.context.add_assistant_message(
                         messages, response.content, tool_call_dicts
                     )
@@ -1310,8 +1301,8 @@ class AgentLoop:
         """Build a fresh tool registry for an isolated cron job.
 
         Each invocation creates new tool instances so concurrent isolated jobs
-        share no mutable state.  The ``message`` and ``spawn`` tools are
-        excluded (they don't make sense in non-interactive mode).
+        share no mutable state.  The ``spawn`` tool is excluded
+        (it doesn't make sense in non-interactive mode).
         """
         reg = ToolRegistry()
 
@@ -1435,8 +1426,9 @@ class AgentLoop:
             )
 
             if response.has_tool_calls:
-                tool_call_dicts = [
-                    {
+                tool_call_dicts = []
+                for tc in response.tool_calls:
+                    _tc = {
                         "id": tc.id,
                         "type": "function",
                         "function": {
@@ -1444,8 +1436,9 @@ class AgentLoop:
                             "arguments": json.dumps(tc.arguments),
                         },
                     }
-                    for tc in response.tool_calls
-                ]
+                    if tc.metadata:
+                        _tc["metadata"] = tc.metadata
+                    tool_call_dicts.append(_tc)
                 messages = self.context.add_assistant_message(
                     messages, response.content, tool_call_dicts,
                 )
@@ -1555,8 +1548,9 @@ class AgentLoop:
             )
 
             if response.has_tool_calls:
-                tool_call_dicts = [
-                    {
+                tool_call_dicts = []
+                for tc in response.tool_calls:
+                    _tc = {
                         "id": tc.id,
                         "type": "function",
                         "function": {
@@ -1564,8 +1558,9 @@ class AgentLoop:
                             "arguments": json.dumps(tc.arguments),
                         },
                     }
-                    for tc in response.tool_calls
-                ]
+                    if tc.metadata:
+                        _tc["metadata"] = tc.metadata
+                    tool_call_dicts.append(_tc)
                 messages = self.context.add_assistant_message(
                     messages, response.content, tool_call_dicts,
                 )
