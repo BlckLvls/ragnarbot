@@ -26,8 +26,12 @@ class LiteLLMProvider(LLMProvider):
         self.default_model = default_model
 
         # Configure LiteLLM env vars based on provider
+        # Check openrouter first — model strings like openrouter/anthropic/...
+        # contain provider substrings that would match the wrong branch.
         if api_key:
-            if "anthropic" in default_model:
+            if "openrouter" in default_model:
+                os.environ.setdefault("OPENROUTER_API_KEY", api_key)
+            elif "anthropic" in default_model:
                 os.environ.setdefault("ANTHROPIC_API_KEY", api_key)
             elif "openai" in default_model or "gpt" in default_model:
                 os.environ.setdefault("OPENAI_API_KEY", api_key)
@@ -62,12 +66,14 @@ class LiteLLMProvider(LLMProvider):
         max_tokens = max_tokens if max_tokens is not None else self.default_max_tokens
         temperature = temperature if temperature is not None else self.default_temperature
 
-        # For Gemini, ensure gemini/ prefix if not already present
-        if "gemini" in model.lower() and not model.startswith("gemini/"):
+        is_openrouter = model.startswith("openrouter/")
+
+        # For Gemini, ensure gemini/ prefix if not already present (skip for OpenRouter)
+        if not is_openrouter and "gemini" in model.lower() and not model.startswith("gemini/"):
             model = f"gemini/{model}"
-        
-        # Inject cache_control for Anthropic and Gemini models
-        if "anthropic" in model or "gemini" in model.lower():
+
+        # Inject cache_control for Anthropic and Gemini models (skip for OpenRouter)
+        if not is_openrouter and ("anthropic" in model or "gemini" in model.lower()):
             messages = self._inject_cache_control(messages)
 
         kwargs: dict[str, Any] = {
@@ -81,8 +87,23 @@ class LiteLLMProvider(LLMProvider):
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
+        # OpenRouter provider routing
+        if is_openrouter:
+            from ragnarbot.config.providers import get_model_info
+            provider_config: dict = {"sort": "throughput", "allow_fallbacks": True}
+            model_info = get_model_info(model)
+            if model_info and model_info.get("providers"):
+                provider_config["only"] = model_info["providers"]
+            kwargs["extra_body"] = {"provider": provider_config}
+
         # Strip internal metadata keys (e.g. _image_path) from content blocks
         kwargs["messages"] = self._sanitize_messages(kwargs["messages"])
+
+        # OpenRouter: downgrade multimodal tool results to text-only.
+        # Many sub-providers support images in user messages but not in
+        # tool results, causing silent failures or empty responses.
+        if is_openrouter:
+            kwargs["messages"] = self._downgrade_tool_images(kwargs["messages"])
 
         try:
             response = await acompletion(**kwargs)
@@ -111,6 +132,24 @@ class LiteLLMProvider(LLMProvider):
                         block = {k: v for k, v in block.items() if not k.startswith("_")}
                     new_content.append(block)
                 msg = {**msg, "content": new_content}
+            cleaned.append(msg)
+        return cleaned
+
+    @staticmethod
+    def _downgrade_tool_images(messages: list[dict]) -> list[dict]:
+        """Convert multimodal tool results to text-only.
+
+        Some providers support images in user messages but not in tool
+        results. This extracts text blocks and discards image blocks.
+        """
+        cleaned = []
+        for msg in messages:
+            if msg.get("role") == "tool" and isinstance(msg.get("content"), list):
+                text_parts = [
+                    b.get("text", "") for b in msg["content"]
+                    if isinstance(b, dict) and b.get("type") == "text"
+                ]
+                msg = {**msg, "content": " ".join(text_parts) if text_parts else "[image]"}
             cleaned.append(msg)
         return cleaned
 

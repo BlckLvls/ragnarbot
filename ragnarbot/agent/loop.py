@@ -102,6 +102,7 @@ class AgentLoop:
         )
 
         self.context = ContextBuilder(workspace, heartbeat_interval_m=heartbeat_interval_m)
+        self.context.model = self.model
         self.sessions = SessionManager(workspace)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
@@ -128,7 +129,7 @@ class AgentLoop:
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
         # File tools
-        self.tools.register(ReadFileTool())
+        self.tools.register(ReadFileTool(model=self.model))
         self.tools.register(WriteFileTool())
         self.tools.register(EditFileTool())
         self.tools.register(ListDirTool())
@@ -1315,7 +1316,7 @@ class AgentLoop:
         reg = ToolRegistry()
 
         # File tools
-        reg.register(ReadFileTool())
+        reg.register(ReadFileTool(model=self.model))
         reg.register(WriteFileTool())
         reg.register(EditFileTool())
         reg.register(ListDirTool())

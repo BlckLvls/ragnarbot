@@ -13,6 +13,7 @@ CACHE_TTL = {
     "anthropic": 300,   # 5 min sliding window
     "openai": 600,      # ~5-10 min inactivity; upper bound to avoid premature flush
     "gemini": 300,      # implicit caching — prefix-match like Claude, sliding window
+    "openrouter": 300,  # varies by sub-provider; conservative default
 }
 
 
@@ -56,6 +57,8 @@ class CacheManager:
     def get_provider_from_model(model: str) -> str:
         """Extract provider name from a model string."""
         lower = model.lower()
+        if lower.startswith("openrouter/"):
+            return "openrouter"
         if lower.startswith("anthropic/") or lower.startswith("claude"):
             return "anthropic"
         if lower.startswith("openai/") or lower.startswith("gpt"):
