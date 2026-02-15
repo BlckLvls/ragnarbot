@@ -7,7 +7,7 @@ from typing import Any
 
 from ragnarbot.agent.tools.base import Tool
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".tif"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20 MB (Anthropic limit)
 
 
@@ -22,7 +22,7 @@ class ReadFileTool(Tool):
     def description(self) -> str:
         return (
             "Read the contents of a file at the given path. "
-            "For image files (jpg, png, gif, webp, bmp, tiff) the content "
+            "For image files (jpg, png, gif, webp) the content "
             "is returned as a visual image so you can see and describe it."
         )
 
