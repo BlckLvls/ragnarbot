@@ -249,6 +249,16 @@ Act on this result naturally. If the output contains file paths or URLs, share t
     ) -> str:
         """Schedule a status poll after N seconds."""
         origin = origin or {"channel": "cli", "chat_id": "direct"}
+
+        # Reject if a poll is already pending for this origin
+        origin_key = f"{origin['channel']}:{origin['chat_id']}"
+        for job in self._jobs.values():
+            if (
+                job.command == "poll"
+                and job.status == JobState.running
+                and f"{job.origin['channel']}:{job.origin['chat_id']}" == origin_key
+            ):
+                return f"Poll already active (id: {job.job_id}), wait for it to complete."
         job_id = str(uuid.uuid4())[:8]
 
         job = BgJob(

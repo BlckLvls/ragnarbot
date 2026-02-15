@@ -257,6 +257,33 @@ class TestBackgroundProcessManager:
         assert "not running" in result
 
     @pytest.mark.asyncio
+    async def test_poll_rejects_duplicate(self):
+        """Scheduling a second poll for the same origin is rejected."""
+        mgr, bus = _make_manager()
+        origin = {"channel": "test", "chat_id": "1"}
+        first = await mgr.schedule_poll(after=60, origin=origin)
+        assert "Poll scheduled" in first
+        second = await mgr.schedule_poll(after=60, origin=origin)
+        assert "Poll already active" in second
+        # Cleanup
+        job_id = first.split("id: ")[1].split(",")[0]
+        await mgr.kill(job_id)
+
+    @pytest.mark.asyncio
+    async def test_poll_allows_after_completion(self):
+        """A new poll can be scheduled once the previous one completes."""
+        mgr, bus = _make_manager()
+        origin = {"channel": "test", "chat_id": "1"}
+        first = await mgr.schedule_poll(after=0, origin=origin)
+        assert "Poll scheduled" in first
+        await asyncio.sleep(0.3)  # let the poll fire and complete
+        second = await mgr.schedule_poll(after=60, origin=origin)
+        assert "Poll scheduled" in second
+        # Cleanup
+        job_id = second.split("id: ")[1].split(",")[0]
+        await mgr.kill(job_id)
+
+    @pytest.mark.asyncio
     async def test_cleanup_stale(self):
         mgr, _ = _make_manager()
         job = BgJob(
