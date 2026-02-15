@@ -160,10 +160,15 @@ class GeminiCodeAssistProvider(LLMProvider):
                                 call_id = fc.get("id") or (
                                     f"{fc.get('name', 'fn')}_{int(time.time())}_{len(tool_calls)}"
                                 )
+                                meta = {}
+                                sig = part.get("thoughtSignature")
+                                if sig:
+                                    meta["thoughtSignature"] = sig
                                 tool_calls.append(ToolCallRequest(
                                     id=call_id,
                                     name=fc.get("name", ""),
                                     arguments=fc.get("args", {}),
+                                    metadata=meta,
                                 ))
 
                         fr = candidate.get("finishReason")
@@ -200,6 +205,10 @@ class GeminiCodeAssistProvider(LLMProvider):
         """
         contents: list[dict[str, Any]] = []
         system_parts: list[str] = []
+        # Track which tool_call_ids have valid thoughtSignatures.
+        # Tool calls without signatures (from other providers / old sessions)
+        # get converted to text, and their matching tool results must too.
+        signed_tc_ids: set[str] = set()
 
         for msg in messages:
             role = msg.get("role")
@@ -226,36 +235,54 @@ class GeminiCodeAssistProvider(LLMProvider):
                             args = json.loads(args)
                         except (json.JSONDecodeError, ValueError):
                             args = {"raw": args}
-                    fc_item: dict[str, Any] = {
-                        "functionCall": {
-                            "name": fn.get("name", ""),
-                            "args": args,
+                    meta = tc.get("metadata", {})
+                    sig = meta.get("thoughtSignature")
+                    tc_id = tc.get("id", "")
+                    if sig:
+                        # Has thoughtSignature — send as proper functionCall
+                        fc_item: dict[str, Any] = {
+                            "functionCall": {
+                                "name": fn.get("name", ""),
+                                "args": args,
+                            },
+                            "thoughtSignature": sig,
                         }
-                    }
-                    # Preserve ID for round-trip
-                    tc_id = tc.get("id")
-                    if tc_id:
-                        fc_item["functionCall"]["id"] = tc_id
-                    parts.append(fc_item)
+                        if tc_id:
+                            fc_item["functionCall"]["id"] = tc_id
+                            signed_tc_ids.add(tc_id)
+                        parts.append(fc_item)
+                    else:
+                        # No signature (from another provider / old session) —
+                        # convert to text so Gemini doesn't reject it
+                        name = fn.get("name", "unknown")
+                        parts.append({
+                            "text": f"[Called tool {name} with args: {json.dumps(args)}]",
+                        })
                 if parts:
                     contents.append({"role": "model", "parts": parts})
 
             elif role == "tool":
                 tool_name = msg.get("name", "unknown")
-                tool_content = content if isinstance(content, str) else str(content)
-                fr_item: dict[str, Any] = {
-                    "functionResponse": {
-                        "name": tool_name,
-                        "response": {"output": tool_content},
+                tc_id = msg.get("tool_call_id", "")
+                if tc_id and tc_id in signed_tc_ids:
+                    # Matching signed function call — send as functionResponse
+                    fr_item: dict[str, Any] = {
+                        "functionResponse": {
+                            "name": tool_name,
+                            "id": tc_id,
+                            "response": {"output": _tool_content_to_str(content)},
+                        }
                     }
-                }
-                tc_id = msg.get("tool_call_id")
-                if tc_id:
-                    fr_item["functionResponse"]["id"] = tc_id
-                contents.append({
-                    "role": "user",
-                    "parts": [fr_item],
-                })
+                    fr_parts: list[dict[str, Any]] = [fr_item]
+                    fr_parts.extend(_extract_tool_images(content))
+                    contents.append({"role": "user", "parts": fr_parts})
+                else:
+                    # No matching signature — convert to text
+                    text = _tool_content_to_str(content)
+                    contents.append({
+                        "role": "user",
+                        "parts": [{"text": f"[Tool {tool_name} returned: {text}]"}],
+                    })
 
         # Merge consecutive same-role messages (Gemini requires alternation)
         contents = _merge_consecutive(contents)
@@ -321,6 +348,44 @@ def _content_to_parts(content: Any) -> list[dict]:
         return parts or [{"text": ""}]
 
     return [{"text": str(content)}]
+
+
+def _tool_content_to_str(content: Any) -> str:
+    """Extract text from tool result content (may be str or list of blocks)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        texts = []
+        for block in content:
+            if isinstance(block, str):
+                texts.append(block)
+            elif isinstance(block, dict):
+                if block.get("type") == "text":
+                    texts.append(block.get("text", ""))
+                elif block.get("type") == "image_url":
+                    texts.append("[image attached]")
+        return "\n".join(texts) if texts else str(content)
+    return str(content)
+
+
+def _extract_tool_images(content: Any) -> list[dict]:
+    """Extract inline image parts from tool result content for Gemini."""
+    if not isinstance(content, list):
+        return []
+    images = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "image_url":
+            url = block.get("image_url", {}).get("url", "")
+            if url.startswith("data:"):
+                header, data = url.split(",", 1)
+                mime = header.split(":")[1].split(";")[0]
+                images.append({
+                    "inlineData": {
+                        "mimeType": mime,
+                        "data": data,
+                    }
+                })
+    return images
 
 
 def _merge_consecutive(contents: list[dict]) -> list[dict]:

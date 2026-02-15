@@ -685,17 +685,19 @@ class AgentLoop:
                             metadata={"intermediate": True},
                         ))
 
-                    tool_call_dicts = [
-                        {
+                    tool_call_dicts = []
+                    for tc in response.tool_calls:
+                        _tc = {
                             "id": tc.id,
                             "type": "function",
                             "function": {
                                 "name": tc.name,
-                                "arguments": json.dumps(tc.arguments)
-                            }
+                                "arguments": json.dumps(tc.arguments),
+                            },
                         }
-                        for tc in response.tool_calls
-                    ]
+                        if tc.metadata:
+                            _tc["metadata"] = tc.metadata
+                        tool_call_dicts.append(_tc)
                     messages = self.context.add_assistant_message(
                         messages, response.content, tool_call_dicts
                     )
@@ -1183,17 +1185,19 @@ class AgentLoop:
                             metadata={"intermediate": True},
                         ))
 
-                    tool_call_dicts = [
-                        {
+                    tool_call_dicts = []
+                    for tc in response.tool_calls:
+                        _tc = {
                             "id": tc.id,
                             "type": "function",
                             "function": {
                                 "name": tc.name,
-                                "arguments": json.dumps(tc.arguments)
-                            }
+                                "arguments": json.dumps(tc.arguments),
+                            },
                         }
-                        for tc in response.tool_calls
-                    ]
+                        if tc.metadata:
+                            _tc["metadata"] = tc.metadata
+                        tool_call_dicts.append(_tc)
                     messages = self.context.add_assistant_message(
                         messages, response.content, tool_call_dicts
                     )
@@ -1422,8 +1426,9 @@ class AgentLoop:
             )
 
             if response.has_tool_calls:
-                tool_call_dicts = [
-                    {
+                tool_call_dicts = []
+                for tc in response.tool_calls:
+                    _tc = {
                         "id": tc.id,
                         "type": "function",
                         "function": {
@@ -1431,8 +1436,9 @@ class AgentLoop:
                             "arguments": json.dumps(tc.arguments),
                         },
                     }
-                    for tc in response.tool_calls
-                ]
+                    if tc.metadata:
+                        _tc["metadata"] = tc.metadata
+                    tool_call_dicts.append(_tc)
                 messages = self.context.add_assistant_message(
                     messages, response.content, tool_call_dicts,
                 )
@@ -1542,8 +1548,9 @@ class AgentLoop:
             )
 
             if response.has_tool_calls:
-                tool_call_dicts = [
-                    {
+                tool_call_dicts = []
+                for tc in response.tool_calls:
+                    _tc = {
                         "id": tc.id,
                         "type": "function",
                         "function": {
@@ -1551,8 +1558,9 @@ class AgentLoop:
                             "arguments": json.dumps(tc.arguments),
                         },
                     }
-                    for tc in response.tool_calls
-                ]
+                    if tc.metadata:
+                        _tc["metadata"] = tc.metadata
+                    tool_call_dicts.append(_tc)
                 messages = self.context.add_assistant_message(
                     messages, response.content, tool_call_dicts,
                 )
