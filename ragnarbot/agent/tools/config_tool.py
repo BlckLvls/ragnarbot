@@ -80,8 +80,13 @@ class ConfigTool(Tool):
             filter_path = path if path != "secrets" else None
             return secrets_schema(creds, filter_path)
 
+        from ragnarbot.config.providers import PROVIDERS
+
         config = load_config()
         all_paths = get_all_paths(config)
+        model_fields = {"agents.defaults.model", "agents.fallback.model"}
+        all_model_ids = [m["id"] for p in PROVIDERS for m in p["models"]]
+
         lines = []
         for p in sorted(all_paths.keys()):
             if path and not p.startswith(path):
@@ -94,6 +99,8 @@ class ConfigTool(Tool):
                 lines.append(
                     f"{p}: {meta['type']} = {meta['default']!r}{reload_tag}{pattern}{label}"
                 )
+                if p in model_fields:
+                    lines.append(f"  choices: {', '.join(all_model_ids)}")
             except ValueError:
                 lines.append(f"{p}: (metadata unavailable)")
 
