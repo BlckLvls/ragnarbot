@@ -1144,32 +1144,34 @@ class AgentLoop:
         """Format a tool call as a human-readable trace message (HTML)."""
         from html import escape
 
-        tool_formats: dict[str, tuple[str, str, str | None]] = {
-            # tool_name: (emoji, label, arg_key to show)
-            "web_search": ("🌐", "Web search", "query"),
-            "web_fetch": ("🌐", "Web fetch", "url"),
-            "read_file": ("📄", "Read file", "path"),
-            "write_file": ("📝", "Write file", "path"),
-            "edit_file": ("✏️", "Edit file", "path"),
-            "list_dir": ("📂", "List dir", "path"),
-            "exec": ("⚡", "Exec", "command"),
-            "exec_bg": ("⚡", "Exec (bg)", "command"),
-            "spawn": ("🤖", "Spawn", "task"),
-            "send_photo": ("📸", "Send photo", None),
-            "send_video": ("🎬", "Send video", None),
-            "send_file": ("📎", "Send file", None),
-            "download_file": ("⬇️", "Download file", None),
-            "config": ("⚙️", "Config", "action"),
-            "cron": ("⏰", "Cron", "action"),
+        # (emoji, label, list of (arg_key, max_chars) to display)
+        tool_formats: dict[str, tuple[str, str, list[tuple[str, int]]]] = {
+            "web_search": ("🌐", "Web search", [("query", 200)]),
+            "web_fetch": ("🌐", "Web fetch", [("url", 200)]),
+            "read_file": ("📄", "Read file", [("path", 200)]),
+            "write_file": ("📝", "Write file", [("path", 200), ("content", 80)]),
+            "edit_file": ("✏️", "Edit file", [("path", 200), ("new_string", 80)]),
+            "list_dir": ("📂", "List dir", [("path", 200)]),
+            "exec": ("⚡", "Exec", [("command", 200)]),
+            "exec_bg": ("⚡", "Exec (bg)", [("command", 200)]),
+            "spawn": ("🤖", "Spawn", [("task", 120), ("instruction", 80)]),
+            "send_photo": ("📸", "Send photo", []),
+            "send_video": ("🎬", "Send video", []),
+            "send_file": ("📎", "Send file", []),
+            "download_file": ("⬇️", "Download file", []),
+            "config": ("⚙️", "Config", [("action", 200)]),
+            "cron": ("⏰", "Cron", [("action", 200)]),
         }
 
         fmt = tool_formats.get(tool_name)
         if fmt:
-            emoji, label, arg_key = fmt
-            if arg_key and arg_key in args:
-                val = self._truncate(escape(str(args[arg_key])))
-                return f"{emoji} <b>{label}</b>\n<code>{val}</code>"
-            return f"{emoji} <b>{label}</b>"
+            emoji, label, arg_keys = fmt
+            lines = [f"{emoji} <b>{label}</b>"]
+            for key, max_len in arg_keys:
+                if key in args:
+                    val = self._truncate(escape(str(args[key])), max_len)
+                    lines.append(f"<code>{val}</code>")
+            return "\n".join(lines)
 
         # Fallback: generic format
         lines = [f"🛠 <b>{escape(tool_name)}</b>"]
