@@ -21,6 +21,7 @@ BOT_COMMANDS = [
     ("new", "Start a new conversation"),
     ("context", "Show context usage"),
     ("context_mode", "Change context mode"),
+    ("trace", "Toggle tool call tracing"),
     ("compact", "Compress conversation history"),
     ("stop", "Stop agent response"),
 ]
