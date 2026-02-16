@@ -1140,16 +1140,16 @@ class AgentLoop:
             return value
         return value[:max_len] + "…"
 
-    @staticmethod
-    def _format_trace_arg(key: str, value: str, escape_fn) -> str:
-        """Format a single trace argument as 'key: value'."""
-        return f"<code>{escape_fn(key)}</code>: {value}"
-
     def _format_trace(self, tool_name: str, args: dict) -> str:
-        """Format a tool call as a human-readable trace message (HTML)."""
+        """Format a tool call as a human-readable trace message (HTML).
+
+        First arg in each tool's list is the "main" arg — displayed without a
+        label because it's obvious from context.  Subsequent args get a label.
+        """
         from html import escape
 
         # (emoji, label, list of (arg_key, max_chars) to display)
+        # First entry = main arg (no label), rest = secondary (with label)
         tool_formats: dict[str, tuple[str, str, list[tuple[str, int]]]] = {
             "web_search": ("🌐", "Web search", [("query", 200)]),
             "web_fetch": ("🌐", "Web fetch", [("url", 200)]),
@@ -1173,20 +1173,24 @@ class AgentLoop:
             emoji, label, arg_keys = fmt
             header = f"{emoji} <b>{label}</b>"
             detail_lines = []
-            for key, max_len in arg_keys:
-                if key in args:
-                    val = self._truncate(escape(str(args[key])), max_len)
-                    detail_lines.append(self._format_trace_arg(key, val, escape))
+            for idx, (key, max_len) in enumerate(arg_keys):
+                if key not in args:
+                    continue
+                val = self._truncate(escape(str(args[key])), max_len)
+                if idx == 0:
+                    detail_lines.append(val)
+                else:
+                    detail_lines.append(f"<code>{escape(key)}</code>: {val}")
             if detail_lines:
                 return header + "\n" + "\n".join(detail_lines)
             return header
 
-        # Fallback: generic format
+        # Fallback: generic format — all args with labels
         header = f"🛠 <b>{escape(tool_name)}</b>"
         detail_lines = []
         for key, val in args.items():
             val_str = self._truncate(escape(str(val)))
-            detail_lines.append(self._format_trace_arg(key, val_str, escape))
+            detail_lines.append(f"<code>{escape(key)}</code>: {val_str}")
         if detail_lines:
             return header + "\n" + "\n".join(detail_lines)
         return header
