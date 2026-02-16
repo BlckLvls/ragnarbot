@@ -91,6 +91,11 @@ PROVIDERS = [
                 "description": "Long-context reasoning & coding",
             },
             {
+                "id": "openrouter/qwen/qwen3.5-plus-02-15",
+                "name": "Qwen 3.5 Plus",
+                "description": "Strong multilingual reasoning & coding",
+            },
+            {
                 "id": "openrouter/anthropic/claude-opus-4.6",
                 "name": "Claude Opus 4.6",
                 "description": "Most intelligent — via OpenRouter",
