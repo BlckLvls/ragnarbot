@@ -59,7 +59,7 @@ class AgentLoop:
     """
 
     COMPACT_MIN_MESSAGES = 60
-    READ_ONLY_COMMANDS = frozenset({"context_info", "context_mode", "stop"})
+    READ_ONLY_COMMANDS = frozenset({"context_info", "context_mode", "stop", "trace"})
 
     def __init__(
         self,
@@ -80,6 +80,7 @@ class AgentLoop:
         fallback_model: str | None = None,
         fallback_config: "FallbackConfig | None" = None,
         provider_factory: "Callable | None" = None,
+        trace_mode: bool = False,
     ):
         from ragnarbot.config.schema import ExecToolConfig
         from ragnarbot.cron.service import CronService
@@ -96,6 +97,7 @@ class AgentLoop:
         self.debounce_seconds = debounce_seconds
         self.max_context_tokens = max_context_tokens
         self.context_mode = context_mode
+        self.trace_mode = trace_mode
         self.cache_manager = CacheManager(max_context_tokens=max_context_tokens)
 
         # Fallback model support
@@ -904,6 +906,17 @@ class AgentLoop:
 
                         args_str = json.dumps(tool_call.arguments)
                         logger.debug(f"Executing tool: {tool_call.name} with arguments: {args_str}")
+
+                        if self.trace_mode:
+                            await self.bus.publish_outbound(OutboundMessage(
+                                channel=msg.channel,
+                                chat_id=msg.chat_id,
+                                content=self._format_trace(
+                                    tool_call.name, tool_call.arguments,
+                                ),
+                                metadata={"intermediate": True, "raw_html": True},
+                            ))
+
                         result = await self.tools.execute(tool_call.name, tool_call.arguments)
                         messages = self.context.add_tool_result(
                             messages, tool_call.id, tool_call.name, result
@@ -984,6 +997,10 @@ class AgentLoop:
             return self._handle_set_context_mode(msg)
         if command == "context_info":
             return self._handle_context_info(msg)
+        if command == "trace":
+            return self._handle_trace(msg)
+        if command == "set_trace_mode":
+            return self._handle_set_trace_mode(msg)
         logger.warning(f"Unknown command: {command}")
         return None
 
@@ -1072,6 +1089,112 @@ class AgentLoop:
                 "edit_message_id": msg.metadata.get("callback_message_id"),
             },
         )
+
+    def _handle_trace(self, msg: InboundMessage) -> OutboundMessage:
+        """Show current trace mode with toggle button."""
+        enabled = self.trace_mode
+        status = "Enabled" if enabled else "Disabled"
+        toggle = "off" if enabled else "on"
+        btn_text = "Disable" if enabled else "Enable"
+        text = f"🔍 <b>Trace Mode</b>\n\nCurrent: {status}"
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=text,
+            metadata={
+                "raw_html": True,
+                "inline_keyboard": [[
+                    {"text": btn_text, "callback_data": f"trace_mode:{toggle}"},
+                ]],
+            },
+        )
+
+    def _handle_set_trace_mode(self, msg: InboundMessage) -> OutboundMessage | None:
+        """Toggle trace mode (from callback query)."""
+        value = msg.metadata.get("trace_mode")
+        if value not in ("on", "off"):
+            return None
+
+        self.trace_mode = value == "on"
+        from ragnarbot.config.loader import load_config, save_config
+        config = load_config()
+        config.agents.defaults.trace_mode = self.trace_mode
+        save_config(config)
+
+        status = "Enabled" if self.trace_mode else "Disabled"
+        text = f"✅ Trace mode: {status}"
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=text,
+            metadata={
+                "raw_html": True,
+                "edit_message_id": msg.metadata.get("callback_message_id"),
+            },
+        )
+
+    @staticmethod
+    def _truncate(value: str, max_len: int = 200) -> str:
+        """Truncate a string to max_len, appending '...' if needed."""
+        if len(value) <= max_len:
+            return value
+        return value[:max_len] + "…"
+
+    def _format_trace(self, tool_name: str, args: dict) -> str:
+        """Format a tool call as a human-readable trace message (HTML).
+
+        First arg = main (no label, just <code>).
+        Secondary args = <i>label</i> + newline + <code>value</code>.
+        Empty line between each arg block.
+        """
+        from html import escape
+
+        # (emoji, label, list of (arg_key, max_chars) to display)
+        # First entry = main arg (no label), rest = secondary (with label)
+        tool_formats: dict[str, tuple[str, str, list[tuple[str, int]]]] = {
+            "web_search": ("🌐", "Web search", [("query", 200)]),
+            "web_fetch": ("🌐", "Web fetch", [("url", 200)]),
+            "read_file": ("📄", "Read file", [("path", 200)]),
+            "write_file": ("📝", "Write file", [("path", 200), ("content", 80)]),
+            "edit_file": ("✏️", "Edit file", [("path", 200), ("old_string", 80), ("new_string", 80)]),
+            "list_dir": ("📂", "List dir", [("path", 200)]),
+            "exec": ("⚡", "Exec", [("command", 200)]),
+            "exec_bg": ("⚡", "Exec (bg)", [("command", 200)]),
+            "spawn": ("🤖", "Spawn", [("task", 120), ("instruction", 80)]),
+            "send_photo": ("📸", "Send photo", [("caption", 100)]),
+            "send_video": ("🎬", "Send video", [("caption", 100)]),
+            "send_file": ("📎", "Send file", [("path", 200)]),
+            "download_file": ("⬇️", "Download file", [("file_id", 100)]),
+            "config": ("⚙️", "Config", [("action", 120), ("key", 80), ("value", 80)]),
+            "cron": ("⏰", "Cron", [("action", 120), ("task", 80)]),
+        }
+
+        fmt = tool_formats.get(tool_name)
+        if fmt:
+            emoji, label, arg_keys = fmt
+            header = f"{emoji} <b>{label}</b>"
+            blocks = []
+            for idx, (key, max_len) in enumerate(arg_keys):
+                if key not in args:
+                    continue
+                val = self._truncate(escape(str(args[key])), max_len)
+                if idx == 0:
+                    blocks.append(f"<code>{val}</code>")
+                else:
+                    blocks.append(f"<i>{escape(key)}</i>\n<code>{val}</code>")
+            if blocks:
+                return header + "\n\n" + "\n\n".join(blocks)
+            return header
+
+        # Fallback: generic format — all args with italic labels
+        header = f"🛠 <b>{escape(tool_name)}</b>"
+        blocks = []
+        for key, val in args.items():
+            val_str = self._truncate(escape(str(val)))
+            blocks.append(f"<i>{escape(key)}</i>\n<code>{val_str}</code>")
+        if blocks:
+            return header + "\n\n" + "\n\n".join(blocks)
+        return header
 
     def _handle_context_info(self, msg: InboundMessage) -> OutboundMessage:
         """Show context usage info."""
@@ -1435,6 +1558,17 @@ class AgentLoop:
 
                         args_str = json.dumps(tool_call.arguments)
                         logger.debug(f"Executing tool: {tool_call.name} with arguments: {args_str}")
+
+                        if self.trace_mode:
+                            await self.bus.publish_outbound(OutboundMessage(
+                                channel=origin_channel,
+                                chat_id=origin_chat_id,
+                                content=self._format_trace(
+                                    tool_call.name, tool_call.arguments,
+                                ),
+                                metadata={"intermediate": True, "raw_html": True},
+                            ))
+
                         result = await self.tools.execute(tool_call.name, tool_call.arguments)
                         messages = self.context.add_tool_result(
                             messages, tool_call.id, tool_call.name, result
