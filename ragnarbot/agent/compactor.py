@@ -28,11 +28,19 @@ class Compactor:
         cache_manager: CacheManager,
         max_context_tokens: int,
         model: str,
+        chat_fn=None,
     ):
         self.provider = provider
         self.cache_manager = cache_manager
         self.max_context_tokens = max_context_tokens
         self.model = model
+
+        if chat_fn is not None:
+            self._chat_fn = chat_fn
+        else:
+            async def _default(session_key=None, **kwargs):
+                return await self.provider.chat(**kwargs), False, None
+            self._chat_fn = _default
 
     def should_compact(
         self,
@@ -114,12 +122,18 @@ class Compactor:
                 {"role": "system", "content": COMPACTION_SYSTEM_PROMPT},
                 {"role": "user", "content": text},
             ]
-            response = await self.provider.chat(
+            response, _, _ = await self._chat_fn(
+                None,
                 messages=compaction_messages,
                 tools=None,
-                model=self.model,
                 temperature=0.3,
             )
+            if response is None or response.finish_reason == "error":
+                logger.warning(
+                    f"Compaction failed (LLM error): "
+                    f"{getattr(response, 'content', '')}"
+                )
+                return messages, new_start
             summary = response.content
         except Exception as e:
             logger.warning(f"Compaction failed (LLM error): {e}")
