@@ -70,6 +70,10 @@ class AgentDefaults(BaseModel):
         pattern="^(eco|normal|full)$",
         json_schema_extra={"reload": "hot", "label": "Context management mode"},
     )
+    trace_mode: bool = Field(
+        default=False,
+        json_schema_extra={"reload": "hot", "label": "Show tool calls in chat during execution"},
+    )
 
 
 class FallbackConfig(BaseModel):

@@ -279,6 +279,7 @@ def gateway_main(
         debounce_seconds=config.agents.defaults.debounce_seconds,
         max_context_tokens=config.agents.defaults.max_context_tokens,
         context_mode=config.agents.defaults.context_mode,
+        trace_mode=config.agents.defaults.trace_mode,
         heartbeat_interval_m=config.heartbeat.interval_m,
         fallback_model=fallback_config.model,
         fallback_config=fallback_config,

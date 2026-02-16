@@ -59,7 +59,7 @@ class AgentLoop:
     """
 
     COMPACT_MIN_MESSAGES = 60
-    READ_ONLY_COMMANDS = frozenset({"context_info", "context_mode", "stop"})
+    READ_ONLY_COMMANDS = frozenset({"context_info", "context_mode", "stop", "trace"})
 
     def __init__(
         self,
@@ -80,6 +80,7 @@ class AgentLoop:
         fallback_model: str | None = None,
         fallback_config: "FallbackConfig | None" = None,
         provider_factory: "Callable | None" = None,
+        trace_mode: bool = False,
     ):
         from ragnarbot.config.schema import ExecToolConfig
         from ragnarbot.cron.service import CronService
@@ -96,6 +97,7 @@ class AgentLoop:
         self.debounce_seconds = debounce_seconds
         self.max_context_tokens = max_context_tokens
         self.context_mode = context_mode
+        self.trace_mode = trace_mode
         self.cache_manager = CacheManager(max_context_tokens=max_context_tokens)
 
         # Fallback model support
@@ -904,6 +906,17 @@ class AgentLoop:
 
                         args_str = json.dumps(tool_call.arguments)
                         logger.debug(f"Executing tool: {tool_call.name} with arguments: {args_str}")
+
+                        if self.trace_mode:
+                            await self.bus.publish_outbound(OutboundMessage(
+                                channel=msg.channel,
+                                chat_id=msg.chat_id,
+                                content=self._format_trace(
+                                    tool_call.name, tool_call.arguments,
+                                ),
+                                metadata={"intermediate": True, "raw_html": True},
+                            ))
+
                         result = await self.tools.execute(tool_call.name, tool_call.arguments)
                         messages = self.context.add_tool_result(
                             messages, tool_call.id, tool_call.name, result
@@ -984,6 +997,10 @@ class AgentLoop:
             return self._handle_set_context_mode(msg)
         if command == "context_info":
             return self._handle_context_info(msg)
+        if command == "trace":
+            return self._handle_trace(msg)
+        if command == "set_trace_mode":
+            return self._handle_set_trace_mode(msg)
         logger.warning(f"Unknown command: {command}")
         return None
 
@@ -1072,6 +1089,94 @@ class AgentLoop:
                 "edit_message_id": msg.metadata.get("callback_message_id"),
             },
         )
+
+    def _handle_trace(self, msg: InboundMessage) -> OutboundMessage:
+        """Show current trace mode with toggle button."""
+        enabled = self.trace_mode
+        status = "Enabled" if enabled else "Disabled"
+        toggle = "off" if enabled else "on"
+        btn_text = "Disable" if enabled else "Enable"
+        text = f"🔍 <b>Trace Mode</b>\n\nCurrent: {status}"
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=text,
+            metadata={
+                "raw_html": True,
+                "inline_keyboard": [[
+                    {"text": btn_text, "callback_data": f"trace_mode:{toggle}"},
+                ]],
+            },
+        )
+
+    def _handle_set_trace_mode(self, msg: InboundMessage) -> OutboundMessage | None:
+        """Toggle trace mode (from callback query)."""
+        value = msg.metadata.get("trace_mode")
+        if value not in ("on", "off"):
+            return None
+
+        self.trace_mode = value == "on"
+        from ragnarbot.config.loader import load_config, save_config
+        config = load_config()
+        config.agents.defaults.trace_mode = self.trace_mode
+        save_config(config)
+
+        status = "Enabled" if self.trace_mode else "Disabled"
+        text = f"✅ Trace mode: {status}"
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=text,
+            metadata={
+                "raw_html": True,
+                "edit_message_id": msg.metadata.get("callback_message_id"),
+            },
+        )
+
+    @staticmethod
+    def _truncate(value: str, max_len: int = 200) -> str:
+        """Truncate a string to max_len, appending '...' if needed."""
+        if len(value) <= max_len:
+            return value
+        return value[:max_len] + "…"
+
+    def _format_trace(self, tool_name: str, args: dict) -> str:
+        """Format a tool call as a human-readable trace message (HTML)."""
+        from html import escape
+
+        tool_formats: dict[str, tuple[str, str, str | None]] = {
+            # tool_name: (emoji, label, arg_key to show)
+            "web_search": ("🌐", "Web search", "query"),
+            "web_fetch": ("🌐", "Web fetch", "url"),
+            "read_file": ("📄", "Read file", "path"),
+            "write_file": ("📝", "Write file", "path"),
+            "edit_file": ("✏️", "Edit file", "path"),
+            "list_dir": ("📂", "List dir", "path"),
+            "exec": ("⚡", "Exec", "command"),
+            "exec_bg": ("⚡", "Exec (bg)", "command"),
+            "spawn": ("🤖", "Spawn", "task"),
+            "send_photo": ("📸", "Send photo", None),
+            "send_video": ("🎬", "Send video", None),
+            "send_file": ("📎", "Send file", None),
+            "download_file": ("⬇️", "Download file", None),
+            "config": ("⚙️", "Config", "action"),
+            "cron": ("⏰", "Cron", "action"),
+        }
+
+        fmt = tool_formats.get(tool_name)
+        if fmt:
+            emoji, label, arg_key = fmt
+            if arg_key and arg_key in args:
+                val = self._truncate(escape(str(args[arg_key])))
+                return f"{emoji} <b>{label}</b>\n<code>{val}</code>"
+            return f"{emoji} <b>{label}</b>"
+
+        # Fallback: generic format
+        lines = [f"🛠 <b>{escape(tool_name)}</b>"]
+        for key, val in args.items():
+            val_str = self._truncate(escape(str(val)))
+            lines.append(f"<code>{escape(key)}</code>: {val_str}")
+        return "\n".join(lines)
 
     def _handle_context_info(self, msg: InboundMessage) -> OutboundMessage:
         """Show context usage info."""
@@ -1435,6 +1540,17 @@ class AgentLoop:
 
                         args_str = json.dumps(tool_call.arguments)
                         logger.debug(f"Executing tool: {tool_call.name} with arguments: {args_str}")
+
+                        if self.trace_mode:
+                            await self.bus.publish_outbound(OutboundMessage(
+                                channel=origin_channel,
+                                chat_id=origin_chat_id,
+                                content=self._format_trace(
+                                    tool_call.name, tool_call.arguments,
+                                ),
+                                metadata={"intermediate": True, "raw_html": True},
+                            ))
+
                         result = await self.tools.execute(tool_call.name, tool_call.arguments)
                         messages = self.context.add_tool_result(
                             messages, tool_call.id, tool_call.name, result
