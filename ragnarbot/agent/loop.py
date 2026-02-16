@@ -1140,6 +1140,11 @@ class AgentLoop:
             return value
         return value[:max_len] + "…"
 
+    @staticmethod
+    def _format_trace_arg(key: str, value: str, escape_fn) -> str:
+        """Format a single trace argument as 'key: value'."""
+        return f"<code>{escape_fn(key)}</code>: {value}"
+
     def _format_trace(self, tool_name: str, args: dict) -> str:
         """Format a tool call as a human-readable trace message (HTML)."""
         from html import escape
@@ -1150,35 +1155,41 @@ class AgentLoop:
             "web_fetch": ("🌐", "Web fetch", [("url", 200)]),
             "read_file": ("📄", "Read file", [("path", 200)]),
             "write_file": ("📝", "Write file", [("path", 200), ("content", 80)]),
-            "edit_file": ("✏️", "Edit file", [("path", 200), ("new_string", 80)]),
+            "edit_file": ("✏️", "Edit file", [("path", 200), ("old_string", 80), ("new_string", 80)]),
             "list_dir": ("📂", "List dir", [("path", 200)]),
             "exec": ("⚡", "Exec", [("command", 200)]),
             "exec_bg": ("⚡", "Exec (bg)", [("command", 200)]),
             "spawn": ("🤖", "Spawn", [("task", 120), ("instruction", 80)]),
-            "send_photo": ("📸", "Send photo", []),
-            "send_video": ("🎬", "Send video", []),
-            "send_file": ("📎", "Send file", []),
-            "download_file": ("⬇️", "Download file", []),
-            "config": ("⚙️", "Config", [("action", 200)]),
-            "cron": ("⏰", "Cron", [("action", 200)]),
+            "send_photo": ("📸", "Send photo", [("caption", 100)]),
+            "send_video": ("🎬", "Send video", [("caption", 100)]),
+            "send_file": ("📎", "Send file", [("path", 200)]),
+            "download_file": ("⬇️", "Download file", [("file_id", 100)]),
+            "config": ("⚙️", "Config", [("action", 120), ("key", 80), ("value", 80)]),
+            "cron": ("⏰", "Cron", [("action", 120), ("task", 80)]),
         }
 
         fmt = tool_formats.get(tool_name)
         if fmt:
             emoji, label, arg_keys = fmt
-            lines = [f"{emoji} <b>{label}</b>"]
+            header = f"{emoji} <b>{label}</b>"
+            detail_lines = []
             for key, max_len in arg_keys:
                 if key in args:
                     val = self._truncate(escape(str(args[key])), max_len)
-                    lines.append(f"<code>{val}</code>")
-            return "\n".join(lines)
+                    detail_lines.append(self._format_trace_arg(key, val, escape))
+            if detail_lines:
+                return header + "\n" + "\n".join(detail_lines)
+            return header
 
         # Fallback: generic format
-        lines = [f"🛠 <b>{escape(tool_name)}</b>"]
+        header = f"🛠 <b>{escape(tool_name)}</b>"
+        detail_lines = []
         for key, val in args.items():
             val_str = self._truncate(escape(str(val)))
-            lines.append(f"<code>{escape(key)}</code>: {val_str}")
-        return "\n".join(lines)
+            detail_lines.append(self._format_trace_arg(key, val_str, escape))
+        if detail_lines:
+            return header + "\n" + "\n".join(detail_lines)
+        return header
 
     def _handle_context_info(self, msg: InboundMessage) -> OutboundMessage:
         """Show context usage info."""
