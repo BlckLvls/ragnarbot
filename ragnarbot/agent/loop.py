@@ -99,16 +99,19 @@ class AgentLoop:
         self.cache_manager = CacheManager(max_context_tokens=max_context_tokens)
 
         # Fallback model support
-        self._fallback_state = FallbackState()
+        self._fallback_state = FallbackState.load()
         self._fallback_provider: LLMProvider | None = None
         self._fallback_model: str | None = fallback_model
         self._fallback_config = fallback_config
         self._provider_factory = provider_factory
+        self._fb_just_recovered = False
+        self._fb_error_notified = False
         self.compactor = Compactor(
             provider=provider,
             cache_manager=self.cache_manager,
             max_context_tokens=max_context_tokens,
             model=self.model,
+            chat_fn=self._chat_with_fallback,
         )
 
         self.context = ContextBuilder(workspace, heartbeat_interval_m=heartbeat_interval_m)
@@ -123,6 +126,8 @@ class AgentLoop:
             brave_api_key=brave_api_key,
             search_engine=search_engine,
             exec_config=self.exec_config,
+            chat_fn=self._chat_with_fallback,
+            on_fallback_batch=self._record_fallback_batch,
         )
 
         self.bg_processes = BackgroundProcessManager(
@@ -339,14 +344,17 @@ class AgentLoop:
     async def _chat_with_fallback(
         self,
         session_key: str | None,
-        msg: InboundMessage | None,
+        *,
+        notify_channel: str | None = None,
+        notify_chat_id: str | None = None,
         **chat_kwargs,
-    ) -> LLMResponse | None:
+    ) -> tuple[LLMResponse | None, bool, str | None]:
         """Call primary LLM with automatic fallback on error.
 
-        For channel paths (session_key set): uses _chat_or_stop race.
-        For direct paths: calls provider.chat() directly.
-        Returns None only if stopped by user.
+        Returns (response, used_fallback, primary_error).
+        response is None only if stopped by user.
+        used_fallback is True when the response came from the fallback provider.
+        primary_error is the error string when primary failed (None otherwise).
         """
 
         state = self._fallback_state
@@ -357,12 +365,13 @@ class AgentLoop:
             self._fallback_config.recovery_probe_interval if self._fallback_config else 60
         )
         use_primary = not state.fallback_mode or state.should_probe_primary(probe_interval)
-        primary_error = None
         response = None
+        primary_error = None
 
         if use_primary:
             if state.fallback_mode:
                 state.mark_primary_probed()
+                logger.info("Probing primary provider for recovery...")
 
             chat_kwargs["model"] = self.model
             if session_key:
@@ -373,42 +382,45 @@ class AgentLoop:
                 response = await self.provider.chat(**chat_kwargs)
 
             if response is None:
-                return None  # stopped by user
+                return None, False, None  # stopped by user
 
             if response.finish_reason != "error":
                 was_fallback = state.record_primary_success()
-                if was_fallback and msg:
-                    await self.bus.publish_outbound(OutboundMessage(
-                        channel=msg.channel, chat_id=msg.chat_id,
-                        content=(
-                            "\u2705 Primary model is back online. "
-                            "Switched back to normal mode."
-                        ),
-                        metadata={"intermediate": True},
-                    ))
-                return response
+                if was_fallback:
+                    logger.info("Primary provider recovered — exiting fallback mode")
+                    self._fb_just_recovered = True
+                    state.save()
+                return response, False, None
 
             # Primary failed
-            if not has_fallback:
-                return response  # no fallback configured
-
             primary_error = response.content or "Unknown error"
+            logger.warning(f"Primary provider error: {primary_error[:200]}")
+
+            if not has_fallback:
+                return response, False, primary_error  # no fallback configured
+
+            # Send error immediately — user sees it while fallback is processing
+            if notify_channel and not self._fb_error_notified and not state.fallback_mode:
+                self._fb_error_notified = True
+                short_err = primary_error[:200]
+                await self.bus.publish_outbound(OutboundMessage(
+                    channel=notify_channel, chat_id=notify_chat_id,
+                    content=f"\u26a0\ufe0f {short_err}\nRetrying with fallback...",
+                    metadata={"intermediate": True},
+                ))
 
         # Fallback path
         fb_provider = self._get_or_create_fallback_provider()
         if fb_provider is None:
+            logger.error("Failed to create fallback provider")
             if response is not None:
-                return response
-            # Shouldn't happen but guard: no primary tried, no fallback
-            return LLMResponse(content="No provider available.", finish_reason="error")
+                return response, False, primary_error
+            return (
+                LLMResponse(content="No provider available.", finish_reason="error"),
+                False, None,
+            )
 
-        if msg and use_primary and primary_error:
-            short_error = primary_error[:200]
-            await self.bus.publish_outbound(OutboundMessage(
-                channel=msg.channel, chat_id=msg.chat_id,
-                content=f"\u26a0\ufe0f Primary model error: {short_error}\nRetrying with fallback...",
-                metadata={"intermediate": True},
-            ))
+        logger.info(f"Using fallback provider: {self._fallback_model}")
 
         chat_kwargs["model"] = self._fallback_model
         if session_key:
@@ -419,35 +431,41 @@ class AgentLoop:
             fb_response = await fb_provider.chat(**chat_kwargs)
 
         if fb_response is None:
-            return None  # stopped by user
+            return None, True, primary_error  # stopped by user
 
         if fb_response.finish_reason == "error":
-            # Fallback also failed — return the error
-            return fb_response
+            logger.error(f"Fallback provider also failed: {fb_response.content}")
+            return fb_response, True, primary_error
 
-        # Track primary failure
+        return fb_response, True, primary_error
+
+    async def _record_fallback_batch(
+        self, used_fallback: bool, channel: str | None = None, chat_id: str | None = None,
+    ) -> None:
+        """Record batch-level fallback accounting. Call once per user interaction."""
+        if not used_fallback:
+            return
+        state = self._fallback_state
         threshold = (
             self._fallback_config.consecutive_failures_threshold
             if self._fallback_config else 3
         )
         just_entered = state.record_primary_failure(threshold)
-
-        if just_entered and msg:
+        state.save()
+        if just_entered and channel:
+            logger.warning(
+                f"Entering fallback mode after {threshold} consecutive failures"
+            )
             await self.bus.publish_outbound(OutboundMessage(
-                channel=msg.channel, chat_id=msg.chat_id,
+                channel=channel, chat_id=chat_id,
                 content=(
-                    f"\U0001f504 Switching to fallback mode ({self._fallback_model}). "
-                    "Normal mode will be restored automatically when the primary "
-                    "model becomes available."
+                    f"\U0001f504 Switching to fallback mode "
+                    f"({self._fallback_model}). Normal mode will be "
+                    f"restored automatically when the primary model "
+                    f"becomes available."
                 ),
                 metadata={"intermediate": True},
             ))
-
-        # Tag the fallback response
-        if fb_response.content:
-            fb_response.content += f"\n\n_\u26a1 fallback: {self._fallback_model}_"
-
-        return fb_response
 
     def _reap_processing_task(self):
         """Check for completed/failed background task."""
@@ -741,6 +759,8 @@ class AgentLoop:
         final_content = None
         compacted_this_turn = False
         stopped = False
+        batch_used_fallback = False  # track once per user message batch
+        self._fb_error_notified = False  # reset per batch
 
         try:
             while True:
@@ -804,8 +824,10 @@ class AgentLoop:
                 api_messages = [
                     {k: v for k, v in m.items() if k != "_ts"} for m in messages
                 ]
-                response = await self._chat_with_fallback(
-                    session_key, msg,
+                response, used_fallback, primary_error = await self._chat_with_fallback(
+                    session_key,
+                    notify_channel=msg.channel,
+                    notify_chat_id=msg.chat_id,
                     messages=api_messages,
                     tools=tools_defs,
                 )
@@ -815,6 +837,21 @@ class AgentLoop:
                     logger.info(f"LLM call cancelled by stop for {session_key}")
                     stopped = True
                     break
+
+                # Recovery notification — primary came back after fallback mode
+                if not used_fallback and self._fb_just_recovered:
+                    self._fb_just_recovered = False
+                    await self.bus.publish_outbound(OutboundMessage(
+                        channel=msg.channel, chat_id=msg.chat_id,
+                        content=(
+                            "\u2705 Primary model is back online. "
+                            "Switched back to normal mode."
+                        ),
+                        metadata={"intermediate": True},
+                    ))
+
+                if used_fallback:
+                    batch_used_fallback = True
 
                 # Track cache creation/read for flush scheduling
                 self.cache_manager.mark_cache_created(session, response.usage)
@@ -882,6 +919,15 @@ class AgentLoop:
             # should_flush() sees the correct created_at on the next turn.
             self.sessions.save(session)
 
+        # Fallback accounting — count once per user message batch
+        outbound_content = final_content
+        await self._record_fallback_batch(batch_used_fallback, msg.channel, msg.chat_id)
+
+        # Tag only the outbound message in normal mode (not in fallback mode).
+        # Don't save the tag to session — prevents LLM from duplicating it.
+        if batch_used_fallback and outbound_content and not self._fallback_state.fallback_mode:
+            outbound_content += f"\n\n_\u26a1 fallback: {self._fallback_model}_"
+
         if not stopped:
             messages.append({"role": "assistant", "content": final_content or ""})
         else:
@@ -917,13 +963,13 @@ class AgentLoop:
                 )
         self.sessions.save(session)
 
-        if stopped or not final_content:
+        if stopped or not outbound_content:
             return None
 
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
-            content=final_content
+            content=outbound_content
         )
     
     def _handle_command(self, command: str, msg: InboundMessage) -> OutboundMessage | None:
@@ -1193,14 +1239,6 @@ class AgentLoop:
             origin_channel = "cli"
             origin_chat_id = msg.chat_id
 
-        # Proxy msg with correct routing for fallback notifications
-        origin_msg = InboundMessage(
-            channel=origin_channel,
-            sender_id=msg.sender_id,
-            chat_id=origin_chat_id,
-            content=msg.content,
-        )
-
         # Signal typing indicator to the channel
         await self.bus.publish_outbound(OutboundMessage(
             channel=origin_channel,
@@ -1254,6 +1292,8 @@ class AgentLoop:
         final_content = None
         compacted_this_turn = False
         stopped = False
+        batch_used_fallback = False
+        self._fb_error_notified = False  # reset per system message
 
         try:
             while True:
@@ -1314,8 +1354,10 @@ class AgentLoop:
                 api_messages = [
                     {k: v for k, v in m.items() if k != "_ts"} for m in messages
                 ]
-                response = await self._chat_with_fallback(
-                    session_key, origin_msg,
+                response, used_fallback, primary_error = await self._chat_with_fallback(
+                    session_key,
+                    notify_channel=origin_channel,
+                    notify_chat_id=origin_chat_id,
                     messages=api_messages,
                     tools=tools_defs,
                 )
@@ -1325,6 +1367,21 @@ class AgentLoop:
                     logger.info(f"LLM call cancelled by stop for {session_key}")
                     stopped = True
                     break
+
+                # Recovery notification
+                if not used_fallback and self._fb_just_recovered:
+                    self._fb_just_recovered = False
+                    await self.bus.publish_outbound(OutboundMessage(
+                        channel=origin_channel, chat_id=origin_chat_id,
+                        content=(
+                            "\u2705 Primary model is back online. "
+                            "Switched back to normal mode."
+                        ),
+                        metadata={"intermediate": True},
+                    ))
+
+                if used_fallback:
+                    batch_used_fallback = True
 
                 # Track cache creation/read for flush scheduling
                 self.cache_manager.mark_cache_created(session, response.usage)
@@ -1391,8 +1448,17 @@ class AgentLoop:
         finally:
             self.sessions.save(session)
 
+        # Fallback accounting — count once per system message
+        outbound_content = final_content
+        await self._record_fallback_batch(
+            batch_used_fallback, origin_channel, origin_chat_id,
+        )
+
+        if batch_used_fallback and outbound_content and not self._fallback_state.fallback_mode:
+            outbound_content += f"\n\n_\u26a1 fallback: {self._fallback_model}_"
+
         if not stopped:
-            # Add final assistant message to the messages list
+            # Add final assistant message to the messages list (without tag)
             messages.append({"role": "assistant", "content": final_content or ""})
 
         # Override the user message content to mark it as system
@@ -1417,13 +1483,13 @@ class AgentLoop:
             session.add_message(m["role"], m.get("content"), msg_metadata=user_meta, **extras)
         self.sessions.save(session)
 
-        if stopped or not final_content:
+        if stopped or not outbound_content:
             return None
 
         return OutboundMessage(
             channel=origin_channel,
             chat_id=origin_chat_id,
-            content=final_content
+            content=outbound_content
         )
     
     async def process_direct(
@@ -1576,17 +1642,21 @@ class AgentLoop:
         )
 
         max_iterations = 20
+        batch_used_fallback = False
         for _ in range(max_iterations):
             tools_defs = tools.get_definitions()
             api_messages = [
                 {k: v for k, v in m.items() if k != "_ts"} for m in messages
             ]
-            response = await self._chat_with_fallback(
-                None, None,
+            response, used_fallback, _ = await self._chat_with_fallback(
+                None,
                 messages=api_messages, tools=tools_defs,
             )
+            if used_fallback:
+                batch_used_fallback = True
 
             if response is None:
+                await self._record_fallback_batch(batch_used_fallback, channel, chat_id)
                 return None
 
             if response.has_tool_calls:
@@ -1615,12 +1685,19 @@ class AgentLoop:
 
                 # If deliver_result was called, return immediately
                 if deliver_tool.result is not None:
+                    await self._record_fallback_batch(
+                        batch_used_fallback, channel, chat_id,
+                    )
                     return deliver_tool.result
             else:
                 # Agent finished with text — use as fallback result
+                await self._record_fallback_batch(
+                    batch_used_fallback, channel, chat_id,
+                )
                 return response.content or None
 
         # Exhausted iterations — return whatever deliver_tool captured
+        await self._record_fallback_batch(batch_used_fallback, channel, chat_id)
         return deliver_tool.result
 
     def _build_heartbeat_tool_registry(
@@ -1686,6 +1763,7 @@ class AgentLoop:
 
         max_iterations = 20
         result = None
+        batch_used_fallback = False
         for _ in range(max_iterations):
             tools_defs = tools.get_definitions()
 
@@ -1707,10 +1785,12 @@ class AgentLoop:
             api_messages = [
                 {k: v for k, v in m.items() if k != "_ts"} for m in messages
             ]
-            response = await self._chat_with_fallback(
-                None, None,
+            response, used_fallback, _ = await self._chat_with_fallback(
+                None,
                 messages=api_messages, tools=tools_defs,
             )
+            if used_fallback:
+                batch_used_fallback = True
 
             if response is None:
                 break
@@ -1750,6 +1830,8 @@ class AgentLoop:
                 messages.append({"role": "assistant", "content": response.content or ""})
                 result = None
                 break
+
+        await self._record_fallback_batch(batch_used_fallback, channel, chat_id)
 
         # Save new messages to rolling session
         for m in messages[new_start:]:
