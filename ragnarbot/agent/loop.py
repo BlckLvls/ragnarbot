@@ -1143,8 +1143,9 @@ class AgentLoop:
     def _format_trace(self, tool_name: str, args: dict) -> str:
         """Format a tool call as a human-readable trace message (HTML).
 
-        First arg in each tool's list is the "main" arg — displayed without a
-        label because it's obvious from context.  Subsequent args get a label.
+        First arg = main (no label, just <code>).
+        Secondary args = <i>label</i> + newline + <code>value</code>.
+        Empty line between each arg block.
         """
         from html import escape
 
@@ -1172,27 +1173,27 @@ class AgentLoop:
         if fmt:
             emoji, label, arg_keys = fmt
             header = f"{emoji} <b>{label}</b>"
-            detail_lines = []
+            blocks = []
             for idx, (key, max_len) in enumerate(arg_keys):
                 if key not in args:
                     continue
                 val = self._truncate(escape(str(args[key])), max_len)
                 if idx == 0:
-                    detail_lines.append(val)
+                    blocks.append(f"<code>{val}</code>")
                 else:
-                    detail_lines.append(f"<code>{escape(key)}</code>: {val}")
-            if detail_lines:
-                return header + "\n" + "\n".join(detail_lines)
+                    blocks.append(f"<i>{escape(key)}</i>\n<code>{val}</code>")
+            if blocks:
+                return header + "\n\n" + "\n\n".join(blocks)
             return header
 
-        # Fallback: generic format — all args with labels
+        # Fallback: generic format — all args with italic labels
         header = f"🛠 <b>{escape(tool_name)}</b>"
-        detail_lines = []
+        blocks = []
         for key, val in args.items():
             val_str = self._truncate(escape(str(val)))
-            detail_lines.append(f"<code>{escape(key)}</code>: {val_str}")
-        if detail_lines:
-            return header + "\n" + "\n".join(detail_lines)
+            blocks.append(f"<i>{escape(key)}</i>\n<code>{val_str}</code>")
+        if blocks:
+            return header + "\n\n" + "\n\n".join(blocks)
         return header
 
     def _handle_context_info(self, msg: InboundMessage) -> OutboundMessage:
