@@ -35,6 +35,8 @@ class SubagentManager:
         brave_api_key: str | None = None,
         search_engine: str = "brave",
         exec_config: "ExecToolConfig | None" = None,
+        chat_fn=None,
+        on_fallback_batch=None,
     ):
         from ragnarbot.config.schema import ExecToolConfig
         self.provider = provider
@@ -45,6 +47,14 @@ class SubagentManager:
         self.search_engine = search_engine
         self.exec_config = exec_config or ExecToolConfig()
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
+
+        if chat_fn is not None:
+            self._chat_fn = chat_fn
+        else:
+            async def _default(session_key=None, **kwargs):
+                return await self.provider.chat(**kwargs), False, None
+            self._chat_fn = _default
+        self._on_fallback_batch = on_fallback_batch
     
     async def spawn(
         self,
@@ -94,7 +104,8 @@ class SubagentManager:
     ) -> None:
         """Execute the subagent task and announce the result."""
         logger.info(f"Subagent [{task_id}] starting task: {label}")
-        
+        batch_used_fallback = False
+
         try:
             # Build subagent tools (no spawn tool)
             tools = ToolRegistry()
@@ -108,25 +119,33 @@ class SubagentManager:
             ))
             tools.register(WebSearchTool(engine=self.search_engine, api_key=self.brave_api_key))
             tools.register(WebFetchTool())
-            
+
             # Build messages with subagent-specific prompt
             system_prompt = self._build_subagent_prompt(task)
             messages: list[dict[str, Any]] = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": task},
             ]
-            
+
             # Run agent loop
             final_result: str | None = None
 
             while True:
 
-                response = await self.provider.chat(
+                response, used_fallback, _ = await self._chat_fn(
+                    None,
                     messages=messages,
                     tools=tools.get_definitions(),
                     model=self.model,
                 )
-                
+                if used_fallback:
+                    batch_used_fallback = True
+
+                if response is None or response.finish_reason == "error":
+                    raise RuntimeError(
+                        response.content if response else "LLM call failed"
+                    )
+
                 if response.has_tool_calls:
                     # Add assistant message with tool calls
                     tool_call_dicts = [
@@ -145,7 +164,7 @@ class SubagentManager:
                         "content": response.content or "",
                         "tool_calls": tool_call_dicts,
                     })
-                    
+
                     # Execute tools
                     for tool_call in response.tool_calls:
                         args_str = json.dumps(tool_call.arguments)
@@ -160,17 +179,26 @@ class SubagentManager:
                 else:
                     final_result = response.content
                     break
-            
+
             if final_result is None:
                 final_result = "Task completed but no final response was generated."
-            
+
             logger.info(f"Subagent [{task_id}] completed successfully")
             await self._announce_result(task_id, label, task, final_result, origin, "ok")
-            
+
         except Exception as e:
             error_msg = f"Error: {str(e)}"
             logger.error(f"Subagent [{task_id}] failed: {e}")
             await self._announce_result(task_id, label, task, error_msg, origin, "error")
+
+        # Record fallback accounting after both success and error paths
+        if self._on_fallback_batch and batch_used_fallback:
+            try:
+                await self._on_fallback_batch(
+                    True, origin["channel"], origin["chat_id"],
+                )
+            except Exception:
+                logger.warning(f"Subagent [{task_id}] failed to record fallback batch")
     
     async def _announce_result(
         self,

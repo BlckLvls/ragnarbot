@@ -80,8 +80,13 @@ class ConfigTool(Tool):
             filter_path = path if path != "secrets" else None
             return secrets_schema(creds, filter_path)
 
+        from ragnarbot.config.providers import PROVIDERS
+
         config = load_config()
         all_paths = get_all_paths(config)
+        model_fields = {"agents.defaults.model", "agents.fallback.model"}
+        all_model_ids = [m["id"] for p in PROVIDERS for m in p["models"]]
+
         lines = []
         for p in sorted(all_paths.keys()):
             if path and not p.startswith(path):
@@ -94,6 +99,8 @@ class ConfigTool(Tool):
                 lines.append(
                     f"{p}: {meta['type']} = {meta['default']!r}{reload_tag}{pattern}{label}"
                 )
+                if p in model_fields:
+                    lines.append(f"  choices: {', '.join(all_model_ids)}")
             except ValueError:
                 lines.append(f"{p}: (metadata unavailable)")
 
@@ -169,7 +176,7 @@ class ConfigTool(Tool):
             new_value = get_by_path(config, path)
 
             # Validate model against known provider models
-            if path == "agents.defaults.model":
+            if path in ("agents.defaults.model", "agents.fallback.model"):
                 from ragnarbot.config.providers import PROVIDERS
 
                 all_model_ids = [
@@ -179,6 +186,45 @@ class ConfigTool(Tool):
                     set_by_path(config, path, old_value)
                     models_list = ", ".join(all_model_ids)
                     return f"Error: model '{new_value}' is not available. Choose from: {models_list}"
+
+            # Validate auth_method
+            if path in ("agents.defaults.auth_method", "agents.fallback.auth_method"):
+                if new_value not in ("api_key", "oauth"):
+                    set_by_path(config, path, old_value)
+                    return f"Error: unknown auth method '{new_value}'. Choose: api_key, oauth"
+
+                # For fallback, resolve the model from fallback config
+                if path == "agents.fallback.auth_method":
+                    fb_model = config.agents.fallback.model
+                else:
+                    fb_model = config.agents.defaults.model
+
+                if fb_model and new_value == "oauth":
+                    from ragnarbot.config.schema import OAUTH_SUPPORTED_PROVIDERS
+                    provider_name = fb_model.split("/")[0] if "/" in fb_model else "anthropic"
+                    if provider_name not in OAUTH_SUPPORTED_PROVIDERS:
+                        set_by_path(config, path, old_value)
+                        return (
+                            f"Error: OAuth is not supported for provider "
+                            f"'{provider_name}'. "
+                            f"Supported: {', '.join(sorted(OAUTH_SUPPORTED_PROVIDERS))}"
+                        )
+
+            # Cross-validate fallback model+auth_method pair
+            if path == "agents.fallback.model" and new_value:
+                fb_auth = config.agents.fallback.auth_method
+                error = self._validate_provider_auth(new_value, fb_auth)
+                if error:
+                    set_by_path(config, path, old_value)
+                    return f"Error: {error}"
+
+            if path == "agents.fallback.auth_method":
+                fb_model = config.agents.fallback.model
+                if fb_model:
+                    error = self._validate_provider_auth(fb_model, new_value)
+                    if error:
+                        set_by_path(config, path, old_value)
+                        return f"Error: {error}"
 
             # Check credential dependencies before persisting
             dep_error = check_config_dependency(path, str(new_value))
@@ -202,8 +248,13 @@ class ConfigTool(Tool):
                 result["status"] = "applied"
                 result["detail"] = apply_msg or "Applied immediately."
             elif reload_level == "warm":
-                result["status"] = "saved"
-                result["detail"] = "Saved. Use the `restart` tool to apply."
+                warm_msg = self._apply_warm_reload(path, new_value)
+                if warm_msg:
+                    result["status"] = "applied"
+                    result["detail"] = warm_msg
+                else:
+                    result["status"] = "saved"
+                    result["detail"] = "Saved. Use the `restart` tool to apply."
             else:
                 result["status"] = "saved"
                 result["detail"] = "Saved. Requires full re-onboard to apply."
@@ -298,6 +349,89 @@ class ConfigTool(Tool):
                 val = bool(value) if isinstance(value, bool) else str(value).lower() in ("true", "1")
                 exec_tool.restrict_to_workspace = val
             return "Exec restrict_to_workspace updated."
+
+        # Fallback config — hot reloadable fields
+        if path == "agents.fallback.consecutive_failures_threshold":
+            if agent._fallback_config:
+                agent._fallback_config.consecutive_failures_threshold = int(value)
+            return "Fallback consecutive failures threshold updated."
+
+        if path == "agents.fallback.recovery_probe_interval":
+            if agent._fallback_config:
+                agent._fallback_config.recovery_probe_interval = int(value)
+            return "Fallback recovery probe interval updated."
+
+        if path == "agents.fallback.max_tokens":
+            if agent._fallback_config:
+                agent._fallback_config.max_tokens = int(value) if value else None
+            if agent._fallback_provider:
+                agent._fallback_provider.set_max_tokens(int(value))
+            return "Fallback max tokens updated."
+
+        if path == "agents.fallback.temperature":
+            if agent._fallback_config:
+                agent._fallback_config.temperature = float(value) if value else None
+            if agent._fallback_provider:
+                agent._fallback_provider.set_temperature(float(value))
+            return "Fallback temperature updated."
+
+        return None
+
+    def _apply_warm_reload(self, path: str, value: Any) -> str | None:
+        """Apply warm-reloadable fallback config changes without restart."""
+        agent = self._agent
+
+        if path == "agents.fallback.model":
+            agent._fallback_model = str(value) if value else None
+            agent._fallback_provider = None
+            if agent._fallback_config:
+                agent._fallback_config.model = str(value) if value else None
+            return "Fallback model updated. Will use new provider on next fallback."
+
+        if path == "agents.fallback.auth_method":
+            agent._fallback_provider = None
+            if agent._fallback_config:
+                agent._fallback_config.auth_method = str(value)
+            return "Fallback auth method updated. Will use new provider on next fallback."
+
+        return None
+
+    @staticmethod
+    def _validate_provider_auth(model: str, auth_method: str) -> str | None:
+        """Validate that a provider has credentials for the given auth method.
+
+        Returns an error message if credentials are missing, None if OK.
+        Same checks as _validate_auth in commands.py but for runtime use.
+        """
+        from ragnarbot.auth.credentials import load_credentials
+        from ragnarbot.config.schema import OAUTH_SUPPORTED_PROVIDERS
+
+        provider_name = model.split("/")[0] if "/" in model else "anthropic"
+        creds = load_credentials()
+        provider_creds = getattr(creds.providers, provider_name, None)
+
+        if auth_method == "oauth":
+            if provider_name not in OAUTH_SUPPORTED_PROVIDERS:
+                return (
+                    f"OAuth is not supported for provider '{provider_name}'. "
+                    f"Supported: {', '.join(sorted(OAUTH_SUPPORTED_PROVIDERS))}"
+                )
+            if provider_name == "gemini":
+                from ragnarbot.auth.gemini_oauth import is_authenticated
+                if not is_authenticated():
+                    return "Gemini OAuth not configured. Run: ragnarbot oauth gemini"
+            elif provider_name == "openai":
+                from ragnarbot.auth.openai_oauth import is_authenticated
+                if not is_authenticated():
+                    return "OpenAI OAuth not configured. Run: ragnarbot oauth openai"
+            elif not provider_creds or not provider_creds.oauth_key:
+                return f"No OAuth token for '{provider_name}'"
+        else:
+            if not provider_creds or not provider_creds.api_key:
+                return (
+                    f"No API key for '{provider_name}'. "
+                    f"Set via: config set secrets.providers.{provider_name}.api_key <key>"
+                )
 
         return None
 

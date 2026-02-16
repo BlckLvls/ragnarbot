@@ -146,12 +146,13 @@ class TestOnboardingFlow:
         creds = mock_save_creds.call_args[0][0]
         assert creds.providers.anthropic.oauth_key == "oauth-token-xyz"
 
-    def test_openai_skips_auth_screen(self, tmp_path):
-        """OpenAI doesn't support OAuth, should skip auth screen."""
+    def test_openai_api_key_flow(self, tmp_path):
+        """OpenAI with API Key auth — select auth method, then provide token."""
         keys = [
             (Key.DOWN, ""),         # Navigate to OpenAI
             (Key.ENTER, ""),        # Select OpenAI
-            # No auth screen — goes straight to token input
+            (Key.DOWN, ""),         # Navigate to API Key
+            (Key.ENTER, ""),        # Select API Key
             *[(Key.CHAR, c) for c in "sk-openai-key"],
             (Key.ENTER, ""),        # Confirm key
             (Key.ENTER, ""),        # Select first model (GPT-5.2)
@@ -174,11 +175,13 @@ class TestOnboardingFlow:
         assert creds.providers.openai.api_key == "sk-openai-key"
 
     def test_gemini_flow(self, tmp_path):
-        """Gemini flow with Flash model selected."""
+        """Gemini flow with API Key auth and Flash model selected."""
         keys = [
             (Key.DOWN, ""),         # Past OpenAI
             (Key.DOWN, ""),         # To Gemini
             (Key.ENTER, ""),        # Select Gemini
+            (Key.DOWN, ""),         # Navigate to API Key
+            (Key.ENTER, ""),        # Select API Key
             *[(Key.CHAR, c) for c in "AIza-gemini-key"],
             (Key.ENTER, ""),        # Confirm key
             (Key.DOWN, ""),         # Navigate to Flash
