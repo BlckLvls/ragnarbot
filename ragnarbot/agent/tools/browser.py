@@ -38,6 +38,9 @@ REALISTIC_UA = (
     "Chrome/131.0.0.0 Safari/537.36"
 )
 
+GOTO_TIMEOUT_MS = 30_000  # 30s navigation timeout
+LAUNCH_TIMEOUT_MS = 30_000  # 30s browser launch timeout
+
 
 def _find_chrome_user_data_dir() -> Path | None:
     system = platform.system()
@@ -158,6 +161,7 @@ class BrowserSessionManager:
                     headless=h,
                     args=args,
                     viewport={"width": vw, "height": vh},
+                    timeout=LAUNCH_TIMEOUT_MS,
                 )
                 page = context.pages[0] if context.pages else await context.new_page()
                 await context.add_init_script(STEALTH_INIT_JS)
@@ -174,6 +178,7 @@ class BrowserSessionManager:
             else:
                 browser = await pw.chromium.launch(
                     channel="chrome", headless=h, args=args,
+                    timeout=LAUNCH_TIMEOUT_MS,
                 )
                 context = await browser.new_context(
                     viewport={"width": vw, "height": vh},
@@ -196,21 +201,29 @@ class BrowserSessionManager:
                 )
         except Exception as e:
             msg = str(e)
-            if "chrome" in msg.lower() or "executable" in msg.lower():
+            lower = msg.lower()
+            if "chrome" in lower and ("not found" in lower or "executable" in lower):
                 return (
                     "Error: Chrome not found. "
                     "Install Google Chrome to use the browser tool."
                 )
-            if "user data" in msg.lower() or "already running" in msg.lower():
+            if profile == "user" and (
+                "user data" in lower
+                or "already running" in lower
+                or "timeout" in lower
+                or "lock" in lower
+            ):
                 return (
-                    f"Error: {msg}. "
-                    "Close Chrome first or use browser(action='connect') "
-                    "to attach to an already-running instance."
+                    "Error: Could not open Chrome with user profile. "
+                    "Chrome is likely already running. "
+                    "Close Chrome first, or use profile='clean' for a fresh session."
                 )
             raise
 
         if url:
-            await page.goto(url, wait_until="domcontentloaded")
+            await page.goto(
+                url, wait_until="domcontentloaded", timeout=GOTO_TIMEOUT_MS,
+            )
 
         self._sessions[session_id] = session
         self._reset_idle_timer(session)
@@ -289,7 +302,9 @@ class BrowserSessionManager:
     async def navigate(self, session_id: str | None, url: str) -> str:
         session = self._get_session(session_id)
         self._reset_idle_timer(session)
-        await session.page.goto(url, wait_until="domcontentloaded")
+        await session.page.goto(
+            url, wait_until="domcontentloaded", timeout=GOTO_TIMEOUT_MS,
+        )
         title = await session.page.title()
         return f"Navigated to: {title} — {session.page.url}"
 
@@ -488,7 +503,9 @@ class BrowserSessionManager:
         new_page = await session.context.new_page()
         await self._apply_stealth(new_page)
         if url:
-            await new_page.goto(url, wait_until="domcontentloaded")
+            await new_page.goto(
+                url, wait_until="domcontentloaded", timeout=GOTO_TIMEOUT_MS,
+            )
         session.page = new_page
         title = await new_page.title()
         return f"New tab opened. {title} — {new_page.url}"
