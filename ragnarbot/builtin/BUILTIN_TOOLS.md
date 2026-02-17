@@ -55,6 +55,50 @@ Search the web using the configured search engine (Brave Search or DuckDuckGo). 
 ### web_fetch
 Fetch a URL and extract its content as markdown or plain text. Use when you have a specific URL to read (from search results, user-provided links, documentation). Set `extractMode` to "text" for simpler output or "markdown" (default) for structured content.
 
+## Browser
+
+### browser
+Control a real Chrome browser — open pages, interact with elements, take screenshots, run JavaScript, manage tabs. A single tool with an `action` parameter.
+
+**Session lifecycle:**
+- `open` — launch a new browser session. Optional: `url`, `profile` ("clean" or "user"), `headless`.
+- `connect` — attach to an already-running Chrome via CDP. Requires `cdp_url`.
+- `close` — close a session by `session_id`.
+- `close_all` — close all sessions.
+- `list_sessions` — show active sessions with age and URL.
+
+**Navigation:**
+- `navigate` — go to a URL. Requires `url`.
+- `back` / `forward` — browser history navigation.
+
+**Content & DOM:**
+- `content` — get page text and a numbered interactive element map. Call this before clicking or typing. Optional `selector` to scope.
+- `screenshot` — take a screenshot. Optional `selector` for element-only, `full_page` for full page.
+
+**Interaction:**
+- `click` — click an element by `index` (from content map), `selector`, or `x`/`y` coordinates.
+- `type` — type text into an element by `index` or `selector`. Set `clear` to replace existing content.
+- `scroll` — scroll the page. `direction` (up/down), `amount` (pixels, default 500).
+- `wait` — wait for a `selector` to appear. Optional `timeout` (ms, default 10000).
+- `js` — execute JavaScript `code` on the page.
+
+**Tabs:**
+- `tabs` — list open tabs.
+- `tab_open` — open a new tab. Optional `url`.
+- `tab_switch` — switch to tab by `tab_id`.
+- `tab_close` — close tab by `tab_id`.
+
+**Workflow:**
+1. `browser(action="open", url="...")` — open a session
+2. `browser(action="content")` — read the page and get element indices
+3. `browser(action="click", index=5)` — click element #5
+4. `browser(action="screenshot")` — verify visually
+5. `browser(action="close")` — clean up
+
+**Profiles:**
+- `clean` (default) — fresh browser, no cookies or history.
+- `user` — uses your Chrome profile with existing cookies and logins. Use when authentication state is needed.
+
 ## Subagents
 
 ### spawn

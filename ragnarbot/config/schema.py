@@ -161,10 +161,31 @@ class ExecToolConfig(BaseModel):
     )
 
 
+class BrowserConfig(BaseModel):
+    """Browser automation tool configuration."""
+    idle_timeout: int = Field(
+        default=600,
+        json_schema_extra={"reload": "hot", "label": "Auto-close idle sessions (seconds)"},
+    )
+    headless: bool = Field(
+        default=True,
+        json_schema_extra={"reload": "hot", "label": "Run browser in headless mode"},
+    )
+    viewport_width: int = Field(
+        default=1920,
+        json_schema_extra={"reload": "hot", "label": "Browser viewport width (pixels)"},
+    )
+    viewport_height: int = Field(
+        default=1080,
+        json_schema_extra={"reload": "hot", "label": "Browser viewport height (pixels)"},
+    )
+
+
 class ToolsConfig(BaseModel):
     """Tools configuration."""
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
+    browser: BrowserConfig = Field(default_factory=BrowserConfig)
 
 
 class TranscriptionConfig(BaseModel):

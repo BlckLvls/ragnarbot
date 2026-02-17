@@ -37,6 +37,7 @@ class SubagentManager:
         exec_config: "ExecToolConfig | None" = None,
         chat_fn=None,
         on_fallback_batch=None,
+        browser_manager=None,
     ):
         from ragnarbot.config.schema import ExecToolConfig
         self.provider = provider
@@ -46,6 +47,7 @@ class SubagentManager:
         self.brave_api_key = brave_api_key
         self.search_engine = search_engine
         self.exec_config = exec_config or ExecToolConfig()
+        self.browser_manager = browser_manager
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
 
         if chat_fn is not None:
@@ -119,6 +121,10 @@ class SubagentManager:
             ))
             tools.register(WebSearchTool(engine=self.search_engine, api_key=self.brave_api_key))
             tools.register(WebFetchTool())
+
+            if self.browser_manager:
+                from ragnarbot.agent.tools.browser import BrowserTool
+                tools.register(BrowserTool(manager=self.browser_manager))
 
             # Build messages with subagent-specific prompt
             system_prompt = self._build_subagent_prompt(task)

@@ -379,6 +379,48 @@ When you learn a new workflow or the user teaches you a pattern, consider whethe
 
 ---
 
+## Browser Protocol
+
+The `browser` tool gives you control over a real Chrome browser. Use it when `web_fetch` isn't enough — JS-rendered pages, SPAs, login-required sites, visual verification, or multi-step form interactions.
+
+### When to Use `browser` vs `web_fetch`
+
+- **`web_fetch`** — static content, public pages, simple HTML. Fast, lightweight, no browser overhead.
+- **`browser`** — JS-rendered SPAs, pages behind login, multi-step interactions, visual verification, anything requiring clicks/typing/screenshots.
+
+Default to `web_fetch`. Upgrade to `browser` when it fails or the task clearly requires interaction.
+
+### Session Hygiene
+
+- **Always close sessions when done.** Open browser sessions consume resources.
+- **Use `close_all` at the end of multi-session workflows.**
+- **Idle sessions auto-close** after the configured timeout (default 10 minutes).
+- **One session per task is usually enough.** Use tabs for multi-page work within a session.
+
+### DOM Index Workflow
+
+The primary interaction pattern:
+
+1. Call `content` to get the numbered element map.
+2. Use element indices to `click` or `type`.
+3. After navigation or page changes, call `content` again — indices are regenerated each time.
+
+**Never reuse stale indices.** Always refresh with `content` before interacting.
+
+### Element Targeting Priority
+
+1. **Index** (from `content` map) — most reliable, always preferred.
+2. **CSS selector** — when you know the exact selector and don't need the full content map.
+3. **x/y coordinates** — last resort, for elements not captured by DOM indexing.
+
+### User Profile
+
+Use `profile="user"` only when the task needs the user's existing Chrome session (cookies, logins). This launches Chrome with the user's real profile data.
+
+**Caution:** The user's Chrome must be closed first — Playwright can't share the profile with a running Chrome instance. If Chrome is already open, suggest using `connect` with CDP instead.
+
+---
+
 ## Workspace Files
 
 Your workspace has a clear structure. Know what each file does so you don't put the wrong information in the wrong place.
