@@ -1154,19 +1154,19 @@ class AgentLoop:
         tool_formats: dict[str, tuple[str, str, list[tuple[str, int]]]] = {
             "web_search": ("🌐", "Web search", [("query", 200)]),
             "web_fetch": ("🌐", "Web fetch", [("url", 200)]),
-            "read_file": ("📄", "Read file", [("path", 200)]),
+            "file_read": ("📄", "Read file", [("path", 200)]),
             "write_file": ("📝", "Write file", [("path", 200), ("content", 80)]),
-            "edit_file": ("✏️", "Edit file", [("path", 200), ("old_string", 80), ("new_string", 80)]),
+            "edit_file": ("✏️", "Edit file", [("path", 200), ("old_text", 80), ("new_text", 80)]),
             "list_dir": ("📂", "List dir", [("path", 200)]),
             "exec": ("⚡", "Exec", [("command", 200)]),
             "exec_bg": ("⚡", "Exec (bg)", [("command", 200)]),
-            "spawn": ("🤖", "Spawn", [("task", 120), ("instruction", 80)]),
-            "send_photo": ("📸", "Send photo", [("caption", 100)]),
-            "send_video": ("🎬", "Send video", [("caption", 100)]),
-            "send_file": ("📎", "Send file", [("path", 200)]),
-            "download_file": ("⬇️", "Download file", [("file_id", 100)]),
-            "config": ("⚙️", "Config", [("action", 120), ("key", 80), ("value", 80)]),
-            "cron": ("⏰", "Cron", [("action", 120), ("task", 80)]),
+            "spawn": ("🤖", "Spawn", [("task", 120), ("label", 80)]),
+            "send_photo": ("📸", "Send photo", [("file_path", 200), ("caption", 100)]),
+            "send_video": ("🎬", "Send video", [("file_path", 200), ("caption", 100)]),
+            "send_file": ("📎", "Send file", [("file_path", 200), ("caption", 100)]),
+            "download_file": ("⬇️", "Download", [("file_id", 100)]),
+            "config": ("⚙️", "Config", [("action", 120), ("path", 80), ("value", 80)]),
+            "cron": ("⏰", "Cron", [("action", 120), ("message", 80)]),
         }
 
         fmt = tool_formats.get(tool_name)
@@ -1182,6 +1182,13 @@ class AgentLoop:
                     blocks.append(f"<code>{val}</code>")
                 else:
                     blocks.append(f"<i>{escape(key)}</i>\n<code>{val}</code>")
+            # Show any remaining args not listed in tool_formats
+            shown_keys = {k for k, _ in arg_keys}
+            for key, val in args.items():
+                if key in shown_keys:
+                    continue
+                val_str = self._truncate(escape(str(val)))
+                blocks.append(f"<i>{escape(key)}</i>\n<code>{val_str}</code>")
             if blocks:
                 return header + "\n\n" + "\n\n".join(blocks)
             return header
