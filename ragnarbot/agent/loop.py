@@ -707,6 +707,17 @@ class AgentLoop:
                     media_refs.append({"type": "photo", "filename": filename})
                     reply_to["has_photo"] = True
 
+            # Inject photo path markers into content
+            if self.media_manager:
+                photo_paths = [
+                    str(self.media_manager.get_photo_path(session.key, ref["filename"]))
+                    for ref in media_refs
+                    if ref["type"] == "photo"
+                ]
+                if photo_paths:
+                    markers = "\n".join(f"[photo saved: {p}]" for p in photo_paths)
+                    m.content = f"{m.content}\n{markers}" if m.content else markers
+
             # Build prefix tags (timestamp only on the first message in the batch)
             is_first = m is batch[0]
             current_meta: dict = {}
