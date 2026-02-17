@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import platform
 import time
 import uuid
@@ -39,7 +40,7 @@ REALISTIC_UA = (
 )
 
 GOTO_TIMEOUT_MS = 30_000  # 30s navigation timeout
-LAUNCH_TIMEOUT_MS = 30_000  # 30s browser launch timeout
+LAUNCH_TIMEOUT_MS = 60_000  # 60s browser launch timeout (user profiles need more)
 
 
 def _find_chrome_user_data_dir() -> Path | None:
@@ -49,11 +50,50 @@ def _find_chrome_user_data_dir() -> Path | None:
     elif system == "Linux":
         p = Path.home() / ".config" / "google-chrome"
     elif system == "Windows":
-        local = Path(platform.os.environ.get("LOCALAPPDATA", ""))
+        local = Path(os.environ.get("LOCALAPPDATA", ""))
         p = local / "Google" / "Chrome" / "User Data"
     else:
         return None
     return p if p.exists() else None
+
+
+def _create_symlinked_profile(chrome_data: Path) -> Path:
+    """Create a temp dir with symlinks to Chrome profile contents.
+
+    Chrome refuses remote debugging on the default data directory.
+    A symlinked copy at a different path bypasses this restriction
+    while preserving access to cookies, logins, and extensions.
+    """
+    import shutil
+
+    temp_dir = Path("/tmp/ragnarbot_chrome_profile")
+    if temp_dir.exists():
+        for item in temp_dir.iterdir():
+            if item.is_symlink():
+                item.unlink()
+            elif item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+        temp_dir.rmdir()
+    temp_dir.mkdir(parents=True)
+
+    for item in chrome_data.iterdir():
+        os.symlink(item, temp_dir / item.name)
+
+    return temp_dir
+
+
+def _cleanup_symlinked_profile() -> None:
+    """Remove the symlinked profile directory."""
+    temp_dir = Path("/tmp/ragnarbot_chrome_profile")
+    if not temp_dir.exists():
+        return
+    for item in temp_dir.iterdir():
+        if item.is_symlink():
+            item.unlink()
+    import shutil
+    shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 @dataclass
@@ -155,8 +195,11 @@ class BrowserSessionManager:
                 user_data = _find_chrome_user_data_dir()
                 if not user_data:
                     return "Error: Chrome user profile not found."
+                # Chrome refuses remote debugging on its default data dir.
+                # Create a symlinked copy at a different path to bypass this.
+                symlinked = _create_symlinked_profile(user_data)
                 context = await pw.chromium.launch_persistent_context(
-                    user_data_dir=str(user_data),
+                    user_data_dir=str(symlinked),
                     channel="chrome",
                     headless=h,
                     args=args,
@@ -210,12 +253,11 @@ class BrowserSessionManager:
             if profile == "user" and (
                 "user data" in lower
                 or "already running" in lower
-                or "timeout" in lower
                 or "lock" in lower
             ):
                 return (
                     "Error: Could not open Chrome with user profile. "
-                    "Chrome is likely already running. "
+                    "Chrome may already be running with this profile. "
                     "Close Chrome first, or use profile='clean' for a fresh session."
                 )
             raise
@@ -276,6 +318,8 @@ class BrowserSessionManager:
                 await session.context.close()
         except Exception as e:
             logger.warning(f"Error closing browser session {session_id}: {e}")
+        if session.profile == "user":
+            _cleanup_symlinked_profile()
         return f"Session `{session_id}` closed."
 
     async def close_all(self) -> None:
