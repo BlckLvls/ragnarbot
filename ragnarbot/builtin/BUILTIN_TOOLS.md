@@ -69,13 +69,14 @@ The subagent gets its own tool access and reports back when done. Give it a clea
 
 ### cron
 Schedule and manage tasks. Actions:
-- `add` — create a job. Requires `message` and one of `at`, `every_seconds`, or `cron_expr`. Optional: `name`, `mode`.
+- `add` — create a job. Requires `message` and one of `at`, `after`, `every_seconds`, or `cron_expr`. Optional: `name`, `mode`.
 - `list` — show all scheduled jobs with mode, schedule, and status.
 - `update` — modify a job. Requires `job_id`. Supports: `name`, `message`, `mode`, `enabled`, `every_seconds`, `cron_expr`.
 - `remove` — delete a job by `job_id`.
 
 **Schedule types:**
-- `at` — ISO datetime (e.g. `"2026-02-12T15:00:00"`). One-shot: runs once and **auto-deletes**. Logs persist.
+- `at` — ISO datetime (e.g. `"2026-02-12T15:00:00"`). One-shot: runs once and **auto-deletes**. Logs persist. Rejects past times with an error.
+- `after` — seconds from now (e.g. `300` = in 5 minutes). One-shot: runs once and **auto-deletes**. Minimum 10 seconds. Simpler than `at` for relative delays.
 - `every_seconds` — interval in seconds (recurring).
 - `cron_expr` — cron expression like `"0 9 * * *"` (recurring). Uses the user's local timezone automatically.
 
@@ -102,7 +103,10 @@ Capture the final output of an isolated cron job or heartbeat check. Available d
 | User says | Parameters |
 |---|---|
 | at 3pm today | `at="2026-02-12T15:00:00"` |
-| in 2 hours | `at` with computed ISO datetime |
+| in 2 minutes | `after=120` |
+| in 5 minutes | `after=300` |
+| in 1 hour | `after=3600` |
+| in 2 hours | `after=7200` |
 | every 20 minutes | `every_seconds=1200` |
 | every hour | `every_seconds=3600` |
 | every day at 8am | `cron_expr="0 8 * * *"` |

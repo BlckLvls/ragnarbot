@@ -1,6 +1,7 @@
 """Cron tool for scheduling reminders and tasks."""
 
 import datetime
+from datetime import timedelta
 from typing import Any
 
 from ragnarbot.agent.tools.base import Tool
@@ -66,6 +67,14 @@ class CronTool(Tool):
                     "type": "integer",
                     "description": "Interval in seconds (for recurring tasks)",
                 },
+                "after": {
+                    "type": "integer",
+                    "description": (
+                        "Seconds from now for a one-shot task (e.g. 300 = in 5 minutes). "
+                        "Cannot be combined with 'at'. Job auto-deletes after execution."
+                    ),
+                    "minimum": 10,
+                },
                 "cron_expr": {
                     "type": "string",
                     "description": "Cron expression like '0 9 * * *' (for scheduled tasks)",
@@ -89,6 +98,7 @@ class CronTool(Tool):
         name: str = "",
         mode: str = "",
         at: str | None = None,
+        after: int | None = None,
         every_seconds: int | None = None,
         cron_expr: str | None = None,
         job_id: str | None = None,
@@ -96,7 +106,7 @@ class CronTool(Tool):
         **kwargs: Any,
     ) -> str:
         if action == "add":
-            return self._add_job(message, name, mode, at, every_seconds, cron_expr)
+            return self._add_job(message, name, mode, at, after, every_seconds, cron_expr)
         elif action == "list":
             return self._list_jobs()
         elif action == "update":
@@ -111,6 +121,7 @@ class CronTool(Tool):
         name: str,
         mode: str,
         at: str | None,
+        after: int | None,
         every_seconds: int | None,
         cron_expr: str | None,
     ) -> str:
@@ -125,14 +136,25 @@ class CronTool(Tool):
                 dt = datetime.datetime.fromisoformat(at)
             except ValueError:
                 return f"Error: invalid ISO datetime: {at}"
+            now = datetime.datetime.now(dt.tzinfo)
+            if dt <= now:
+                return (
+                    f"Error: scheduled time is in the past "
+                    f"({at} <= {now.isoformat()}). Use 'after' for relative delays."
+                )
             schedule = CronSchedule(kind="at", at_ms=int(dt.timestamp() * 1000))
+        elif after is not None:
+            if after < 10:
+                return "Error: 'after' must be at least 10 seconds"
+            run_at = datetime.datetime.now() + timedelta(seconds=after)
+            schedule = CronSchedule(kind="at", at_ms=int(run_at.timestamp() * 1000))
         elif every_seconds:
             schedule = CronSchedule(kind="every", every_ms=every_seconds * 1000)
         elif cron_expr:
             tz = _detect_timezone()
             schedule = CronSchedule(kind="cron", expr=cron_expr, tz=tz)
         else:
-            return "Error: one of at, every_seconds, or cron_expr is required"
+            return "Error: one of at, after, every_seconds, or cron_expr is required"
 
         job_name = name or message[:30]
         job_mode = mode if mode in ("isolated", "session") else "isolated"
