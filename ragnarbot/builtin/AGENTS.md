@@ -136,9 +136,14 @@ All scheduled work goes through the `cron` tool: one-shot reminders, recurring t
 
 ### Schedule Types
 
-**One-shot** (`at`) — runs once at a specific time. Auto-deletes after execution. Logs persist.
+**One-shot absolute** (`at`) — runs once at a specific time. Auto-deletes after execution. Logs persist.
 ```
 cron(action="add", message="Call John", at="2026-02-12T15:00:00", mode="session")
+```
+
+**One-shot relative** (`after`) — runs once after N seconds from now. Auto-deletes after execution. Simpler than `at` when you just need "in X minutes".
+```
+cron(action="add", message="Retry the generation", after=300, mode="session")
 ```
 
 **Interval** (`every_seconds`) — runs every N seconds, persists.
@@ -173,6 +178,16 @@ Use isolated when:
 - Tasks requiring tool use (fetching, commands, reports) → isolated
 - When in doubt → isolated
 
+**Quick selection guide:**
+
+| Situation | Mode | Schedule |
+|---|---|---|
+| Retry/continue something from chat | `session` | `after` |
+| Reminder at specific time | `session` | `at` |
+| Self-contained fetch/report | `isolated` | `cron_expr` or `every_seconds` |
+
+If the task is a continuation or retry of something already discussed in the current chat, always use `session` mode with `after`.
+
 ### When to Ask the User
 
 Do NOT ask about mode or schedule type when the intent is clear. The user shouldn't need to know about "isolated" or "session" — that's an implementation detail.
@@ -182,6 +197,8 @@ Do NOT ask about mode or schedule type when the intent is clear. The user should
 - "Check HN every hour and send me top stories" → recurring, isolated. Done.
 - "Every morning at 9, summarize my emails" → recurring, isolated. Done.
 - "Ping me every 30 minutes to drink water" → recurring, session. Done.
+- "Try again in 5 minutes" → `after=300`, session. Done.
+- "Retry in 10 minutes" → `after=600`, session. Done.
 
 **Ask** when:
 - The user says "schedule something" but you can't tell if it's one-shot or recurring
