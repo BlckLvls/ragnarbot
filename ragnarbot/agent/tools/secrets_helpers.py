@@ -115,6 +115,11 @@ def secrets_schema(creds: Credentials, filter_path: str | None = None) -> str:
         status = "[set \u2713]" if creds.extra[key] else "[not set \u2717]"
         lines.append(f"{full} {status}")
 
+    # Static hint so the feature is discoverable even when extra is empty
+    hint = "secrets.extra.<name>: str [warm] — arbitrary credentials (set any key)"
+    if not filter_path or hint.startswith(filter_path) or "secrets.extra".startswith(filter_path):
+        lines.append(hint)
+
     if not lines:
         return f"No secrets matching '{filter_path}'" if filter_path else "No secrets found"
     return "\n".join(lines)

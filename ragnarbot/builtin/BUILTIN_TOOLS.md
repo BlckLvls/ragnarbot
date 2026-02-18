@@ -184,6 +184,8 @@ Fields have reload levels:
 - **warm** — saved to disk, requires `restart` tool to apply (e.g. model, telegram settings, gateway port).
 - **cold** — saved to disk, requires full re-onboard to apply (e.g. workspace path).
 
+For storing arbitrary API keys not covered by built-in fields, use `secrets.extra.<name>` paths (e.g. `config set secrets.extra.notion_token ntn_xxx`).
+
 ### restart
 Schedule a graceful gateway restart. The restart happens after the current response is fully sent. Use after changing "warm" config values that need a restart to apply.
 
