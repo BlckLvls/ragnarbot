@@ -29,8 +29,7 @@ dependencies = [
     "croniter>=2.0.0",
     "python-telegram-bot>=21.0",
     "ddgs>=9.0.0",
-    "playwright>=1.40.0",
-    "playwright-stealth>=1.0.6",
+    "patchright>=1.40.0",
 ]
 
 [project.optional-dependencies]

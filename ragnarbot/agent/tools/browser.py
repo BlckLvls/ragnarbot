@@ -1,12 +1,11 @@
-"""Browser automation tool using Playwright."""
+"""Browser automation tool using Patchright (Playwright fork with CDP leak fixes)."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
 import json
-import os
-import platform
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -18,12 +17,11 @@ from loguru import logger
 from ragnarbot.agent.tools.base import Tool
 
 if TYPE_CHECKING:
-    from playwright.async_api import BrowserContext, Page, Playwright
+    from patchright.async_api import BrowserContext, Page, Playwright
 
 STEALTH_ARGS = [
     "--disable-blink-features=AutomationControlled",
-    "--disable-features=IsolateOrigins,site-per-process",
-    "--disable-infobars",
+    "--disable-features=IsolateOrigins,site-per-process,AutomationControlled",
     "--disable-dev-shm-usage",
     "--no-first-run",
     "--no-default-browser-check",
@@ -31,69 +29,28 @@ STEALTH_ARGS = [
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",
     "--disable-ipc-flooding-protection",
+    "--font-render-hinting=none",
 ]
 
-REALISTIC_UA = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/131.0.0.0 Safari/537.36"
-)
+AGENT_PROFILE = Path.home() / ".ragnarbot" / "browser-profile"
+SCREENSHOT_DIR = Path.home() / ".ragnarbot" / "browser-screenshots"
 
 GOTO_TIMEOUT_MS = 30_000  # 30s navigation timeout
-LAUNCH_TIMEOUT_MS = 60_000  # 60s browser launch timeout (user profiles need more)
 
 
-def _find_chrome_user_data_dir() -> Path | None:
-    system = platform.system()
-    if system == "Darwin":
-        p = Path.home() / "Library" / "Application Support" / "Google" / "Chrome"
-    elif system == "Linux":
-        p = Path.home() / ".config" / "google-chrome"
-    elif system == "Windows":
-        local = Path(os.environ.get("LOCALAPPDATA", ""))
-        p = local / "Google" / "Chrome" / "User Data"
-    else:
-        return None
-    return p if p.exists() else None
+def _build_brand_header(major: str) -> str:
+    """Build sec-ch-ua header for the given Chrome major version."""
+    return f'"Google Chrome";v="{major}", "Not-A.Brand";v="8", "Chromium";v="{major}"'
 
 
-def _create_symlinked_profile(chrome_data: Path) -> Path:
-    """Create a temp dir with symlinks to Chrome profile contents.
-
-    Chrome refuses remote debugging on the default data directory.
-    A symlinked copy at a different path bypasses this restriction
-    while preserving access to cookies, logins, and extensions.
-    """
-    import shutil
-
-    temp_dir = Path("/tmp/ragnarbot_chrome_profile")
-    if temp_dir.exists():
-        for item in temp_dir.iterdir():
-            if item.is_symlink():
-                item.unlink()
-            elif item.is_dir():
-                shutil.rmtree(item)
-            else:
-                item.unlink()
-        temp_dir.rmdir()
-    temp_dir.mkdir(parents=True)
-
-    for item in chrome_data.iterdir():
-        os.symlink(item, temp_dir / item.name)
-
-    return temp_dir
-
-
-def _cleanup_symlinked_profile() -> None:
-    """Remove the symlinked profile directory."""
-    temp_dir = Path("/tmp/ragnarbot_chrome_profile")
-    if not temp_dir.exists():
-        return
-    for item in temp_dir.iterdir():
-        if item.is_symlink():
-            item.unlink()
-    import shutil
-    shutil.rmtree(temp_dir, ignore_errors=True)
+def _build_ua_string(major: str) -> str:
+    """Build a Chrome-like User-Agent string."""
+    return (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        f"Chrome/{major}.0.0.0 Safari/537.36"
+    )
+LAUNCH_TIMEOUT_MS = 60_000  # 60s browser launch timeout
 
 
 @dataclass
@@ -101,13 +58,13 @@ class BrowserSession:
     session_id: str
     context: BrowserContext
     page: Page
-    profile: str
     persistent: bool
     created_at: float
     last_activity: float
     dom_index: dict[int, dict] = field(default_factory=dict)
     idle_task: asyncio.Task | None = None
-    _browser: Any = None  # Reference to browser for non-persistent sessions
+    _browser: Any = None  # Reference to browser for CDP-connected sessions
+    _screenshot_paths: list[Path] = field(default_factory=list)
 
 
 class BrowserSessionManager:
@@ -117,26 +74,63 @@ class BrowserSessionManager:
         self._config = config
         self._playwright: Playwright | None = None
         self._sessions: dict[str, BrowserSession] = {}
+        self._chromium_installed: bool = False
+        self._chrome_major: str = "131"
+        self._ua: str = _build_ua_string("131")
+        self._sec_ch_ua: str = _build_brand_header("131")
 
     async def _ensure_playwright(self):
         if self._playwright is not None:
             return self._playwright
         try:
-            from playwright.async_api import async_playwright
+            from patchright.async_api import async_playwright
         except ImportError:
             raise RuntimeError(
-                "Playwright is not installed. Run: pip install playwright && playwright install"
+                "Patchright is not installed. "
+                "Run: pip install patchright && patchright install chromium"
             )
         pw = await async_playwright().start()
         self._playwright = pw
+        if not self._chromium_installed:
+            await self._install_chromium_if_needed()
+        self._detect_version()
         return pw
 
-    async def _apply_stealth(self, page):
+    def _detect_version(self):
+        """Read actual Chromium version to build consistent UA and sec-ch-ua."""
+        import re
+        exe = self._playwright.chromium.executable_path
         try:
-            from playwright_stealth import stealth_async
-            await stealth_async(page)
-        except ImportError:
-            logger.warning("playwright-stealth not installed, skipping stealth patches")
+            import subprocess as _sp
+            out = _sp.run(
+                [exe, "--version"], capture_output=True, text=True, timeout=5,
+            )
+            m = re.search(r"(\d+)\.\d+\.\d+\.\d+", out.stdout)
+            if m:
+                self._chrome_major = m.group(1)
+        except Exception:
+            pass
+        self._ua = _build_ua_string(self._chrome_major)
+        self._sec_ch_ua = _build_brand_header(self._chrome_major)
+        logger.debug(f"Chromium v{self._chrome_major}")
+
+    async def _install_chromium_if_needed(self):
+        browser_path = self._playwright.chromium.executable_path
+        if Path(browser_path).exists():
+            self._chromium_installed = True
+            return
+        logger.info("Installing Chromium browser (first-time setup)...")
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "patchright", "install", "chromium",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.wait()
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "Failed to install Chromium. Run manually: patchright install chromium"
+            )
+        logger.info("Chromium installed.")
+        self._chromium_installed = True
 
     def _build_args(self) -> list[str]:
         vw, vh = self._config.viewport_width, self._config.viewport_height
@@ -178,87 +172,79 @@ class BrowserSessionManager:
     async def open(
         self,
         url: str | None = None,
-        profile: str = "clean",
         headless: bool | None = None,
     ) -> str:
-        from ragnarbot.agent.browser_js import STEALTH_INIT_JS
+        # Reuse existing session if one is already open
+        if self._sessions:
+            session = next(iter(self._sessions.values()))
+            self._reset_idle_timer(session)
+            if url:
+                await session.page.goto(
+                    url, wait_until="domcontentloaded", timeout=GOTO_TIMEOUT_MS,
+                )
+                title = await session.page.title()
+                return (
+                    f"Session `{session.session_id}` already open. "
+                    f"Navigated to: {title} — {session.page.url}"
+                )
+            title = await session.page.title()
+            return (
+                f"Session `{session.session_id}` already open. "
+                f"Page: {title} — {session.page.url}"
+            )
 
         pw = await self._ensure_playwright()
         h = headless if headless is not None else self._config.headless
         vw = self._config.viewport_width
         vh = self._config.viewport_height
-        args = self._build_args()
         session_id = str(uuid.uuid4())[:8]
 
+        AGENT_PROFILE.mkdir(parents=True, exist_ok=True)
+
         try:
-            if profile == "user":
-                user_data = _find_chrome_user_data_dir()
-                if not user_data:
-                    return "Error: Chrome user profile not found."
-                # Chrome refuses remote debugging on its default data dir.
-                # Create a symlinked copy at a different path to bypass this.
-                symlinked = _create_symlinked_profile(user_data)
-                context = await pw.chromium.launch_persistent_context(
-                    user_data_dir=str(symlinked),
-                    channel="chrome",
-                    headless=h,
-                    args=args,
-                    viewport={"width": vw, "height": vh},
-                    timeout=LAUNCH_TIMEOUT_MS,
-                )
-                page = context.pages[0] if context.pages else await context.new_page()
-                await context.add_init_script(STEALTH_INIT_JS)
-                await self._apply_stealth(page)
-                session = BrowserSession(
-                    session_id=session_id,
-                    context=context,
-                    page=page,
-                    profile="user",
-                    persistent=True,
-                    created_at=time.time(),
-                    last_activity=time.time(),
-                )
-            else:
-                browser = await pw.chromium.launch(
-                    channel="chrome", headless=h, args=args,
-                    timeout=LAUNCH_TIMEOUT_MS,
-                )
-                context = await browser.new_context(
-                    viewport={"width": vw, "height": vh},
-                    user_agent=REALISTIC_UA,
-                    locale="en-US",
-                    timezone_id="America/New_York",
-                )
-                await context.add_init_script(STEALTH_INIT_JS)
-                page = await context.new_page()
-                await self._apply_stealth(page)
-                session = BrowserSession(
-                    session_id=session_id,
-                    context=context,
-                    page=page,
-                    profile="clean",
-                    persistent=False,
-                    created_at=time.time(),
-                    last_activity=time.time(),
-                    _browser=browser,
-                )
+            # In headed mode, don't force viewport — let the window
+            # determine content size naturally (avoids Retina scaling issues).
+            viewport_cfg = None if not h else {"width": vw, "height": vh}
+            context = await pw.chromium.launch_persistent_context(
+                user_data_dir=str(AGENT_PROFILE),
+                headless=h,
+                args=self._build_args(),
+                ignore_default_args=[
+                    "--enable-automation",
+                    "--disable-popup-blocking",
+                    "--disable-component-update",
+                    "--disable-default-apps",
+                    "--disable-extensions",
+                ],
+                viewport=viewport_cfg,
+                no_viewport=not h,
+                user_agent=self._ua,
+                locale="en-US",
+                timezone_id="America/New_York",
+                timeout=LAUNCH_TIMEOUT_MS,
+            )
+            # Override sec-ch-ua at HTTP level — headless Chromium sends
+            # "HeadlessChrome" by default.
+            await context.set_extra_http_headers({
+                "sec-ch-ua": self._sec_ch_ua,
+                "sec-ch-ua-mobile": "?0",
+                "sec-ch-ua-platform": '"macOS"',
+            })
+            page = context.pages[0] if context.pages else await context.new_page()
+            session = BrowserSession(
+                session_id=session_id,
+                context=context,
+                page=page,
+                persistent=True,
+                created_at=time.time(),
+                last_activity=time.time(),
+            )
         except Exception as e:
-            msg = str(e)
-            lower = msg.lower()
-            if "chrome" in lower and ("not found" in lower or "executable" in lower):
+            msg = str(e).lower()
+            if "executable" in msg or "not found" in msg:
                 return (
-                    "Error: Chrome not found. "
-                    "Install Google Chrome to use the browser tool."
-                )
-            if profile == "user" and (
-                "user data" in lower
-                or "already running" in lower
-                or "lock" in lower
-            ):
-                return (
-                    "Error: Could not open Chrome with user profile. "
-                    "Chrome may already be running with this profile. "
-                    "Close Chrome first, or use profile='clean' for a fresh session."
+                    "Error: Chromium not found. "
+                    "Run: patchright install chromium"
                 )
             raise
 
@@ -271,27 +257,22 @@ class BrowserSessionManager:
         self._reset_idle_timer(session)
 
         title = await page.title() if url else ""
-        parts = [f"Session `{session_id}` opened ({profile} profile)."]
+        parts = [f"Session `{session_id}` opened (persistent profile)."]
         if url:
             parts.append(f"Page: {title} — {page.url}")
         return " ".join(parts)
 
     async def connect(self, cdp_url: str) -> str:
-        from ragnarbot.agent.browser_js import STEALTH_INIT_JS
-
         pw = await self._ensure_playwright()
         browser = await pw.chromium.connect_over_cdp(cdp_url)
         context = browser.contexts[0] if browser.contexts else await browser.new_context()
         page = context.pages[0] if context.pages else await context.new_page()
-        await context.add_init_script(STEALTH_INIT_JS)
-        await self._apply_stealth(page)
 
         session_id = str(uuid.uuid4())[:8]
         session = BrowserSession(
             session_id=session_id,
             context=context,
             page=page,
-            profile="connect",
             persistent=False,
             created_at=time.time(),
             last_activity=time.time(),
@@ -309,17 +290,19 @@ class BrowserSessionManager:
             return f"No session '{session_id}' to close."
         if session.idle_task and not session.idle_task.done():
             session.idle_task.cancel()
+        # Clean up screenshots saved during this session
+        for p in session._screenshot_paths:
+            try:
+                p.unlink(missing_ok=True)
+            except Exception:
+                pass
         try:
-            if session.persistent:
-                await session.context.close()
-            elif session._browser:
+            if session._browser:
                 await session._browser.close()
             else:
                 await session.context.close()
         except Exception as e:
             logger.warning(f"Error closing browser session {session_id}: {e}")
-        if session.profile == "user":
-            _cleanup_symlinked_profile()
         return f"Session `{session_id}` closed."
 
     async def close_all(self) -> None:
@@ -337,7 +320,7 @@ class BrowserSessionManager:
             age = int(time.time() - s.created_at)
             url = s.page.url if s.page else "about:blank"
             lines.append(
-                f"- `{s.session_id}` ({s.profile}) — {url} — age: {age}s"
+                f"- `{s.session_id}` — {url} — age: {age}s"
             )
         return "\n".join(lines)
 
@@ -382,6 +365,10 @@ class BrowserSessionManager:
         # Run DOM indexing
         elements = await session.page.evaluate(DOM_INDEX_JS)
         session.dom_index = {e["index"]: e for e in elements}
+
+        # Remove badges immediately — the model uses text indices,
+        # not visual badges on screenshots.
+        await session.page.evaluate(DOM_REMOVE_BADGES_JS)
 
         title = await session.page.title()
         url = session.page.url
@@ -430,6 +417,14 @@ class BrowserSessionManager:
         else:
             img_bytes = await session.page.screenshot(full_page=full_page)
 
+        # Save to disk so the agent can send the file to the user
+        SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        ts = int(time.time())
+        filename = f"{session.session_id}_{ts}.png"
+        filepath = SCREENSHOT_DIR / filename
+        filepath.write_bytes(img_bytes)
+        session._screenshot_paths.append(filepath)
+
         b64 = base64.b64encode(img_bytes).decode()
         size_kb = len(img_bytes) / 1024
         title = await session.page.title()
@@ -439,7 +434,13 @@ class BrowserSessionManager:
                 "type": "image_url",
                 "image_url": {"url": f"data:image/png;base64,{b64}"},
             },
-            {"type": "text", "text": f"Screenshot: {title} — {session.page.url} ({size_kb:.0f} KB)"},
+            {
+                "type": "text",
+                "text": (
+                    f"Screenshot: {title} — {session.page.url} ({size_kb:.0f} KB)\n"
+                    f"File: {filepath}"
+                ),
+            },
         ]
 
     # ── Interaction ────────────────────────────────────────────────
@@ -545,7 +546,6 @@ class BrowserSessionManager:
         session = self._get_session(session_id)
         self._reset_idle_timer(session)
         new_page = await session.context.new_page()
-        await self._apply_stealth(new_page)
         if url:
             await new_page.goto(
                 url, wait_until="domcontentloaded", timeout=GOTO_TIMEOUT_MS,
@@ -600,7 +600,7 @@ class BrowserTool(Tool):
 
     name = "browser"
     description = (
-        "Control a real Chrome browser. Actions: "
+        "Control a Chromium browser. Actions: "
         "open, connect, close, close_all, list_sessions, "
         "navigate, back, forward, "
         "content, screenshot, "
@@ -627,11 +627,6 @@ class BrowserTool(Tool):
             "headless": {
                 "type": "boolean",
                 "description": "Override headless mode for open.",
-            },
-            "profile": {
-                "type": "string",
-                "enum": ["clean", "user"],
-                "description": "Browser profile for open. 'user' reuses Chrome cookies/logins.",
             },
             "cdp_url": {
                 "type": "string",
@@ -729,7 +724,6 @@ class BrowserTool(Tool):
     async def _action_open(self, **kw) -> str:
         return await self._manager.open(
             url=kw.get("url"),
-            profile=kw.get("profile", "clean"),
             headless=kw.get("headless"),
         )
 
