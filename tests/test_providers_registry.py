@@ -47,7 +47,7 @@ def test_get_provider_not_found():
 
 def test_get_models_returns_list():
     models = get_models("anthropic")
-    assert len(models) == 3
+    assert len(models) == 4
     assert models[0]["id"] == "anthropic/claude-opus-4-6"
 
 

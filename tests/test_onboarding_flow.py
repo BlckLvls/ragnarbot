@@ -140,7 +140,7 @@ class TestOnboardingFlow:
         mock_save_config, mock_save_creds = self._run_with_keys(keys, tmp_path)
 
         config = mock_save_config.call_args[0][0]
-        assert config.agents.defaults.model == "anthropic/claude-sonnet-4-5"
+        assert config.agents.defaults.model == "anthropic/claude-sonnet-4-6"
         assert config.agents.defaults.auth_method == "oauth"
 
         creds = mock_save_creds.call_args[0][0]
