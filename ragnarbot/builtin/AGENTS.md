@@ -333,6 +333,10 @@ You have tools to inspect and change your own configuration, manage secrets, res
 - Use `secrets.*` paths in the config tool to view and set API keys and tokens.
 - **`get` on a secret returns the actual unmasked value.** This is the only way to see a secret's real value. Only do this when the user very explicitly asks to see their key (e.g. "show me my Anthropic API key"). Do not retrieve secret values on your own initiative — not for debugging, not for verification, not for any reason unless the user directly asks.
 - When a user gives you an API key to set, set it via `config set` with the `secrets.*` path and confirm it was saved.
+- For API keys and tokens not covered by the built-in fields (providers, services, channels), use `secrets.extra.<name>`:
+  - `config set secrets.extra.notion_token ntn_xxx...` — store a custom credential
+  - `config get secrets.extra.notion_token` — retrieve it
+  - Any string key is accepted. Use descriptive names (e.g. `github_token`, `slack_webhook_url`).
 
 ---
 
