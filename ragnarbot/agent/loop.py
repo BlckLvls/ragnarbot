@@ -81,6 +81,7 @@ class AgentLoop:
         fallback_config: "FallbackConfig | None" = None,
         provider_factory: "Callable | None" = None,
         trace_mode: bool = False,
+        browser_config: "BrowserConfig | None" = None,
     ):
         from ragnarbot.config.schema import ExecToolConfig
         from ragnarbot.cron.service import CronService
@@ -120,6 +121,12 @@ class AgentLoop:
         self.context.model = self.model
         self.sessions = SessionManager(workspace)
         self.tools = ToolRegistry()
+
+        from ragnarbot.agent.tools.browser import BrowserSessionManager
+        from ragnarbot.config.schema import BrowserConfig
+        self.browser_config = browser_config or BrowserConfig()
+        self.browser_manager = BrowserSessionManager(config=self.browser_config)
+
         self.subagents = SubagentManager(
             provider=provider,
             workspace=workspace,
@@ -130,6 +137,7 @@ class AgentLoop:
             exec_config=self.exec_config,
             chat_fn=self._chat_with_fallback,
             on_fallback_batch=self._record_fallback_batch,
+            browser_manager=self.browser_manager,
         )
 
         self.bg_processes = BackgroundProcessManager(
@@ -172,6 +180,10 @@ class AgentLoop:
         # Spawn tool (for subagents)
         spawn_tool = SpawnTool(manager=self.subagents)
         self.tools.register(spawn_tool)
+
+        # Browser tool
+        from ragnarbot.agent.tools.browser import BrowserTool
+        self.tools.register(BrowserTool(manager=self.browser_manager))
         
         # Cron tool (for scheduling)
         if self.cron_service:
@@ -1749,6 +1761,10 @@ class AgentLoop:
         update_t = UpdateTool(agent=self)
         update_t.set_context(channel, chat_id)
         reg.register(update_t)
+
+        # Browser (shared manager — sessions persist across contexts)
+        from ragnarbot.agent.tools.browser import BrowserTool
+        reg.register(BrowserTool(manager=self.browser_manager))
 
         # Download file
         if self.media_manager:

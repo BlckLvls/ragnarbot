@@ -284,6 +284,7 @@ def gateway_main(
         fallback_model=fallback_config.model,
         fallback_config=fallback_config,
         provider_factory=lambda model, auth_method: _create_provider(model, auth_method, creds),
+        browser_config=config.tools.browser,
     )
 
     # Set cron callback (needs agent)
@@ -540,11 +541,13 @@ def gateway_main(
                     pass
 
             # Cleanup
+            await agent.browser_manager.close_all()
             heartbeat.stop()
             cron.stop()
             await channels.stop_all()
         except KeyboardInterrupt:
             console.print("\nShutting down...")
+            await agent.browser_manager.close_all()
             heartbeat.stop()
             cron.stop()
             agent.stop()

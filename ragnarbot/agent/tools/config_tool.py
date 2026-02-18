@@ -350,6 +350,25 @@ class ConfigTool(Tool):
                 exec_tool.restrict_to_workspace = val
             return "Exec restrict_to_workspace updated."
 
+        # Browser config — hot reloadable fields
+        if path.startswith("tools.browser."):
+            browser_tool = agent.tools.get("browser")
+            if browser_tool:
+                mgr = browser_tool._manager
+                field = path.split(".")[-1]
+                if field == "idle_timeout":
+                    mgr._config.idle_timeout = int(value)
+                elif field == "headless":
+                    mgr._config.headless = (
+                        value if isinstance(value, bool)
+                        else str(value).lower() in ("true", "1")
+                    )
+                elif field == "viewport_width":
+                    mgr._config.viewport_width = int(value)
+                elif field == "viewport_height":
+                    mgr._config.viewport_height = int(value)
+            return f"Browser {path.split('.')[-1]} updated (applies to new sessions)."
+
         # Fallback config — hot reloadable fields
         if path == "agents.fallback.consecutive_failures_threshold":
             if agent._fallback_config:
