@@ -38,6 +38,9 @@ class MigrationResult:
         return bool(self.added or self.auto_removed or self.needs_confirm)
 
 
+_USER_OWNED_PATHS = {"extra"}
+
+
 def _deep_diff(
     existing: dict, default: dict, path: str = ""
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -50,6 +53,12 @@ def _deep_diff(
         current_path = f"{path}.{key}" if path else key
         in_existing = key in existing
         in_default = key in default
+
+        # Skip user-owned freeform dicts — never diff their contents
+        if key in _USER_OWNED_PATHS:
+            if in_default and not in_existing:
+                added[current_path] = default[key]
+            continue
 
         if in_default and not in_existing:
             added[current_path] = default[key]
