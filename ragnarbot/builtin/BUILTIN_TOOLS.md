@@ -58,11 +58,11 @@ Fetch a URL and extract its content as markdown or plain text. Use when you have
 ## Browser
 
 ### browser
-Control a real Chrome browser — open pages, interact with elements, take screenshots, run JavaScript, manage tabs. A single tool with an `action` parameter.
+Control a Chromium browser — open pages, interact with elements, take screenshots, run JavaScript, manage tabs. A single tool with an `action` parameter. The browser maintains its own persistent profile at `~/.ragnarbot/browser-profile/`. Logins and cookies persist across sessions. Chromium is auto-installed on first use.
 
 **Session lifecycle:**
-- `open` — launch a new browser session. Optional: `url`, `profile` ("clean" or "user"), `headless`.
-- `connect` — attach to an already-running Chrome via CDP. Requires `cdp_url`.
+- `open` — launch a new browser session. Optional: `url`, `headless` (default: `true`). Reuses existing session if one is already open.
+- `connect` — attach to an already-running browser via CDP. Requires `cdp_url`.
 - `close` — close a session by `session_id`.
 - `close_all` — close all sessions.
 - `list_sessions` — show active sessions with age and URL.
@@ -89,15 +89,11 @@ Control a real Chrome browser — open pages, interact with elements, take scree
 - `tab_close` — close tab by `tab_id`.
 
 **Workflow:**
-1. `browser(action="open", url="...")` — open a session
+1. `browser(action="open", url="...", headless=True)` — open a session
 2. `browser(action="content")` — read the page and get element indices
 3. `browser(action="click", index=5)` — click element #5
 4. `browser(action="screenshot")` — verify visually
 5. `browser(action="close")` — clean up
-
-**Profiles:**
-- `clean` (default) — fresh browser, no cookies or history.
-- `user` — uses your Chrome profile with existing cookies and logins. Use when authentication state is needed.
 
 ## Subagents
 
