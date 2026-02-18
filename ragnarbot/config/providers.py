@@ -15,9 +15,14 @@ PROVIDERS = [
                 "description": "Most intelligent — agents & coding",
             },
             {
+                "id": "anthropic/claude-sonnet-4-6",
+                "name": "Claude Sonnet 4.6",
+                "description": "Best speed/intelligence balance",
+            },
+            {
                 "id": "anthropic/claude-sonnet-4-5",
                 "name": "Claude Sonnet 4.5",
-                "description": "Best speed/intelligence balance",
+                "description": "Previous gen — still capable & affordable",
             },
             {
                 "id": "anthropic/claude-haiku-4-5",
@@ -99,6 +104,11 @@ PROVIDERS = [
                 "id": "openrouter/anthropic/claude-opus-4.6",
                 "name": "Claude Opus 4.6",
                 "description": "Most intelligent — via OpenRouter",
+            },
+            {
+                "id": "openrouter/anthropic/claude-sonnet-4.6",
+                "name": "Claude Sonnet 4.6",
+                "description": "Best speed/intelligence balance — via OpenRouter",
             },
             {
                 "id": "openrouter/google/gemini-3-flash-preview",
