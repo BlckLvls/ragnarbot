@@ -19,18 +19,20 @@ class ExecTool(Tool):
         deny_patterns: list[str] | None = None,
         allow_patterns: list[str] | None = None,
         restrict_to_workspace: bool = False,
+        safety_guard: bool = True,
     ):
         self.timeout = timeout
         self.working_dir = working_dir
+        self.safety_guard = safety_guard
         self.deny_patterns = deny_patterns or [
-            r"\brm\s+-[rf]{1,2}\b",          # rm -r, rm -rf, rm -fr
-            r"\bdel\s+/[fq]\b",              # del /f, del /q
-            r"\brmdir\s+/s\b",               # rmdir /s
-            r"\b(format|mkfs|diskpart)\b",   # disk operations
-            r"\bdd\s+if=",                   # dd
-            r">\s*/dev/sd",                  # write to disk
-            r"\b(shutdown|reboot|poweroff)\b",  # system power
-            r":\(\)\s*\{.*\};\s*:",          # fork bomb
+            r"\brm\s+-[rf]{1,2}\b",                               # rm -r, rm -rf, rm -fr
+            r"\bdel\s+/[fq]\b",                                   # del /f, del /q
+            r"\brmdir\s+/s\b",                                    # rmdir /s
+            r"(?:^|[|;&]\s*)(?:sudo\s+)?(format|mkfs|diskpart)\b",  # disk operations
+            r"\bdd\s+if=",                                        # dd
+            r">\s*/dev/sd",                                       # write to disk
+            r"(?:^|[|;&]\s*)(?:sudo\s+)?(shutdown|reboot|poweroff)\b",  # system power
+            r":\(\)\s*\{.*\};\s*:",                               # fork bomb
         ]
         self.allow_patterns = allow_patterns or []
         self.restrict_to_workspace = restrict_to_workspace
@@ -62,9 +64,10 @@ class ExecTool(Tool):
     
     async def execute(self, command: str, working_dir: str | None = None, **kwargs: Any) -> str:
         cwd = working_dir or self.working_dir or os.getcwd()
-        guard_error = self._guard_command(command, cwd)
-        if guard_error:
-            return guard_error
+        if self.safety_guard:
+            guard_error = self._guard_command(command, cwd)
+            if guard_error:
+                return guard_error
         
         try:
             process = await asyncio.create_subprocess_shell(

@@ -164,6 +164,7 @@ class AgentLoop:
             working_dir=str(self.workspace),
             timeout=self.exec_config.timeout,
             restrict_to_workspace=self.exec_config.restrict_to_workspace,
+            safety_guard=self.exec_config.safety_guard,
         ))
         
         # Web tools
@@ -1707,6 +1708,7 @@ class AgentLoop:
             working_dir=str(self.workspace),
             timeout=self.exec_config.timeout,
             restrict_to_workspace=self.exec_config.restrict_to_workspace,
+            safety_guard=self.exec_config.safety_guard,
         ))
 
         # Web

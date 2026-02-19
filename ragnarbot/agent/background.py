@@ -57,10 +57,10 @@ _DENY_PATTERNS = [
     r"\brm\s+-[rf]{1,2}\b",
     r"\bdel\s+/[fq]\b",
     r"\brmdir\s+/s\b",
-    r"\b(format|mkfs|diskpart)\b",
+    r"(?:^|[|;&]\s*)(?:sudo\s+)?(format|mkfs|diskpart)\b",
     r"\bdd\s+if=",
     r">\s*/dev/sd",
-    r"\b(shutdown|reboot|poweroff)\b",
+    r"(?:^|[|;&]\s*)(?:sudo\s+)?(shutdown|reboot|poweroff)\b",
     r":\(\)\s*\{.*\};\s*:",
 ]
 
@@ -133,12 +133,13 @@ class BackgroundProcessManager:
             return f"Error: Too many concurrent background jobs ({MAX_CONCURRENT} limit)"
 
         cwd = working_dir or str(self.workspace)
-        guard_error = _guard_command(
-            command, cwd,
-            restrict_to_workspace=self.exec_config.restrict_to_workspace,
-        )
-        if guard_error:
-            return guard_error
+        if self.exec_config.safety_guard:
+            guard_error = _guard_command(
+                command, cwd,
+                restrict_to_workspace=self.exec_config.restrict_to_workspace,
+            )
+            if guard_error:
+                return guard_error
 
         job_id = str(uuid.uuid4())[:8]
         display_label = label or (command[:30] + ("..." if len(command) > 30 else ""))
