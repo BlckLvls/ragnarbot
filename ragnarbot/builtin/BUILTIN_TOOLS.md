@@ -21,7 +21,7 @@ List directory contents. Use to explore project structure or check what files ex
 ### exec
 Execute a shell command. Returns stdout, stderr, and exit code.
 - Has a timeout (commands that run too long are killed).
-- Destructive commands (rm -rf, format, dd, etc.) are blocked by safety guards.
+- Destructive commands (rm -rf, format, dd, etc.) are blocked by safety guards (can be disabled via `tools.exec.safetyGuard: false` in config).
 - Provide `working_dir` when the command must run in a specific directory.
 - For long-running processes, warn the user about potential timeout.
 

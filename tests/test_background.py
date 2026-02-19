@@ -107,6 +107,30 @@ class TestGuardCommand:
         assert "blocked" in _guard_command("dd if=/dev/zero of=disk", "/tmp")
         assert "blocked" in _guard_command("shutdown now", "/tmp")
 
+    def test_allows_format_in_flags(self):
+        """Regression: --output-format and similar flags must not be blocked."""
+        assert _guard_command("claude -p 'hello' --output-format json", "/tmp") is None
+        assert _guard_command("git log --format='%H %s'", "/tmp") is None
+        assert _guard_command("docker inspect --format '{{.State}}'", "/tmp") is None
+        assert _guard_command("cargo build --message-format json", "/tmp") is None
+
+    def test_blocks_format_as_command(self):
+        assert _guard_command("format C:", "/tmp") is not None
+        assert _guard_command("sudo mkfs.ext4 /dev/sda1", "/tmp") is not None
+        assert _guard_command("echo ok; format C:", "/tmp") is not None
+
+    def test_allows_reboot_as_argument(self):
+        """Regression: 'last reboot' and grep for reboot/shutdown must not be blocked."""
+        assert _guard_command("last reboot", "/tmp") is None
+        assert _guard_command("grep shutdown /var/log/syslog", "/tmp") is None
+        assert _guard_command("journalctl | grep reboot", "/tmp") is None
+
+    def test_blocks_reboot_as_command(self):
+        assert _guard_command("reboot", "/tmp") is not None
+        assert _guard_command("sudo shutdown -h now", "/tmp") is not None
+        assert _guard_command("echo ok; reboot", "/tmp") is not None
+        assert _guard_command("echo ok && poweroff", "/tmp") is not None
+
     def test_workspace_restriction(self):
         result = _guard_command("cat ../../../etc/passwd", "/tmp", restrict_to_workspace=True)
         assert result is not None

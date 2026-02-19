@@ -159,6 +159,10 @@ class ExecToolConfig(BaseModel):
         default=False,
         json_schema_extra={"reload": "hot", "label": "Block commands outside workspace"},
     )
+    safety_guard: bool = Field(
+        default=True,
+        json_schema_extra={"reload": "hot", "label": "Enable shell command safety guard"},
+    )
 
 
 class BrowserConfig(BaseModel):
