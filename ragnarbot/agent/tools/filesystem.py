@@ -8,7 +8,7 @@ from typing import Any
 from ragnarbot.agent.tools.base import Tool
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
-MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20 MB (Anthropic limit)
+MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5 MB (Anthropic API limit for base64 images)
 
 
 class ReadFileTool(Tool):
@@ -74,7 +74,13 @@ class ReadFileTool(Tool):
         size = file_path.stat().st_size
         if size > MAX_IMAGE_SIZE:
             size_mb = size / (1024 * 1024)
-            return f"Error: Image too large ({size_mb:.1f} MB). Maximum is 20 MB."
+            limit_mb = MAX_IMAGE_SIZE / (1024 * 1024)
+            return (
+                f"Error: Image file exceeds {limit_mb:.0f} MB size limit "
+                f"(actual: {size_mb:.1f} MB). The image cannot be displayed inline. "
+                f"Use shell tools to resize or compress it, "
+                f"or ask the user to provide a smaller version."
+            )
 
         mime, _ = mimetypes.guess_type(str(file_path))
         mime = mime or "image/jpeg"

@@ -84,14 +84,15 @@ class TestReadFileToolImages:
     @pytest.mark.asyncio
     async def test_large_image_rejected(self, tmp_path):
         img = tmp_path / "huge.jpg"
-        # Write a file just over 20 MB
+        # Write a file just over the size limit
         img.write_bytes(b"\xff\xd8\xff" + b"\x00" * (MAX_IMAGE_SIZE + 1))
 
         tool = ReadFileTool()
         result = await tool.execute(path=str(img))
 
         assert isinstance(result, str)
-        assert "too large" in result.lower()
+        assert "exceeds" in result.lower()
+        assert "size limit" in result.lower()
 
     @pytest.mark.asyncio
     async def test_missing_file_error(self):
