@@ -25,8 +25,6 @@ def mock_agent():
     """Create a mock agent for ConfigTool."""
     agent = MagicMock()
     agent.provider = MagicMock()
-    agent.provider.set_temperature = MagicMock()
-    agent.provider.set_max_tokens = MagicMock()
     agent.stream_steps = True
     agent.debounce_seconds = 0.5
     agent.context_mode = "normal"
@@ -50,8 +48,8 @@ def config_tool(mock_agent):
 async def test_schema_action_returns_all_fields(config_tool):
     with patch(LOAD_CONFIG, return_value=Config()):
         result = await config_tool.execute(action="schema")
-    assert "agents.defaults.temperature" in result
-    assert "float" in result
+    assert "agents.defaults.stream_steps" in result
+    assert "bool" in result
     assert "[hot]" in result
 
 
@@ -66,9 +64,9 @@ async def test_schema_action_filter_by_path(config_tool):
 @pytest.mark.asyncio
 async def test_get_action_returns_value(config_tool):
     with patch(LOAD_CONFIG, return_value=Config()):
-        result = await config_tool.execute(action="get", path="agents.defaults.temperature")
+        result = await config_tool.execute(action="get", path="agents.defaults.debounce_seconds")
     data = json.loads(result)
-    assert data["value"] == 0.7
+    assert data["value"] == 0.5
     assert data["reload"] == "hot"
 
 
@@ -85,13 +83,12 @@ async def test_set_action_saves_and_hot_reloads(config_tool, mock_agent):
         patch(SAVE_CONFIG),
     ):
         result = await config_tool.execute(
-            action="set", path="agents.defaults.temperature", value="0.5"
+            action="set", path="agents.defaults.debounce_seconds", value="1.0"
         )
 
     data = json.loads(result)
-    assert data["new_value"] == 0.5
+    assert data["new_value"] == 1.0
     assert data["status"] == "applied"
-    mock_agent.provider.set_temperature.assert_called_once_with(0.5)
 
 
 @pytest.mark.asyncio
@@ -136,7 +133,7 @@ async def test_set_action_rejects_invalid(config_tool):
 
 @pytest.mark.asyncio
 async def test_set_action_missing_value(config_tool):
-    result = await config_tool.execute(action="set", path="agents.defaults.temperature")
+    result = await config_tool.execute(action="set", path="agents.defaults.debounce_seconds")
     assert "Error" in result
 
 
@@ -144,7 +141,7 @@ async def test_set_action_missing_value(config_tool):
 async def test_list_action_returns_full_config(config_tool):
     with patch(LOAD_CONFIG, return_value=Config()):
         result = await config_tool.execute(action="list")
-    assert "agents.defaults.temperature = 0.7" in result
+    assert "agents.defaults.debounce_seconds = 0.5" in result
     assert "gateway.port = 18790" in result
 
 
@@ -158,12 +155,12 @@ async def test_diff_action_default_config(config_tool):
 @pytest.mark.asyncio
 async def test_diff_action_shows_differences(config_tool):
     config = Config()
-    config.agents.defaults.temperature = 0.9
+    config.agents.defaults.debounce_seconds = 2.0
 
     with patch(LOAD_CONFIG, return_value=config):
         result = await config_tool.execute(action="diff")
-    assert "temperature" in result
-    assert "0.9" in result
+    assert "debounce_seconds" in result
+    assert "2.0" in result
 
 
 # --- Secrets integration tests ---
