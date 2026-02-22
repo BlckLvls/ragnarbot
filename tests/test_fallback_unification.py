@@ -127,10 +127,13 @@ class TestSubagentChatFn:
         bus = MagicMock()
         bus.publish_inbound = AsyncMock()
         workspace = MagicMock()
+        agents_loader = MagicMock()
+        agents_loader.load_agent.return_value = None
         return SubagentManager(
             provider=provider,
             workspace=workspace,
             bus=bus,
+            agents_loader=agents_loader,
             model="test/model",
             chat_fn=chat_fn,
             on_fallback_batch=on_fallback_batch,
@@ -151,6 +154,29 @@ class TestSubagentChatFn:
         assert used_fallback is False
         mgr.provider.chat.assert_called_once()
 
+    def _make_agent_task(self, task_id="test-id", task="do something",
+                         label="test label", channel="test", chat_id="1"):
+        import asyncio
+        from ragnarbot.agent.subagent import AgentTask, AgentTaskStatus
+        return AgentTask(
+            id=task_id,
+            label=label,
+            agent_name=None,
+            task=task,
+            status=AgentTaskStatus.running,
+            messages=[],
+            stop_event=asyncio.Event(),
+            origin={"channel": channel, "chat_id": chat_id},
+        )
+
+    def _make_tools_and_deliver(self):
+        from ragnarbot.agent.tools.deliver_result import DeliverResultTool
+        from ragnarbot.agent.tools.registry import ToolRegistry
+        reg = ToolRegistry()
+        deliver = DeliverResultTool()
+        reg.register(deliver)
+        return reg, deliver
+
     @pytest.mark.asyncio
     async def test_injected_chat_fn_is_used_in_subagent(self):
         """Subagent uses injected chat_fn instead of provider.chat()."""
@@ -158,11 +184,10 @@ class TestSubagentChatFn:
             LLMResponse(content="final answer"), False, None,
         ))
         mgr = self._make_manager(chat_fn=chat_fn)
+        agent_task = self._make_agent_task()
+        tools, deliver = self._make_tools_and_deliver()
 
-        await mgr._run_subagent(
-            "test-id", "do something", "test label",
-            {"channel": "test", "chat_id": "1"},
-        )
+        await mgr._run_agent(agent_task, None, "test/model", tools, deliver)
 
         chat_fn.assert_called()
         mgr.provider.chat.assert_not_called()
@@ -175,18 +200,16 @@ class TestSubagentChatFn:
         ))
         on_fb = AsyncMock()
         mgr = self._make_manager(chat_fn=chat_fn, on_fallback_batch=on_fb)
+        agent_task = self._make_agent_task(channel="telegram", chat_id="42")
+        tools, deliver = self._make_tools_and_deliver()
 
-        await mgr._run_subagent(
-            "test-id", "task", "label",
-            {"channel": "telegram", "chat_id": "42"},
-        )
+        await mgr._run_agent(agent_task, None, "test/model", tools, deliver)
 
         on_fb.assert_awaited_once_with(True, "telegram", "42")
 
     @pytest.mark.asyncio
     async def test_fallback_batch_called_on_error(self):
         """on_fallback_batch is called even when subagent raises RuntimeError."""
-        # First call uses fallback but returns error
         chat_fn = AsyncMock(return_value=(
             LLMResponse(content="both providers failed", finish_reason="error"),
             True,
@@ -194,11 +217,10 @@ class TestSubagentChatFn:
         ))
         on_fb = AsyncMock()
         mgr = self._make_manager(chat_fn=chat_fn, on_fallback_batch=on_fb)
+        agent_task = self._make_agent_task()
+        tools, deliver = self._make_tools_and_deliver()
 
-        await mgr._run_subagent(
-            "test-id", "task", "label",
-            {"channel": "test", "chat_id": "1"},
-        )
+        await mgr._run_agent(agent_task, None, "test/model", tools, deliver)
 
         # Should still be called despite the error
         on_fb.assert_awaited_once_with(True, "test", "1")
@@ -213,11 +235,10 @@ class TestSubagentChatFn:
         ))
         on_fb = AsyncMock()
         mgr = self._make_manager(chat_fn=chat_fn, on_fallback_batch=on_fb)
+        agent_task = self._make_agent_task()
+        tools, deliver = self._make_tools_and_deliver()
 
-        await mgr._run_subagent(
-            "test-id", "task", "label",
-            {"channel": "test", "chat_id": "1"},
-        )
+        await mgr._run_agent(agent_task, None, "test/model", tools, deliver)
 
         on_fb.assert_not_awaited()
 
