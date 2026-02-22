@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+DEFAULT_MAX_TOKENS = 32_000
+
 
 @dataclass
 class ToolCallRequest:
@@ -40,13 +42,9 @@ class LLMProvider(ABC):
         self,
         api_key: str | None = None,
         oauth_token: str | None = None,
-        max_tokens: int = 16_000,
-        temperature: float = 0.7,
     ):
         self.api_key = api_key
         self.oauth_token = oauth_token
-        self.default_temperature: float = temperature
-        self.default_max_tokens: int = max_tokens
 
     @abstractmethod
     async def chat(
@@ -64,8 +62,8 @@ class LLMProvider(ABC):
             messages: List of message dicts with 'role' and 'content'.
             tools: Optional list of tool definitions.
             model: Model identifier (provider-specific).
-            max_tokens: Maximum tokens in response (uses provider default if None).
-            temperature: Sampling temperature (uses provider default if None).
+            max_tokens: Maximum tokens in response (defaults to DEFAULT_MAX_TOKENS).
+            temperature: Sampling temperature (omitted if None — uses API default).
 
         Returns:
             LLMResponse with content and/or tool calls.
@@ -76,11 +74,3 @@ class LLMProvider(ABC):
     def get_default_model(self) -> str:
         """Get the default model for this provider."""
         pass
-
-    def set_temperature(self, value: float) -> None:
-        """Update the default sampling temperature."""
-        self.default_temperature = value
-
-    def set_max_tokens(self, value: int) -> None:
-        """Update the default max tokens."""
-        self.default_max_tokens = value
