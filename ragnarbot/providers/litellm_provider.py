@@ -299,6 +299,39 @@ class LiteLLMProvider(LLMProvider):
 
         return messages
 
+    @staticmethod
+    def _recover_truncated_json(raw: str) -> dict:
+        """Best-effort recovery of fields from truncated JSON.
+
+        When the LLM output is cut off mid-JSON (e.g. due to max_tokens),
+        json.loads fails.  We try to extract top-level string fields so that
+        tools still receive usable arguments instead of an opaque 'raw' blob.
+        """
+        import re
+
+        recovered: dict[str, str] = {}
+        # Match top-level "key": "value" pairs (handles escaped quotes)
+        for m in re.finditer(r'"(\w+)"\s*:\s*"((?:[^"\\]|\\.)*)"', raw):
+            recovered[m.group(1)] = m.group(2).replace('\\"', '"').replace("\\n", "\n")
+
+        if not recovered:
+            return {"raw": raw}
+
+        # Try to find if there's a value that was truncated (last key)
+        # by checking if the raw string ends without closing the JSON
+        last_key_match = list(re.finditer(r'"(\w+)"\s*:\s*"', raw))
+        if last_key_match:
+            last_key = last_key_match[-1].group(1)
+            last_start = last_key_match[-1].end()
+            # Extract everything after the last opening quote to end of string
+            rest = raw[last_start:]
+            # Remove trailing incomplete escapes/quotes
+            rest = rest.rstrip('\\')
+            if last_key not in recovered:
+                recovered[last_key] = rest.replace('\\"', '"').replace("\\n", "\n")
+
+        return recovered
+
     def _parse_response(self, response: Any) -> LLMResponse:
         """Parse LiteLLM response into our standard format."""
         choice = response.choices[0]
@@ -314,7 +347,7 @@ class LiteLLMProvider(LLMProvider):
                     try:
                         args = json.loads(args)
                     except json.JSONDecodeError:
-                        args = {"raw": args}
+                        args = self._recover_truncated_json(args)
                 
                 tool_calls.append(ToolCallRequest(
                     id=tc.id,
