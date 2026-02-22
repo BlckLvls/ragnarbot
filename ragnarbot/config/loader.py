@@ -6,8 +6,6 @@ from typing import Any
 
 from ragnarbot.config.schema import Config
 
-MAX_TOKENS_CAP = 16_000  # TEMPORARY: remove once config migration handles this properly
-
 
 def get_config_path() -> Path:
     """Get the default configuration file path."""
@@ -38,22 +36,12 @@ def load_config(config_path: Path | None = None) -> Config:
                 data = json.load(f)
 
             config = Config.model_validate(convert_keys(data))
-            _apply_temp_fixes(config)
             return config
         except (json.JSONDecodeError, ValueError) as e:
             print(f"Warning: Failed to load config from {path}: {e}")
             print("Using default configuration.")
 
-    config = Config()
-    _apply_temp_fixes(config)
-    return config
-
-
-
-def _apply_temp_fixes(config: Config) -> None:
-    """TEMPORARY: Apply runtime fixes to loaded config. Remove when no longer needed."""
-    if config.agents.defaults.max_tokens > MAX_TOKENS_CAP:
-        config.agents.defaults.max_tokens = MAX_TOKENS_CAP
+    return Config()
 
 
 def save_config(config: Config, config_path: Path | None = None) -> None:
