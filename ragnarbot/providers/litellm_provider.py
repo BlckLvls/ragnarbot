@@ -5,6 +5,7 @@ from typing import Any
 
 import litellm
 from litellm import acompletion
+from loguru import logger
 
 from ragnarbot.providers.base import DEFAULT_MAX_TOKENS, LLMProvider, LLMResponse, ToolCallRequest
 
@@ -117,8 +118,24 @@ class LiteLLMProvider(LLMProvider):
         try:
             response = await acompletion(**kwargs)
             return self._parse_response(response)
+        except litellm.RateLimitError as e:
+            err_msg = str(e)
+            if "CachedContent" in err_msg and "FreeTier" in err_msg:
+                logger.warning("Gemini free tier does not support caching, retrying without cache")
+                kwargs["messages"] = self._strip_cache_control(kwargs["messages"])
+                try:
+                    response = await acompletion(**kwargs)
+                    return self._parse_response(response)
+                except Exception as retry_err:
+                    return LLMResponse(
+                        content=f"Error calling LLM: {str(retry_err)}",
+                        finish_reason="error",
+                    )
+            return LLMResponse(
+                content=f"Error calling LLM: {err_msg}",
+                finish_reason="error",
+            )
         except Exception as e:
-            # Return error as content for graceful handling
             return LLMResponse(
                 content=f"Error calling LLM: {str(e)}",
                 finish_reason="error",
@@ -296,6 +313,25 @@ class LiteLLMProvider(LLMProvider):
                         break
 
         return messages
+
+    @staticmethod
+    def _strip_cache_control(messages: list[dict]) -> list[dict]:
+        """Remove all cache_control keys from messages.
+
+        Returns a new list without mutating the originals.
+        """
+        result = []
+        for msg in messages:
+            msg = {k: v for k, v in msg.items() if k != "cache_control"}
+            content = msg.get("content")
+            if isinstance(content, list):
+                msg["content"] = [
+                    {k: v for k, v in block.items() if k != "cache_control"}
+                    if isinstance(block, dict) else block
+                    for block in content
+                ]
+            result.append(msg)
+        return result
 
     @staticmethod
     def _recover_truncated_json(raw: str) -> dict:
