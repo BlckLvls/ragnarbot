@@ -307,14 +307,6 @@ class ConfigTool(Tool):
         """Apply a hot-reloadable config change to live agent/tool state."""
         agent = self._agent
 
-        if path == "agents.defaults.temperature":
-            agent.provider.set_temperature(float(value))
-            return "Temperature updated on provider."
-
-        if path == "agents.defaults.max_tokens":
-            agent.provider.set_max_tokens(int(value))
-            return "Max tokens updated on provider."
-
         if path == "agents.defaults.stream_steps":
             agent.stream_steps = bool(value) if isinstance(value, bool) else str(value).lower() in ("true", "1")
             return "Stream steps updated."
@@ -379,20 +371,6 @@ class ConfigTool(Tool):
             if agent._fallback_config:
                 agent._fallback_config.recovery_probe_interval = int(value)
             return "Fallback recovery probe interval updated."
-
-        if path == "agents.fallback.max_tokens":
-            if agent._fallback_config:
-                agent._fallback_config.max_tokens = int(value) if value else None
-            if agent._fallback_provider:
-                agent._fallback_provider.set_max_tokens(int(value))
-            return "Fallback max tokens updated."
-
-        if path == "agents.fallback.temperature":
-            if agent._fallback_config:
-                agent._fallback_config.temperature = float(value) if value else None
-            if agent._fallback_provider:
-                agent._fallback_provider.set_temperature(float(value))
-            return "Fallback temperature updated."
 
         return None
 
