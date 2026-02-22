@@ -73,7 +73,7 @@ def test_check_dependency_oauth_satisfies():
 
 def test_check_dependency_irrelevant_path():
     with patch(LOAD_CREDS, return_value=_empty_creds()):
-        result = check_config_dependency("agents.defaults.temperature", "0.5")
+        result = check_config_dependency("agents.defaults.debounce_seconds", "1.0")
     assert result is None
 
 

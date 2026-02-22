@@ -40,14 +40,6 @@ class AgentDefaults(BaseModel):
         default="anthropic/claude-opus-4-6",
         json_schema_extra={"reload": "warm", "label": "LLM model identifier (provider/model)"},
     )
-    max_tokens: int = Field(
-        default=16_000,
-        json_schema_extra={"reload": "hot", "label": "Maximum tokens in LLM response"},
-    )
-    temperature: float = Field(
-        default=0.7,
-        json_schema_extra={"reload": "hot", "label": "LLM sampling temperature"},
-    )
     max_context_tokens: int = Field(
         default=200_000,
         json_schema_extra={"reload": "hot", "label": "Maximum context window tokens"},
@@ -86,14 +78,6 @@ class FallbackConfig(BaseModel):
         default="api_key",
         pattern="^(api_key|oauth)$",
         json_schema_extra={"reload": "warm", "label": "Fallback auth method"},
-    )
-    max_tokens: int | None = Field(
-        default=None,
-        json_schema_extra={"reload": "hot", "label": "Fallback max tokens"},
-    )
-    temperature: float | None = Field(
-        default=None,
-        json_schema_extra={"reload": "hot", "label": "Fallback temperature"},
     )
     consecutive_failures_threshold: int = Field(
         default=3,

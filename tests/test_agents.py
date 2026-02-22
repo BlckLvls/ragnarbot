@@ -299,12 +299,11 @@ class TestSubagentManager:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_subagent_chat_receives_provider_max_tokens(tmp_path):
-    """Verify the sub-agent's LLM call uses the provider's default_max_tokens.
+async def test_subagent_chat_does_not_pass_explicit_max_tokens(tmp_path):
+    """Verify the sub-agent's LLM call does not pass explicit max_tokens.
 
-    When _run_agent calls provider.chat() without an explicit max_tokens kwarg
-    the provider must fall back to self.default_max_tokens.  This test sets a
-    custom value on the provider and asserts it reaches the actual chat() call.
+    The provider uses DEFAULT_MAX_TOKENS internally when max_tokens is not
+    passed. This test verifies the sub-agent doesn't override that.
     """
     from ragnarbot.providers.base import LLMResponse
 
@@ -316,8 +315,6 @@ async def test_subagent_chat_receives_provider_max_tokens(tmp_path):
 
     provider = MagicMock()
     provider.get_default_model.return_value = "test/model"
-    provider.default_max_tokens = 42_000  # custom value from config
-    provider.default_temperature = 0.42
     provider.chat = fake_chat
 
     bus = MagicMock()
@@ -343,15 +340,11 @@ async def test_subagent_chat_receives_provider_max_tokens(tmp_path):
     await asyncio.sleep(0.3)
 
     # The provider.chat was called — check that max_tokens was NOT passed
-    # explicitly, meaning the provider will use its own default_max_tokens.
+    # explicitly, meaning the provider will use DEFAULT_MAX_TOKENS internally.
     assert "max_tokens" not in captured_kwargs, (
         "Sub-agent should NOT pass explicit max_tokens — "
-        "the provider uses self.default_max_tokens as fallback"
+        "the provider uses DEFAULT_MAX_TOKENS as fallback"
     )
-
-    # Double-check: simulate what the provider does internally
-    effective = captured_kwargs.get("max_tokens", provider.default_max_tokens)
-    assert effective == 42_000
 
 
 def test_safe_tool_names():
@@ -751,8 +744,6 @@ class TestCronIsolatedAgentProfile:
 
         provider = MagicMock()
         provider.get_default_model.return_value = "test/model"
-        provider.default_max_tokens = 16_000
-        provider.default_temperature = 0.7
 
         bus = MagicMock()
         bus.publish_outbound = AsyncMock()

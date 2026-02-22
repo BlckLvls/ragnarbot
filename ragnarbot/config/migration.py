@@ -40,6 +40,14 @@ class MigrationResult:
 
 _USER_OWNED_PATHS = {"extra"}
 
+# Paths to auto-remove during migration (no user confirmation needed).
+_AUTO_REMOVE_PATHS = {
+    "agents.defaults.max_tokens",
+    "agents.defaults.temperature",
+    "agents.fallback.max_tokens",
+    "agents.fallback.temperature",
+}
+
 
 def _deep_diff(
     existing: dict, default: dict, path: str = ""
@@ -139,11 +147,11 @@ def migrate_config(config_path: Path) -> MigrationResult:
 
     # Handle removals
     for path, value in removed.items():
-        if _has_meaningful_data(value):
-            result.needs_confirm[path] = value
-        else:
+        if path in _AUTO_REMOVE_PATHS or not _has_meaningful_data(value):
             result.auto_removed[path] = value
             _delete_nested(existing, path)
+        else:
+            result.needs_confirm[path] = value
 
     return result
 

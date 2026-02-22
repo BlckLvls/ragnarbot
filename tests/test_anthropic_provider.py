@@ -307,10 +307,15 @@ class TestProviderInit:
         mock_response.usage.input_tokens = 5
         mock_response.usage.output_tokens = 3
 
-        provider.client.messages.create = AsyncMock(return_value=mock_response)
+        # Mock streaming context manager
+        mock_stream = AsyncMock()
+        mock_stream.get_final_message = AsyncMock(return_value=mock_response)
+        mock_stream.__aenter__ = AsyncMock(return_value=mock_stream)
+        mock_stream.__aexit__ = AsyncMock(return_value=False)
+        provider.client.messages.stream = MagicMock(return_value=mock_stream)
 
         result = await provider.chat([{"role": "user", "content": "hi"}])
 
-        call_kwargs = provider.client.messages.create.call_args
+        call_kwargs = provider.client.messages.stream.call_args
         assert call_kwargs.kwargs["model"] == "claude-opus-4-6"
         assert result.content == "hi"

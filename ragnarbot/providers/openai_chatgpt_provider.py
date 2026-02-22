@@ -24,10 +24,8 @@ class OpenAIChatGPTProvider(LLMProvider):
     def __init__(
         self,
         default_model: str = "gpt-5.2",
-        max_tokens: int = 16_000,
-        temperature: float = 0.7,
     ):
-        super().__init__(max_tokens=max_tokens, temperature=temperature)
+        super().__init__()
         self.default_model = default_model
 
         from ragnarbot.auth.openai_oauth import get_account_id
@@ -44,8 +42,6 @@ class OpenAIChatGPTProvider(LLMProvider):
         from ragnarbot.auth.openai_oauth import get_access_token
 
         model = model or self.default_model
-        max_tokens = max_tokens if max_tokens is not None else self.default_max_tokens
-        temperature = temperature if temperature is not None else self.default_temperature
 
         # Strip provider prefix (e.g. "openai/gpt-5.2" → "gpt-5.2")
         if model.startswith("openai/"):

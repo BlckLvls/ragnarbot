@@ -13,15 +13,15 @@ from ragnarbot.config.schema import AgentDefaults, Config
 
 
 def test_resolve_field_name_snake_case():
-    assert resolve_field_name(AgentDefaults, "max_tokens") == "max_tokens"
+    assert resolve_field_name(AgentDefaults, "max_context_tokens") == "max_context_tokens"
 
 
 def test_resolve_field_name_camel_case():
-    assert resolve_field_name(AgentDefaults, "maxTokens") == "max_tokens"
+    assert resolve_field_name(AgentDefaults, "maxContextTokens") == "max_context_tokens"
 
 
 def test_resolve_field_name_exact_match():
-    assert resolve_field_name(AgentDefaults, "temperature") == "temperature"
+    assert resolve_field_name(AgentDefaults, "stream_steps") == "stream_steps"
 
 
 def test_resolve_field_name_not_found():
@@ -30,7 +30,7 @@ def test_resolve_field_name_not_found():
 
 def test_get_by_path_nested():
     config = Config()
-    assert get_by_path(config, "agents.defaults.temperature") == 0.7
+    assert get_by_path(config, "agents.defaults.debounce_seconds") == 0.5
 
 
 def test_get_by_path_deep():
@@ -53,19 +53,19 @@ def test_get_by_path_invalid():
 
 def test_get_by_path_camel_case():
     config = Config()
-    assert get_by_path(config, "agents.defaults.maxTokens") == 16_000
+    assert get_by_path(config, "agents.defaults.maxContextTokens") == 200_000
 
 
 def test_set_by_path_float_coercion():
     config = Config()
-    set_by_path(config, "agents.defaults.temperature", "0.5")
-    assert config.agents.defaults.temperature == 0.5
+    set_by_path(config, "agents.defaults.debounce_seconds", "1.5")
+    assert config.agents.defaults.debounce_seconds == 1.5
 
 
 def test_set_by_path_int_coercion():
     config = Config()
-    set_by_path(config, "agents.defaults.max_tokens", "4096")
-    assert config.agents.defaults.max_tokens == 4096
+    set_by_path(config, "agents.defaults.max_context_tokens", "100000")
+    assert config.agents.defaults.max_context_tokens == 100000
 
 
 def test_set_by_path_bool_coercion():
@@ -96,7 +96,7 @@ def test_set_by_path_camel_case():
 def test_get_all_paths_flattening():
     config = Config()
     paths = get_all_paths(config)
-    assert "agents.defaults.temperature" in paths
+    assert "agents.defaults.debounce_seconds" in paths
     assert "tools.web.search.engine" in paths
     assert "gateway.port" in paths
     # Should not contain sub-model keys
@@ -107,12 +107,12 @@ def test_get_all_paths_flattening():
 def test_get_all_paths_values():
     config = Config()
     paths = get_all_paths(config)
-    assert paths["agents.defaults.temperature"] == 0.7
+    assert paths["agents.defaults.debounce_seconds"] == 0.5
     assert paths["gateway.port"] == 18790
 
 
 def test_get_field_meta_returns_reload():
-    meta = get_field_meta(Config, "agents.defaults.temperature")
+    meta = get_field_meta(Config, "agents.defaults.debounce_seconds")
     assert meta["reload"] == "hot"
     assert meta["type"] == "float"
     assert "label" in meta

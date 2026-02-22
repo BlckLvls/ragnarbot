@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 
-from ragnarbot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from ragnarbot.providers.base import DEFAULT_MAX_TOKENS, LLMProvider, LLMResponse, ToolCallRequest
 
 CODE_ASSIST_BASE = "https://cloudcode-pa.googleapis.com"
 STREAM_URL = f"{CODE_ASSIST_BASE}/v1internal:streamGenerateContent"
@@ -37,10 +37,8 @@ class GeminiCodeAssistProvider(LLMProvider):
     def __init__(
         self,
         default_model: str = "gemini-2.5-flash",
-        max_tokens: int = 16_000,
-        temperature: float = 0.7,
     ):
-        super().__init__(max_tokens=max_tokens, temperature=temperature)
+        super().__init__()
         self.default_model = default_model
 
         from ragnarbot.auth.gemini_oauth import get_project_id
@@ -57,8 +55,7 @@ class GeminiCodeAssistProvider(LLMProvider):
         from ragnarbot.auth.gemini_oauth import get_access_token
 
         model = model or self.default_model
-        max_tokens = max_tokens if max_tokens is not None else self.default_max_tokens
-        temperature = temperature if temperature is not None else self.default_temperature
+        max_tokens = max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
 
         # Strip provider prefix (e.g. "gemini/gemini-2.5-flash" → "gemini-2.5-flash")
         if model.startswith("gemini/"):

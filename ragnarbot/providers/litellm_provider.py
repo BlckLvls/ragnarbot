@@ -6,7 +6,7 @@ from typing import Any
 import litellm
 from litellm import acompletion
 
-from ragnarbot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from ragnarbot.providers.base import DEFAULT_MAX_TOKENS, LLMProvider, LLMResponse, ToolCallRequest
 
 
 class LiteLLMProvider(LLMProvider):
@@ -21,10 +21,8 @@ class LiteLLMProvider(LLMProvider):
         api_key: str | None = None,
         default_model: str = "anthropic/claude-opus-4-5",
         oauth_token: str | None = None,
-        max_tokens: int = 16_000,
-        temperature: float = 0.7,
     ):
-        super().__init__(api_key, oauth_token, max_tokens=max_tokens, temperature=temperature)
+        super().__init__(api_key, oauth_token)
         self.default_model = default_model
 
         # Configure LiteLLM env vars based on provider
@@ -65,8 +63,7 @@ class LiteLLMProvider(LLMProvider):
             LLMResponse with content and/or tool calls.
         """
         model = model or self.default_model
-        max_tokens = max_tokens if max_tokens is not None else self.default_max_tokens
-        temperature = temperature if temperature is not None else self.default_temperature
+        max_tokens = max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
 
         is_openrouter = model.startswith("openrouter/")
 
@@ -82,8 +79,9 @@ class LiteLLMProvider(LLMProvider):
             "model": model,
             "messages": messages,
             "max_tokens": max_tokens,
-            "temperature": temperature,
         }
+        if temperature is not None:
+            kwargs["temperature"] = temperature
 
         if tools:
             kwargs["tools"] = tools

@@ -122,7 +122,7 @@ class TestMigrateConfig:
             "agents": {
                 "defaults": {
                     "model": "openai/gpt-5.2",
-                    "maxTokens": 4096,
+                    "maxContextTokens": 100_000,
                 }
             }
         }
@@ -131,7 +131,35 @@ class TestMigrateConfig:
 
         result = migrate_config(path)
         assert result.data["agents"]["defaults"]["model"] == "openai/gpt-5.2"
-        assert result.data["agents"]["defaults"]["max_tokens"] == 4096
+        assert result.data["agents"]["defaults"]["max_context_tokens"] == 100_000
+
+    def test_auto_removes_max_tokens_and_temperature(self, tmp_path):
+        config = {
+            "agents": {
+                "defaults": {
+                    "model": "anthropic/claude-opus-4-6",
+                    "maxTokens": 16000,
+                    "temperature": 0.7,
+                },
+                "fallback": {
+                    "maxTokens": 8000,
+                    "temperature": 0.5,
+                },
+            }
+        }
+        path = tmp_path / "config.json"
+        path.write_text(json.dumps(config))
+
+        result = migrate_config(path)
+        defaults = result.data.get("agents", {}).get("defaults", {})
+        assert "max_tokens" not in defaults
+        assert "temperature" not in defaults
+        fallback = result.data.get("agents", {}).get("fallback", {})
+        assert "max_tokens" not in fallback
+        assert "temperature" not in fallback
+        # Should be in auto_removed, not needs_confirm
+        assert "agents.defaults.max_tokens" in result.auto_removed
+        assert "agents.defaults.temperature" in result.auto_removed
 
     def test_removes_unknown_empty(self, tmp_path):
         config = {

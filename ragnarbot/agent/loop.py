@@ -347,11 +347,6 @@ class AgentLoop:
             self._fallback_provider = self._provider_factory(
                 self._fallback_model, auth_method,
             )
-            # Apply fallback-specific or inherited settings
-            if self._fallback_config and self._fallback_config.temperature is not None:
-                self._fallback_provider.set_temperature(self._fallback_config.temperature)
-            if self._fallback_config and self._fallback_config.max_tokens is not None:
-                self._fallback_provider.set_max_tokens(self._fallback_config.max_tokens)
             return self._fallback_provider
         except Exception as e:
             logger.error(f"Failed to create fallback provider: {e}")

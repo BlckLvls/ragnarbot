@@ -5,7 +5,7 @@ from typing import Any
 
 from anthropic import AsyncAnthropic
 
-from ragnarbot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from ragnarbot.providers.base import DEFAULT_MAX_TOKENS, LLMProvider, LLMResponse, ToolCallRequest
 
 # Headers required by Anthropic API for OAuth token authentication.
 _OAUTH_HEADERS = {
@@ -34,10 +34,8 @@ class AnthropicProvider(LLMProvider):
         api_key: str | None = None,
         default_model: str = "claude-opus-4-6",
         oauth_token: str | None = None,
-        max_tokens: int = 16_000,
-        temperature: float = 0.7,
     ):
-        super().__init__(api_key, oauth_token, max_tokens=max_tokens, temperature=temperature)
+        super().__init__(api_key, oauth_token)
         self.default_model = default_model
         self.client = self._build_client(api_key, oauth_token)
 
@@ -67,8 +65,7 @@ class AnthropicProvider(LLMProvider):
         temperature: float | None = None,
     ) -> LLMResponse:
         model = model or self.default_model
-        max_tokens = max_tokens if max_tokens is not None else self.default_max_tokens
-        temperature = temperature if temperature is not None else self.default_temperature
+        max_tokens = max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
         # Strip provider prefix — config stores "anthropic/claude-...", SDK expects "claude-..."
         if model.startswith("anthropic/"):
             model = model[len("anthropic/"):]
@@ -84,8 +81,9 @@ class AnthropicProvider(LLMProvider):
             "model": model,
             "messages": anthropic_messages,
             "max_tokens": max_tokens,
-            "temperature": temperature,
         }
+        if temperature is not None:
+            kwargs["temperature"] = temperature
 
         if system_prompt or self.oauth_token:
             kwargs["system"] = self._build_system(system_prompt)
@@ -94,7 +92,9 @@ class AnthropicProvider(LLMProvider):
             kwargs["tools"] = self._convert_tools(tools)
 
         try:
-            response = await self.client.messages.create(**kwargs)
+            # Use streaming to avoid Anthropic SDK ValueError for max_tokens > ~21k
+            async with self.client.messages.stream(**kwargs) as stream:
+                response = await stream.get_final_message()
             return self._parse_response(response)
         except Exception as e:
             return LLMResponse(
