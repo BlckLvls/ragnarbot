@@ -101,6 +101,7 @@ async def test_set_action_warm_field(config_tool):
     with (
         patch(LOAD_CONFIG, return_value=Config()),
         patch(SAVE_CONFIG),
+        patch(LOAD_CREDS, return_value=creds),
         patch(LOAD_CREDS_HELPERS, return_value=creds),
     ):
         result = await config_tool.execute(
@@ -251,11 +252,131 @@ async def test_set_config_blocked_by_missing_credential(config_tool):
     creds = Credentials()
     with (
         patch(LOAD_CONFIG, return_value=Config()),
+        patch(LOAD_CREDS, return_value=creds),
         patch(LOAD_CREDS_HELPERS, return_value=creds),
     ):
         result = await config_tool.execute(
             action="set", path="agents.defaults.model", value="gemini/gemini-3-pro-preview"
         )
     assert "Error" in result
-    assert "Blocked" in result
     assert "gemini" in result
+
+
+# --- Fallback auth validation tests (Issue #70) ---
+
+
+@pytest.mark.asyncio
+async def test_set_fallback_model_with_api_key_different_from_primary(config_tool):
+    """Primary uses OAuth, fallback uses api_key with correct credentials — should pass."""
+    creds = Credentials(
+        providers=ProvidersCredentials(
+            anthropic=ProviderCredentials(oauth_key="ant-oauth-token"),
+            gemini=ProviderCredentials(api_key="gemini-api-key"),
+        ),
+    )
+    config = Config()
+    config.agents.defaults.auth_method = "oauth"
+    with (
+        patch(LOAD_CONFIG, return_value=config),
+        patch(SAVE_CONFIG),
+        patch(LOAD_CREDS, return_value=creds),
+        patch(LOAD_CREDS_HELPERS, return_value=creds),
+    ):
+        result = await config_tool.execute(
+            action="set", path="agents.fallback.model",
+            value="gemini/gemini-3-pro-preview",
+        )
+    data = json.loads(result)
+    assert data["new_value"] == "gemini/gemini-3-pro-preview"
+
+
+@pytest.mark.asyncio
+async def test_set_fallback_model_rejects_missing_credential(config_tool):
+    """Fallback auth_method is api_key but no api_key for Gemini — should fail."""
+    creds = Credentials(
+        providers=ProvidersCredentials(
+            anthropic=ProviderCredentials(oauth_key="ant-oauth-token"),
+        ),
+    )
+    config = Config()
+    config.agents.defaults.auth_method = "oauth"
+    with (
+        patch(LOAD_CONFIG, return_value=config),
+        patch(LOAD_CREDS, return_value=creds),
+        patch(LOAD_CREDS_HELPERS, return_value=creds),
+    ):
+        result = await config_tool.execute(
+            action="set", path="agents.fallback.model",
+            value="gemini/gemini-3-pro-preview",
+        )
+    assert "Error" in result
+    assert "gemini" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_set_fallback_auth_validates_against_fallback_model(config_tool):
+    """Changing fallback auth_method validates against fallback model, not primary."""
+    creds = Credentials(
+        providers=ProvidersCredentials(
+            anthropic=ProviderCredentials(api_key="ant-key"),
+            gemini=ProviderCredentials(api_key="gemini-key"),
+        ),
+    )
+    config = Config()
+    config.agents.fallback.model = "gemini/gemini-3-pro-preview"
+    config.agents.fallback.auth_method = "api_key"
+    with (
+        patch(LOAD_CONFIG, return_value=config),
+        patch(SAVE_CONFIG),
+        patch(LOAD_CREDS, return_value=creds),
+        patch(LOAD_CREDS_HELPERS, return_value=creds),
+    ):
+        result = await config_tool.execute(
+            action="set", path="agents.fallback.auth_method", value="api_key",
+        )
+    data = json.loads(result)
+    assert data["new_value"] == "api_key"
+
+
+@pytest.mark.asyncio
+async def test_set_fallback_auth_rejects_oauth_without_creds(config_tool):
+    """Changing fallback to oauth but no oauth creds for that provider — should fail."""
+    creds = Credentials(
+        providers=ProvidersCredentials(
+            gemini=ProviderCredentials(api_key="gemini-key"),
+        ),
+    )
+    config = Config()
+    config.agents.fallback.model = "gemini/gemini-3-pro-preview"
+    config.agents.fallback.auth_method = "api_key"
+    with (
+        patch(LOAD_CONFIG, return_value=config),
+        patch(LOAD_CREDS, return_value=creds),
+        patch("ragnarbot.auth.gemini_oauth.is_authenticated", return_value=False),
+    ):
+        result = await config_tool.execute(
+            action="set", path="agents.fallback.auth_method", value="oauth",
+        )
+    assert "Error" in result
+    assert "OAuth" in result
+
+
+@pytest.mark.asyncio
+async def test_set_primary_auth_validates_credentials(config_tool):
+    """Changing primary auth_method checks credentials for that method."""
+    creds = Credentials(
+        providers=ProvidersCredentials(
+            anthropic=ProviderCredentials(oauth_key="ant-oauth"),
+        ),
+    )
+    config = Config()
+    config.agents.defaults.auth_method = "oauth"
+    with (
+        patch(LOAD_CONFIG, return_value=config),
+        patch(LOAD_CREDS, return_value=creds),
+    ):
+        result = await config_tool.execute(
+            action="set", path="agents.defaults.auth_method", value="api_key",
+        )
+    assert "Error" in result
+    assert "api key" in result.lower() or "API key" in result

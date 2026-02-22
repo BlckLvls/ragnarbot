@@ -45,46 +45,26 @@ def _create_provider(model: str, auth_method: str, creds):
 def _validate_auth(config, creds):
     """Validate auth configuration before provider creation.
 
+    Validates both the primary model and fallback model (if configured).
     Returns error message string or None if OK.
     """
-    from ragnarbot.config.schema import OAUTH_SUPPORTED_PROVIDERS
+    from ragnarbot.config.validation import validate_model_auth
 
-    model = config.agents.defaults.model
-    provider_name = model.split("/")[0] if "/" in model else "anthropic"
     auth_method = config.agents.defaults.auth_method
-
     if auth_method not in ("api_key", "oauth"):
         return f"Unknown auth method: {auth_method}"
 
-    if auth_method == "oauth" and provider_name not in OAUTH_SUPPORTED_PROVIDERS:
-        return (
-            f"OAuth is not supported for provider '{provider_name}'. "
-            f"Supported: {', '.join(OAUTH_SUPPORTED_PROVIDERS)}"
-        )
+    # Validate primary model
+    error = validate_model_auth(config.agents.defaults.model, auth_method, creds)
+    if error:
+        return error
 
-    if auth_method == "oauth":
-        if provider_name == "gemini":
-            from ragnarbot.auth.gemini_oauth import is_authenticated
-            if not is_authenticated():
-                return "Gemini OAuth not configured. Run: ragnarbot oauth gemini"
-        elif provider_name == "openai":
-            from ragnarbot.auth.openai_oauth import is_authenticated
-            if not is_authenticated():
-                return "OpenAI OAuth not configured. Run: ragnarbot oauth openai"
-        else:
-            # Anthropic — uses credentials file
-            provider_creds = getattr(creds.providers, provider_name, None)
-            if not provider_creds or not provider_creds.oauth_key:
-                return f"No OAuth token for '{provider_name}'. Run: claude setup-token"
-        return None
-
-    # api_key path
-    provider_creds = getattr(creds.providers, provider_name, None)
-    if not provider_creds:
-        return f"No credentials configured for provider '{provider_name}'"
-
-    if not provider_creds.api_key:
-        return f"No API key configured for '{provider_name}'. Set it in ~/.ragnarbot/credentials.json"
+    # Validate fallback model (if configured)
+    fb = config.agents.fallback
+    if fb.model:
+        fb_error = validate_model_auth(fb.model, fb.auth_method, creds)
+        if fb_error:
+            return f"Fallback model: {fb_error}"
 
     return None
 
