@@ -279,7 +279,7 @@ Act on this result naturally. If the output contains file paths or URLs, share t
         bg_task.add_done_callback(lambda _: self._cleanup_stale())
 
         logger.info(f"Poll [{job_id}] scheduled in {after}s")
-        return f"Poll scheduled (id: {job_id}, fires in {after}s)"
+        return f"Poll {job_id} set, will fire in {after}s."
 
     async def _fire_poll(self, poll_job: BgJob) -> None:
         """Sleep then publish status summary as system message."""

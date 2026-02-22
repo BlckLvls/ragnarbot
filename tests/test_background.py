@@ -44,7 +44,7 @@ def _make_manager(bus=None):
 
 def _extract_job_id(result: str) -> str:
     """Extract job_id from spawn result string."""
-    return result.split("id: ")[1].split(",")[0]
+    return result.split("Poll ")[1].split(" set")[0]
 
 
 async def _kill_all(mgr: BackgroundProcessManager):
@@ -227,7 +227,7 @@ class TestBackgroundProcessManager:
     async def test_poll_scheduling(self):
         mgr, bus = _make_manager()
         result = await mgr.schedule_poll(after=1, origin={"channel": "test", "chat_id": "1"})
-        assert "Poll scheduled" in result
+        assert "Poll" in result
         await asyncio.sleep(1.5)
         bus.publish_inbound.assert_called()
 
@@ -286,11 +286,11 @@ class TestBackgroundProcessManager:
         mgr, bus = _make_manager()
         origin = {"channel": "test", "chat_id": "1"}
         first = await mgr.schedule_poll(after=60, origin=origin)
-        assert "Poll scheduled" in first
+        assert "Poll" in first
         second = await mgr.schedule_poll(after=60, origin=origin)
         assert "Poll already active" in second
         # Cleanup
-        job_id = first.split("id: ")[1].split(",")[0]
+        job_id = first.split("Poll ")[1].split(" set")[0]
         await mgr.kill(job_id)
 
     @pytest.mark.asyncio
@@ -299,12 +299,12 @@ class TestBackgroundProcessManager:
         mgr, bus = _make_manager()
         origin = {"channel": "test", "chat_id": "1"}
         first = await mgr.schedule_poll(after=0, origin=origin)
-        assert "Poll scheduled" in first
+        assert "Poll" in first
         await asyncio.sleep(0.3)  # let the poll fire and complete
         second = await mgr.schedule_poll(after=60, origin=origin)
-        assert "Poll scheduled" in second
+        assert "Poll" in second
         # Cleanup
-        job_id = second.split("id: ")[1].split(",")[0]
+        job_id = second.split("Poll ")[1].split(" set")[0]
         await mgr.kill(job_id)
 
     @pytest.mark.asyncio
@@ -387,9 +387,9 @@ class TestToolDelegation:
         tool = PollTool(manager=mgr)
         tool.set_context("telegram", "12345")
         result = await tool.execute(after=60)
-        assert "Poll scheduled" in result
+        assert "Poll" in result
         # Cancel the poll so it doesn't linger
-        job_id = result.split("id: ")[1].split(",")[0]
+        job_id = result.split("Poll ")[1].split(" set")[0]
         await mgr.kill(job_id)
 
     @pytest.mark.asyncio

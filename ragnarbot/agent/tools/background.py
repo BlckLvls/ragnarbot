@@ -85,8 +85,10 @@ class PollTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Schedule a status poll for background jobs. After the specified number of "
-            "seconds, you'll receive a summary of all active and recently completed jobs."
+            "Schedule a deferred status poll for background jobs. This is fire-and-forget: "
+            "after the specified number of seconds, a status summary will be delivered to you "
+            "automatically as a system message. Do NOT call output or poll while waiting — "
+            "just continue the conversation normally until the poll result arrives."
         )
 
     @property
