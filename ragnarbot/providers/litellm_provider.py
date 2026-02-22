@@ -21,8 +21,10 @@ class LiteLLMProvider(LLMProvider):
         api_key: str | None = None,
         default_model: str = "anthropic/claude-opus-4-5",
         oauth_token: str | None = None,
+        max_tokens: int = 16_000,
+        temperature: float = 0.7,
     ):
-        super().__init__(api_key, oauth_token)
+        super().__init__(api_key, oauth_token, max_tokens=max_tokens, temperature=temperature)
         self.default_model = default_model
 
         # Configure LiteLLM env vars based on provider

@@ -34,8 +34,13 @@ _GEMINI3_THINKING = {
 class GeminiCodeAssistProvider(LLMProvider):
     """LLM provider for Gemini via the Code Assist API (OAuth)."""
 
-    def __init__(self, default_model: str = "gemini-2.5-flash"):
-        super().__init__()
+    def __init__(
+        self,
+        default_model: str = "gemini-2.5-flash",
+        max_tokens: int = 16_000,
+        temperature: float = 0.7,
+    ):
+        super().__init__(max_tokens=max_tokens, temperature=temperature)
         self.default_model = default_model
 
         from ragnarbot.auth.gemini_oauth import get_project_id

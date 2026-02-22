@@ -21,8 +21,13 @@ RESPONSES_URL = f"{API_BASE}/responses"
 class OpenAIChatGPTProvider(LLMProvider):
     """LLM provider for OpenAI via ChatGPT backend API (OAuth)."""
 
-    def __init__(self, default_model: str = "gpt-5.2"):
-        super().__init__()
+    def __init__(
+        self,
+        default_model: str = "gpt-5.2",
+        max_tokens: int = 16_000,
+        temperature: float = 0.7,
+    ):
+        super().__init__(max_tokens=max_tokens, temperature=temperature)
         self.default_model = default_model
 
         from ragnarbot.auth.openai_oauth import get_account_id

@@ -40,11 +40,13 @@ class LLMProvider(ABC):
         self,
         api_key: str | None = None,
         oauth_token: str | None = None,
+        max_tokens: int = 16_000,
+        temperature: float = 0.7,
     ):
         self.api_key = api_key
         self.oauth_token = oauth_token
-        self.default_temperature: float = 0.7
-        self.default_max_tokens: int = 4096
+        self.default_temperature: float = temperature
+        self.default_max_tokens: int = max_tokens
 
     @abstractmethod
     async def chat(
