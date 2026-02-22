@@ -915,6 +915,23 @@ class AgentLoop:
                         messages, response.content, tool_call_dicts
                     )
 
+                    # Truncated — return error for each tool call
+                    if response.finish_reason == "length":
+                        logger.warning(
+                            "Response truncated (finish_reason=length), "
+                            "rejecting tool calls"
+                        )
+                        for tc in response.tool_calls:
+                            messages = self.context.add_tool_result(
+                                messages, tc.id, tc.name,
+                                "Error: response was cut off (max_tokens "
+                                "limit reached) and this tool call was "
+                                "incomplete. Your output must fit within "
+                                "the token limit. Split large content "
+                                "into smaller calls.",
+                            )
+                        continue
+
                     for idx, tool_call in enumerate(response.tool_calls):
                         # Stop check before each individual tool execution
                         if self._is_stopped(session_key):
@@ -1812,9 +1829,8 @@ class AgentLoop:
             session_metadata=session_metadata,
         )
 
-        max_iterations = 20
         batch_used_fallback = False
-        for _ in range(max_iterations):
+        while True:
             tools_defs = tools.get_definitions()
             api_messages = [
                 {k: v for k, v in m.items() if k != "_ts"} for m in messages
@@ -1866,10 +1882,6 @@ class AgentLoop:
                     batch_used_fallback, channel, chat_id,
                 )
                 return response.content or None
-
-        # Exhausted iterations — return whatever deliver_tool captured
-        await self._record_fallback_batch(batch_used_fallback, channel, chat_id)
-        return deliver_tool.result
 
     def _build_heartbeat_tool_registry(
         self,
@@ -1932,10 +1944,9 @@ class AgentLoop:
         # Track where new messages start (for session persistence)
         new_start = len(messages) - 1  # the user message we just added
 
-        max_iterations = 20
         result = None
         batch_used_fallback = False
-        for _ in range(max_iterations):
+        while True:
             tools_defs = tools.get_definitions()
 
             # Safety flush: only if context exceeds 80% of max (unlikely
