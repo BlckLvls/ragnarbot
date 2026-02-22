@@ -30,7 +30,7 @@ from ragnarbot.agent.tools.media import DownloadFileTool
 from ragnarbot.agent.tools.registry import ToolRegistry
 from ragnarbot.agent.tools.restart import RestartTool
 from ragnarbot.agent.tools.shell import ExecTool
-from ragnarbot.agent.tools.spawn import SpawnTool
+from ragnarbot.agent.tools.agent_tools import AgentTool
 from ragnarbot.agent.tools.telegram import (
     SendFileTool,
     SendPhotoTool,
@@ -131,6 +131,7 @@ class AgentLoop:
             provider=provider,
             workspace=workspace,
             bus=bus,
+            agents_loader=self.context.agents,
             model=self.model,
             brave_api_key=brave_api_key,
             search_engine=search_engine,
@@ -138,6 +139,7 @@ class AgentLoop:
             chat_fn=self._chat_with_fallback,
             on_fallback_batch=self._record_fallback_batch,
             browser_manager=self.browser_manager,
+            context_builder=self.context,
         )
 
         self.bg_processes = BackgroundProcessManager(
@@ -178,9 +180,8 @@ class AgentLoop:
         self.tools.register(SendFileTool(send_callback=send_cb))
         self.tools.register(SetReactionTool(send_callback=send_cb))
 
-        # Spawn tool (for subagents)
-        spawn_tool = SpawnTool(manager=self.subagents)
-        self.tools.register(spawn_tool)
+        # Agent tools (for sub-agents)
+        self.tools.register(AgentTool(manager=self.subagents))
 
         # Browser tool
         from ragnarbot.agent.tools.browser import BrowserTool
@@ -655,9 +656,9 @@ class AgentLoop:
             }
 
         # Update tool contexts
-        spawn_tool = self.tools.get("spawn")
-        if isinstance(spawn_tool, SpawnTool):
-            spawn_tool.set_context(msg.channel, msg.chat_id)
+        agent_tool = self.tools.get("agent")
+        if isinstance(agent_tool, AgentTool):
+            agent_tool.set_context(msg.channel, msg.chat_id)
 
         cron_tool = self.tools.get("cron")
         if isinstance(cron_tool, CronTool):
@@ -1184,7 +1185,7 @@ class AgentLoop:
             "list_dir": ("📂", "List dir", [("path", 200)]),
             "exec": ("⚡", "Exec", [("command", 200)]),
             "exec_bg": ("⚡", "Exec (bg)", [("command", 200)]),
-            "spawn": ("🤖", "Spawn", [("task", 120), ("label", 80)]),
+            "agent": ("🤖", "Agent", [("action", 20), ("task", 120), ("label", 80)]),
             "send_photo": ("📸", "Send photo", [("file_path", 200), ("caption", 100)]),
             "send_video": ("🎬", "Send video", [("file_path", 200), ("caption", 100)]),
             "send_file": ("📎", "Send file", [("file_path", 200), ("caption", 100)]),
@@ -1406,9 +1407,9 @@ class AgentLoop:
         session = self.sessions.get_or_create(session_key)
 
         # Update tool contexts
-        spawn_tool = self.tools.get("spawn")
-        if isinstance(spawn_tool, SpawnTool):
-            spawn_tool.set_context(origin_channel, origin_chat_id)
+        agent_tool = self.tools.get("agent")
+        if isinstance(agent_tool, AgentTool):
+            agent_tool.set_context(origin_channel, origin_chat_id)
 
         cron_tool = self.tools.get("cron")
         if isinstance(cron_tool, CronTool):
@@ -1692,8 +1693,8 @@ class AgentLoop:
         """Build a fresh tool registry for an isolated cron job.
 
         Each invocation creates new tool instances so concurrent isolated jobs
-        share no mutable state.  The ``spawn`` tool is excluded
-        (it doesn't make sense in non-interactive mode).
+        share no mutable state.  Agent tools are excluded
+        (they don't make sense in non-interactive mode).
         """
         reg = ToolRegistry()
 
