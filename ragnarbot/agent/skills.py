@@ -98,7 +98,7 @@ class SkillsLoader:
         
         return "\n\n---\n\n".join(parts) if parts else ""
     
-    def build_skills_summary(self) -> str:
+    def build_skills_summary(self, only: list[str] | None = None) -> str:
         """
         Build a summary of all skills (name, description, path, availability).
         
@@ -109,6 +109,9 @@ class SkillsLoader:
             XML-formatted skills summary.
         """
         all_skills = self.list_skills(filter_unavailable=False)
+        if only is not None:
+            allowed = set(only)
+            all_skills = [s for s in all_skills if s["name"] in allowed]
         if not all_skills:
             return ""
         

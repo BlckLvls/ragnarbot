@@ -34,8 +34,10 @@ class AnthropicProvider(LLMProvider):
         api_key: str | None = None,
         default_model: str = "claude-opus-4-6",
         oauth_token: str | None = None,
+        max_tokens: int = 16_000,
+        temperature: float = 0.7,
     ):
-        super().__init__(api_key, oauth_token)
+        super().__init__(api_key, oauth_token, max_tokens=max_tokens, temperature=temperature)
         self.default_model = default_model
         self.client = self._build_client(api_key, oauth_token)
 

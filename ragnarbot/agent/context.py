@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from ragnarbot.agent.agents_loader import AgentsLoader
 from ragnarbot.agent.memory import MemoryStore
 from ragnarbot.agent.skills import SkillsLoader
 
@@ -21,7 +22,7 @@ class ContextBuilder:
     conversation history into a coherent prompt for the LLM.
     """
 
-    BUILTIN_FILES = ["SOUL.md", "AGENTS.md", "BUILTIN_TOOLS.md"]
+    BUILTIN_FILES = ["SOUL.md", "AGENTS.md", "BUILTIN_TOOLS.md", "BUILTIN_AGENTS.md"]
     BOOTSTRAP_FILES = ["IDENTITY.md", "USER.md", "TOOLS.md"]
 
     def __init__(self, workspace: Path, heartbeat_interval_m: int = 30):
@@ -30,6 +31,7 @@ class ContextBuilder:
         self.model: str | None = None  # Set by AgentLoop for vision checks
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
+        self.agents = AgentsLoader(workspace)
         self._ensure_bootstrap_files()
 
     def build_system_prompt(
@@ -109,6 +111,16 @@ The following skills extend your capabilities. To use a skill, read its SKILL.md
 Skills with available="false" need dependencies installed first - you can try installing them with apt/brew.
 
 {skills_summary}""")
+
+        # 8. Agents - available sub-agent types
+        agents_summary = self.agents.build_agents_summary()
+        if agents_summary:
+            parts.append(f"""# Agents
+
+The following agent types are available for delegation via the agent tools.
+Use `agent_spawn` to start a task with a specific agent type, or omit the agent parameter for general-purpose execution.
+
+{agents_summary}""")
 
         return "\n\n---\n\n".join(parts)
 

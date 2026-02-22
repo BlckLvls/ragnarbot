@@ -19,7 +19,14 @@ app = typer.Typer(
 console = Console()
 
 
-def _create_provider(model: str, auth_method: str, creds):
+def _create_provider(
+    model: str,
+    auth_method: str,
+    creds,
+    *,
+    max_tokens: int = 16_000,
+    temperature: float = 0.7,
+):
     """Create an LLM provider from model string and auth method."""
     from ragnarbot.providers.litellm_provider import LiteLLMProvider
 
@@ -30,16 +37,26 @@ def _create_provider(model: str, auth_method: str, creds):
         if provider_name == "anthropic":
             oauth_token = provider_creds.oauth_key if provider_creds else None
             from ragnarbot.providers.anthropic_provider import AnthropicProvider
-            return AnthropicProvider(oauth_token=oauth_token, default_model=model)
+            return AnthropicProvider(
+                oauth_token=oauth_token, default_model=model,
+                max_tokens=max_tokens, temperature=temperature,
+            )
         elif provider_name == "gemini":
             from ragnarbot.providers.gemini_provider import GeminiCodeAssistProvider
-            return GeminiCodeAssistProvider(default_model=model)
+            return GeminiCodeAssistProvider(
+                default_model=model, max_tokens=max_tokens, temperature=temperature,
+            )
         elif provider_name == "openai":
             from ragnarbot.providers.openai_chatgpt_provider import OpenAIChatGPTProvider
-            return OpenAIChatGPTProvider(default_model=model)
+            return OpenAIChatGPTProvider(
+                default_model=model, max_tokens=max_tokens, temperature=temperature,
+            )
 
     api_key = provider_creds.api_key if provider_creds else None
-    return LiteLLMProvider(api_key=api_key, default_model=model)
+    return LiteLLMProvider(
+        api_key=api_key, default_model=model,
+        max_tokens=max_tokens, temperature=temperature,
+    )
 
 
 def _validate_auth(config, creds):
@@ -242,11 +259,9 @@ def gateway_main(
 
     provider = _create_provider(
         config.agents.defaults.model, config.agents.defaults.auth_method, creds,
+        max_tokens=config.agents.defaults.max_tokens,
+        temperature=config.agents.defaults.temperature,
     )
-
-    # Apply config defaults to provider (base class starts with hardcoded values)
-    provider.set_temperature(config.agents.defaults.temperature)
-    provider.set_max_tokens(config.agents.defaults.max_tokens)
 
     # Fallback config
     fallback_config = config.agents.fallback
@@ -283,7 +298,11 @@ def gateway_main(
         heartbeat_interval_m=config.heartbeat.interval_m,
         fallback_model=fallback_config.model,
         fallback_config=fallback_config,
-        provider_factory=lambda model, auth_method: _create_provider(model, auth_method, creds),
+        provider_factory=lambda model, auth_method: _create_provider(
+            model, auth_method, creds,
+            max_tokens=config.agents.defaults.max_tokens,
+            temperature=config.agents.defaults.temperature,
+        ),
         browser_config=config.tools.browser,
     )
 
@@ -334,6 +353,7 @@ def gateway_main(
                     schedule_desc=schedule_desc,
                     channel=job.payload.channel or "cli",
                     chat_id=job.payload.to or "direct",
+                    agent_name=job.payload.agent,
                 )
                 # Deliver result to user
                 if response and job.payload.to:

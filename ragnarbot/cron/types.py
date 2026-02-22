@@ -28,6 +28,7 @@ class CronPayload:
     deliver: bool = False
     channel: str | None = None  # e.g. "telegram"
     to: str | None = None  # e.g. phone number
+    agent: str | None = None  # agent profile name for isolated execution
 
 
 @dataclass

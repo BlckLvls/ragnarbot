@@ -59,6 +59,12 @@ def get_skills_path(workspace: Path | None = None) -> Path:
     return ensure_dir(ws / "skills")
 
 
+def get_agents_path(workspace: Path | None = None) -> Path:
+    """Get the agents directory within the workspace."""
+    ws = workspace or get_workspace_path()
+    return ensure_dir(ws / "agents")
+
+
 def today_date() -> str:
     """Get today's date in YYYY-MM-DD format."""
     return datetime.now().strftime("%Y-%m-%d")

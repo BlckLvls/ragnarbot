@@ -13,6 +13,7 @@ from ragnarbot.agent.compactor import Compactor
 from ragnarbot.agent.context import ContextBuilder
 from ragnarbot.agent.fallback import FallbackState
 from ragnarbot.agent.subagent import SubagentManager
+from ragnarbot.agent.tools.agent_tools import AgentTool
 from ragnarbot.agent.tools.background import (
     DismissTool,
     ExecBgTool,
@@ -30,7 +31,6 @@ from ragnarbot.agent.tools.media import DownloadFileTool
 from ragnarbot.agent.tools.registry import ToolRegistry
 from ragnarbot.agent.tools.restart import RestartTool
 from ragnarbot.agent.tools.shell import ExecTool
-from ragnarbot.agent.tools.spawn import SpawnTool
 from ragnarbot.agent.tools.telegram import (
     SendFileTool,
     SendPhotoTool,
@@ -131,6 +131,7 @@ class AgentLoop:
             provider=provider,
             workspace=workspace,
             bus=bus,
+            agents_loader=self.context.agents,
             model=self.model,
             brave_api_key=brave_api_key,
             search_engine=search_engine,
@@ -138,6 +139,7 @@ class AgentLoop:
             chat_fn=self._chat_with_fallback,
             on_fallback_batch=self._record_fallback_batch,
             browser_manager=self.browser_manager,
+            context_builder=self.context,
         )
 
         self.bg_processes = BackgroundProcessManager(
@@ -178,9 +180,8 @@ class AgentLoop:
         self.tools.register(SendFileTool(send_callback=send_cb))
         self.tools.register(SetReactionTool(send_callback=send_cb))
 
-        # Spawn tool (for subagents)
-        spawn_tool = SpawnTool(manager=self.subagents)
-        self.tools.register(spawn_tool)
+        # Agent tools (for sub-agents)
+        self.tools.register(AgentTool(manager=self.subagents))
 
         # Browser tool
         from ragnarbot.agent.tools.browser import BrowserTool
@@ -655,9 +656,9 @@ class AgentLoop:
             }
 
         # Update tool contexts
-        spawn_tool = self.tools.get("spawn")
-        if isinstance(spawn_tool, SpawnTool):
-            spawn_tool.set_context(msg.channel, msg.chat_id)
+        agent_tool = self.tools.get("agent")
+        if isinstance(agent_tool, AgentTool):
+            agent_tool.set_context(msg.channel, msg.chat_id)
 
         cron_tool = self.tools.get("cron")
         if isinstance(cron_tool, CronTool):
@@ -913,6 +914,23 @@ class AgentLoop:
                     messages = self.context.add_assistant_message(
                         messages, response.content, tool_call_dicts
                     )
+
+                    # Truncated — return error for each tool call
+                    if response.finish_reason == "length":
+                        logger.warning(
+                            "Response truncated (finish_reason=length), "
+                            "rejecting tool calls"
+                        )
+                        for tc in response.tool_calls:
+                            messages = self.context.add_tool_result(
+                                messages, tc.id, tc.name,
+                                "Error: response was cut off (max_tokens "
+                                "limit reached) and this tool call was "
+                                "incomplete. Your output must fit within "
+                                "the token limit. Split large content "
+                                "into smaller calls.",
+                            )
+                        continue
 
                     for idx, tool_call in enumerate(response.tool_calls):
                         # Stop check before each individual tool execution
@@ -1406,9 +1424,9 @@ class AgentLoop:
         session = self.sessions.get_or_create(session_key)
 
         # Update tool contexts
-        spawn_tool = self.tools.get("spawn")
-        if isinstance(spawn_tool, SpawnTool):
-            spawn_tool.set_context(origin_channel, origin_chat_id)
+        agent_tool = self.tools.get("agent")
+        if isinstance(agent_tool, AgentTool):
+            agent_tool.set_context(origin_channel, origin_chat_id)
 
         cron_tool = self.tools.get("cron")
         if isinstance(cron_tool, CronTool):
@@ -1692,8 +1710,8 @@ class AgentLoop:
         """Build a fresh tool registry for an isolated cron job.
 
         Each invocation creates new tool instances so concurrent isolated jobs
-        share no mutable state.  The ``spawn`` tool is excluded
-        (it doesn't make sense in non-interactive mode).
+        share no mutable state.  Agent tools are excluded
+        (they don't make sense in non-interactive mode).
         """
         reg = ToolRegistry()
 
@@ -1780,6 +1798,87 @@ class AgentLoop:
 
         return reg, deliver_tool
 
+    def _build_cron_agent_tool_registry(
+        self,
+        definition: "AgentDefinition",
+        channel: str,
+        chat_id: str,
+    ) -> tuple[ToolRegistry, DeliverResultTool]:
+        """Build a tool registry for a cron job running with an agent profile.
+
+        Starts from the full isolated tool registry, then filters to the
+        agent's allowedTools (if not "all").  Auto-adds file_read when
+        the agent has allowed_skills != "none".
+        """
+        if definition.allowed_tools == "all":
+            # Agent allows everything — use full isolated registry
+            return self._build_isolated_tool_registry(channel, chat_id)
+
+        # Build full registry first, then keep only allowed tools + deliver_result
+        full_reg, deliver_tool = self._build_isolated_tool_registry(channel, chat_id)
+
+        allowed = set(definition.allowed_tools) if isinstance(
+            definition.allowed_tools, list
+        ) else {definition.allowed_tools}
+
+        # Auto-add file_read when skills are allowed (needed to load SKILL.md)
+        if definition.allowed_skills != "none":
+            allowed.add("file_read")
+
+        filtered_reg = ToolRegistry()
+        for tool in full_reg._tools.values():
+            if tool.name in allowed or tool.name == "deliver_result":
+                filtered_reg.register(tool)
+
+        # Ensure deliver_result is always present
+        if not filtered_reg.has("deliver_result"):
+            filtered_reg.register(deliver_tool)
+
+        return filtered_reg, deliver_tool
+
+    def _build_cron_agent_messages(
+        self,
+        definition: "AgentDefinition",
+        message: str,
+        session_metadata: dict,
+    ) -> list[dict]:
+        """Build messages for a cron job running with an agent profile.
+
+        Combines the CRON_ISOLATED.md rules with the AGENT.md body into
+        a single system prompt.
+        """
+        import time as _time
+
+        cron_ctx = session_metadata["cron_isolated"]
+
+        # Load CRON_ISOLATED.md rules
+        cron_rules = self.context._load_builtin_cron_isolated(cron_ctx)
+
+        # Build combined system prompt: cron rules + agent instructions
+        parts = [cron_rules, "---", f"# Agent Instructions\n\n{definition.body}"]
+
+        # Inject skills summary if the agent has allowed_skills
+        if definition.allowed_skills != "none":
+            only = (
+                None if definition.allowed_skills == "all"
+                else list(definition.allowed_skills)
+            )
+            summary = self.context.skills.build_skills_summary(only=only)
+            if summary:
+                parts.append(
+                    "---\n\n## Available Skills\n\n"
+                    "The following skills are available. To load a skill's full "
+                    "instructions, use `file_read` on its `<location>` path.\n\n"
+                    + summary
+                )
+
+        system_prompt = "\n\n".join(parts)
+
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": message},
+        ]
+
     async def process_cron_isolated(
         self,
         job_name: str,
@@ -1787,13 +1886,35 @@ class AgentLoop:
         schedule_desc: str,
         channel: str,
         chat_id: str,
+        agent_name: str | None = None,
     ) -> str | None:
         """Run an isolated cron job — fresh context, no session history.
+
+        When *agent_name* is set the job runs with the named agent's
+        instructions and (optionally restricted) tool set.  The system
+        prompt combines CRON_ISOLATED.md rules with the AGENT.md body so
+        the agent gets both cron execution rules AND its specialised
+        instructions.
 
         Returns the result string (from deliver_result or final LLM text),
         or None if the agent produced no output.
         """
-        tools, deliver_tool = self._build_isolated_tool_registry(channel, chat_id)
+        # --- agent profile handling ---
+        definition = None
+        if agent_name:
+            definition = self.context.agents.load_agent(agent_name)
+            if not definition:
+                logger.warning(
+                    f"Cron job '{job_name}': agent '{agent_name}' not found, "
+                    "falling back to default execution"
+                )
+
+        if definition:
+            tools, deliver_tool = self._build_cron_agent_tool_registry(
+                definition, channel, chat_id,
+            )
+        else:
+            tools, deliver_tool = self._build_isolated_tool_registry(channel, chat_id)
 
         session_metadata = {
             "cron_isolated": {
@@ -1803,17 +1924,22 @@ class AgentLoop:
             },
         }
 
-        messages = self.context.build_messages(
-            history=[],
-            current_message=message,
-            channel=channel,
-            chat_id=chat_id,
-            session_metadata=session_metadata,
-        )
+        if definition:
+            # Build a combined prompt: CRON_ISOLATED.md rules + AGENT.md body
+            messages = self._build_cron_agent_messages(
+                definition, message, session_metadata,
+            )
+        else:
+            messages = self.context.build_messages(
+                history=[],
+                current_message=message,
+                channel=channel,
+                chat_id=chat_id,
+                session_metadata=session_metadata,
+            )
 
-        max_iterations = 20
         batch_used_fallback = False
-        for _ in range(max_iterations):
+        while True:
             tools_defs = tools.get_definitions()
             api_messages = [
                 {k: v for k, v in m.items() if k != "_ts"} for m in messages
@@ -1865,10 +1991,6 @@ class AgentLoop:
                     batch_used_fallback, channel, chat_id,
                 )
                 return response.content or None
-
-        # Exhausted iterations — return whatever deliver_tool captured
-        await self._record_fallback_batch(batch_used_fallback, channel, chat_id)
-        return deliver_tool.result
 
     def _build_heartbeat_tool_registry(
         self,
@@ -1931,10 +2053,9 @@ class AgentLoop:
         # Track where new messages start (for session persistence)
         new_start = len(messages) - 1  # the user message we just added
 
-        max_iterations = 20
         result = None
         batch_used_fallback = False
-        for _ in range(max_iterations):
+        while True:
             tools_defs = tools.get_definitions()
 
             # Safety flush: only if context exceeds 80% of max (unlikely
