@@ -353,6 +353,7 @@ def gateway_main(
                     schedule_desc=schedule_desc,
                     channel=job.payload.channel or "cli",
                     chat_id=job.payload.to or "direct",
+                    agent_name=job.payload.agent,
                 )
                 # Deliver result to user
                 if response and job.payload.to:

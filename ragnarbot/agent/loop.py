@@ -13,6 +13,7 @@ from ragnarbot.agent.compactor import Compactor
 from ragnarbot.agent.context import ContextBuilder
 from ragnarbot.agent.fallback import FallbackState
 from ragnarbot.agent.subagent import SubagentManager
+from ragnarbot.agent.tools.agent_tools import AgentTool
 from ragnarbot.agent.tools.background import (
     DismissTool,
     ExecBgTool,
@@ -30,7 +31,6 @@ from ragnarbot.agent.tools.media import DownloadFileTool
 from ragnarbot.agent.tools.registry import ToolRegistry
 from ragnarbot.agent.tools.restart import RestartTool
 from ragnarbot.agent.tools.shell import ExecTool
-from ragnarbot.agent.tools.agent_tools import AgentTool
 from ragnarbot.agent.tools.telegram import (
     SendFileTool,
     SendPhotoTool,
@@ -1202,7 +1202,7 @@ class AgentLoop:
             "list_dir": ("📂", "List dir", [("path", 200)]),
             "exec": ("⚡", "Exec", [("command", 200)]),
             "exec_bg": ("⚡", "Exec (bg)", [("command", 200)]),
-            "agent": ("🤖", "Agent", [("action", 20), ("task", 120), ("label", 80)]),
+            "spawn": ("🤖", "Spawn", [("task", 120), ("label", 80)]),
             "send_photo": ("📸", "Send photo", [("file_path", 200), ("caption", 100)]),
             "send_video": ("🎬", "Send video", [("file_path", 200), ("caption", 100)]),
             "send_file": ("📎", "Send file", [("file_path", 200), ("caption", 100)]),
@@ -1798,6 +1798,87 @@ class AgentLoop:
 
         return reg, deliver_tool
 
+    def _build_cron_agent_tool_registry(
+        self,
+        definition: "AgentDefinition",
+        channel: str,
+        chat_id: str,
+    ) -> tuple[ToolRegistry, DeliverResultTool]:
+        """Build a tool registry for a cron job running with an agent profile.
+
+        Starts from the full isolated tool registry, then filters to the
+        agent's allowedTools (if not "all").  Auto-adds file_read when
+        the agent has allowed_skills != "none".
+        """
+        if definition.allowed_tools == "all":
+            # Agent allows everything — use full isolated registry
+            return self._build_isolated_tool_registry(channel, chat_id)
+
+        # Build full registry first, then keep only allowed tools + deliver_result
+        full_reg, deliver_tool = self._build_isolated_tool_registry(channel, chat_id)
+
+        allowed = set(definition.allowed_tools) if isinstance(
+            definition.allowed_tools, list
+        ) else {definition.allowed_tools}
+
+        # Auto-add file_read when skills are allowed (needed to load SKILL.md)
+        if definition.allowed_skills != "none":
+            allowed.add("file_read")
+
+        filtered_reg = ToolRegistry()
+        for tool in full_reg._tools.values():
+            if tool.name in allowed or tool.name == "deliver_result":
+                filtered_reg.register(tool)
+
+        # Ensure deliver_result is always present
+        if not filtered_reg.has("deliver_result"):
+            filtered_reg.register(deliver_tool)
+
+        return filtered_reg, deliver_tool
+
+    def _build_cron_agent_messages(
+        self,
+        definition: "AgentDefinition",
+        message: str,
+        session_metadata: dict,
+    ) -> list[dict]:
+        """Build messages for a cron job running with an agent profile.
+
+        Combines the CRON_ISOLATED.md rules with the AGENT.md body into
+        a single system prompt.
+        """
+        import time as _time
+
+        cron_ctx = session_metadata["cron_isolated"]
+
+        # Load CRON_ISOLATED.md rules
+        cron_rules = self.context._load_builtin_cron_isolated(cron_ctx)
+
+        # Build combined system prompt: cron rules + agent instructions
+        parts = [cron_rules, "---", f"# Agent Instructions\n\n{definition.body}"]
+
+        # Inject skills summary if the agent has allowed_skills
+        if definition.allowed_skills != "none":
+            only = (
+                None if definition.allowed_skills == "all"
+                else list(definition.allowed_skills)
+            )
+            summary = self.context.skills.build_skills_summary(only=only)
+            if summary:
+                parts.append(
+                    "---\n\n## Available Skills\n\n"
+                    "The following skills are available. To load a skill's full "
+                    "instructions, use `file_read` on its `<location>` path.\n\n"
+                    + summary
+                )
+
+        system_prompt = "\n\n".join(parts)
+
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": message},
+        ]
+
     async def process_cron_isolated(
         self,
         job_name: str,
@@ -1805,13 +1886,35 @@ class AgentLoop:
         schedule_desc: str,
         channel: str,
         chat_id: str,
+        agent_name: str | None = None,
     ) -> str | None:
         """Run an isolated cron job — fresh context, no session history.
+
+        When *agent_name* is set the job runs with the named agent's
+        instructions and (optionally restricted) tool set.  The system
+        prompt combines CRON_ISOLATED.md rules with the AGENT.md body so
+        the agent gets both cron execution rules AND its specialised
+        instructions.
 
         Returns the result string (from deliver_result or final LLM text),
         or None if the agent produced no output.
         """
-        tools, deliver_tool = self._build_isolated_tool_registry(channel, chat_id)
+        # --- agent profile handling ---
+        definition = None
+        if agent_name:
+            definition = self.context.agents.load_agent(agent_name)
+            if not definition:
+                logger.warning(
+                    f"Cron job '{job_name}': agent '{agent_name}' not found, "
+                    "falling back to default execution"
+                )
+
+        if definition:
+            tools, deliver_tool = self._build_cron_agent_tool_registry(
+                definition, channel, chat_id,
+            )
+        else:
+            tools, deliver_tool = self._build_isolated_tool_registry(channel, chat_id)
 
         session_metadata = {
             "cron_isolated": {
@@ -1821,13 +1924,19 @@ class AgentLoop:
             },
         }
 
-        messages = self.context.build_messages(
-            history=[],
-            current_message=message,
-            channel=channel,
-            chat_id=chat_id,
-            session_metadata=session_metadata,
-        )
+        if definition:
+            # Build a combined prompt: CRON_ISOLATED.md rules + AGENT.md body
+            messages = self._build_cron_agent_messages(
+                definition, message, session_metadata,
+            )
+        else:
+            messages = self.context.build_messages(
+                history=[],
+                current_message=message,
+                channel=channel,
+                chat_id=chat_id,
+                session_metadata=session_metadata,
+            )
 
         batch_used_fallback = False
         while True:

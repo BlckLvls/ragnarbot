@@ -87,6 +87,14 @@ class CronTool(Tool):
                     "type": "boolean",
                     "description": "Enable or disable a job (for update)",
                 },
+                "agent": {
+                    "type": "string",
+                    "description": (
+                        "Agent profile name for isolated execution "
+                        "(e.g. 'fast-researcher', 'deep-researcher'). "
+                        "Only used with mode='isolated'."
+                    ),
+                },
             },
             "required": ["action"],
         }
@@ -103,14 +111,17 @@ class CronTool(Tool):
         cron_expr: str | None = None,
         job_id: str | None = None,
         enabled: bool | None = None,
+        agent: str | None = None,
         **kwargs: Any,
     ) -> str:
         if action == "add":
-            return self._add_job(message, name, mode, at, after, every_seconds, cron_expr)
+            return self._add_job(message, name, mode, at, after, every_seconds, cron_expr, agent)
         elif action == "list":
             return self._list_jobs()
         elif action == "update":
-            return self._update_job(job_id, message, name, mode, every_seconds, cron_expr, enabled)
+            return self._update_job(
+                job_id, message, name, mode, every_seconds, cron_expr, enabled, agent,
+            )
         elif action == "remove":
             return self._remove_job(job_id)
         return f"Unknown action: {action}"
@@ -124,6 +135,7 @@ class CronTool(Tool):
         after: int | None,
         every_seconds: int | None,
         cron_expr: str | None,
+        agent: str | None = None,
     ) -> str:
         if not message:
             return "Error: message is required for add"
@@ -167,8 +179,10 @@ class CronTool(Tool):
             deliver=True,
             channel=self._channel,
             to=self._chat_id,
+            agent=agent if job_mode == "isolated" else None,
         )
-        return f"Created job '{job.name}' (id: {job.id}, mode: {job.payload.mode})"
+        agent_info = f", agent: {job.payload.agent}" if job.payload.agent else ""
+        return f"Created job '{job.name}' (id: {job.id}, mode: {job.payload.mode}{agent_info})"
 
     def _list_jobs(self) -> str:
         jobs = self._cron.list_jobs(include_disabled=True)
@@ -177,9 +191,10 @@ class CronTool(Tool):
         lines = []
         for j in jobs:
             status = "enabled" if j.enabled else "disabled"
+            agent_info = f", agent: {j.payload.agent}" if j.payload.agent else ""
             lines.append(
                 f"- {j.name} (id: {j.id}, {j.schedule.kind}, "
-                f"mode: {j.payload.mode}, {status})"
+                f"mode: {j.payload.mode}{agent_info}, {status})"
             )
         return "Scheduled jobs:\n" + "\n".join(lines)
 
@@ -192,6 +207,7 @@ class CronTool(Tool):
         every_seconds: int | None,
         cron_expr: str | None,
         enabled: bool | None,
+        agent: str | None = None,
     ) -> str:
         if not job_id:
             return "Error: job_id is required for update"
@@ -203,6 +219,8 @@ class CronTool(Tool):
             updates["message"] = message
         if mode and mode in ("isolated", "session"):
             updates["mode"] = mode
+        if agent is not None:
+            updates["agent"] = agent
         if enabled is not None:
             updates["enabled"] = enabled
         if every_seconds:
