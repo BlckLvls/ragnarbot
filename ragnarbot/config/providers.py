@@ -34,13 +34,18 @@ PROVIDERS = [
     {
         "id": "openai",
         "name": "OpenAI",
-        "description": "GPT models (GPT-5.2, GPT-5 Mini)",
+        "description": "GPT models (GPT-5.4, GPT-5.2, GPT-5 Mini)",
         "api_key_url": "https://platform.openai.com/api-keys",
         "models": [
             {
+                "id": "openai/gpt-5.4",
+                "name": "GPT-5.4",
+                "description": "Latest flagship — best reasoning & coding",
+            },
+            {
                 "id": "openai/gpt-5.2",
                 "name": "GPT-5.2",
-                "description": "Most capable — reasoning & coding",
+                "description": "Previous flagship — strong reasoning & coding",
             },
             {
                 "id": "openai/gpt-5-mini",
@@ -118,7 +123,12 @@ PROVIDERS = [
             {
                 "id": "openrouter/openai/gpt-5.2",
                 "name": "GPT-5.2",
-                "description": "Most capable — via OpenRouter",
+                "description": "Previous flagship — via OpenRouter",
+            },
+            {
+                "id": "openrouter/openai/gpt-5.4",
+                "name": "GPT-5.4",
+                "description": "Latest flagship — via OpenRouter",
             },
             {
                 "id": "openrouter/google/gemini-3-pro-preview",

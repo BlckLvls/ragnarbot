@@ -23,7 +23,7 @@ class OpenAIChatGPTProvider(LLMProvider):
 
     def __init__(
         self,
-        default_model: str = "gpt-5.2",
+        default_model: str = "gpt-5.4",
     ):
         super().__init__()
         self.default_model = default_model
@@ -43,7 +43,7 @@ class OpenAIChatGPTProvider(LLMProvider):
 
         model = model or self.default_model
 
-        # Strip provider prefix (e.g. "openai/gpt-5.2" → "gpt-5.2")
+        # Strip provider prefix (e.g. "openai/gpt-5.4" → "gpt-5.4")
         if model.startswith("openai/"):
             model = model[len("openai/"):]
 

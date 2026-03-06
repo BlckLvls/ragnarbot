@@ -105,7 +105,7 @@ async def test_set_action_warm_field(config_tool):
         patch(LOAD_CREDS_HELPERS, return_value=creds),
     ):
         result = await config_tool.execute(
-            action="set", path="agents.defaults.model", value="openai/gpt-5.2"
+            action="set", path="agents.defaults.model", value="openai/gpt-5.4"
         )
 
     data = json.loads(result)

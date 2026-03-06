@@ -1,17 +1,15 @@
 """Integration tests for onboarding flow."""
 
-import json
 from io import StringIO
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from rich.console import Console
 
-from ragnarbot.cli.tui.keys import Key, set_key_reader, clear_key_reader
-from ragnarbot.cli.tui import run_onboarding
-from ragnarbot.cli.tui.components import QuitOnboardingError
-from ragnarbot.config.schema import Config
 from ragnarbot.auth.credentials import Credentials
+from ragnarbot.cli.tui import run_onboarding
+from ragnarbot.cli.tui.keys import Key, clear_key_reader, set_key_reader
+from ragnarbot.config.schema import Config
 
 
 def make_console():
@@ -78,10 +76,10 @@ class TestOnboardingFlow:
 
         p = _patches(tmp_path)
         with (
-            p["load_config"] as mock_load_config,
+            p["load_config"],
             p["save_config"] as mock_save_config,
             p["get_config_path"],
-            p["load_credentials"] as mock_load_creds,
+            p["load_credentials"],
             p["save_credentials"] as mock_save_creds,
             p["get_credentials_path"],
             p["get_workspace_path"],
@@ -155,7 +153,7 @@ class TestOnboardingFlow:
             (Key.ENTER, ""),        # Select API Key
             *[(Key.CHAR, c) for c in "sk-openai-key"],
             (Key.ENTER, ""),        # Confirm key
-            (Key.ENTER, ""),        # Select first model (GPT-5.2)
+            (Key.ENTER, ""),        # Select first model (GPT-5.4)
             (Key.ENTER, ""),        # Skip telegram
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
@@ -168,7 +166,7 @@ class TestOnboardingFlow:
         mock_save_config, mock_save_creds = self._run_with_keys(keys, tmp_path)
 
         config = mock_save_config.call_args[0][0]
-        assert config.agents.defaults.model == "openai/gpt-5.2"
+        assert config.agents.defaults.model == "openai/gpt-5.4"
         assert config.agents.defaults.auth_method == "api_key"
 
         creds = mock_save_creds.call_args[0][0]
@@ -334,10 +332,10 @@ class TestVoiceTranscriptionOnboarding:
 
         p = _patches(tmp_path)
         with (
-            p["load_config"] as mock_load_config,
+            p["load_config"],
             p["save_config"] as mock_save_config,
             p["get_config_path"],
-            p["load_credentials"] as mock_load_creds,
+            p["load_credentials"],
             p["save_credentials"] as mock_save_creds,
             p["get_credentials_path"],
             p["get_workspace_path"],
