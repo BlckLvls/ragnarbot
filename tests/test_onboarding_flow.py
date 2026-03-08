@@ -182,6 +182,7 @@ class TestOnboardingFlow:
             (Key.ENTER, ""),        # Select API Key
             *[(Key.CHAR, c) for c in "AIza-gemini-key"],
             (Key.ENTER, ""),        # Confirm key
+            (Key.DOWN, ""),         # Past 3.1 Pro
             (Key.DOWN, ""),         # Navigate to Flash
             (Key.ENTER, ""),        # Select Flash
             (Key.ENTER, ""),        # Skip telegram
