@@ -24,7 +24,7 @@ _CLIENT_METADATA = json.dumps({
     "pluginType": "GEMINI",
 })
 
-# Gemini 3 models require thinkingConfig — without it the API returns empty body.
+# Gemini 3+ models require thinkingConfig — without it the API returns empty body.
 _GEMINI3_THINKING = {
     "pro": {"includeThoughts": True, "thinkingLevel": "LOW"},
     "flash": {"includeThoughts": True, "thinkingLevel": "MEDIUM"},
@@ -311,7 +311,7 @@ class GeminiCodeAssistProvider(LLMProvider):
 
 
 def _get_thinking_config(model: str) -> dict[str, Any] | None:
-    """Return thinkingConfig for Gemini 3 models, None for others."""
+    """Return thinkingConfig for Gemini 3+ models, None for others."""
     if "gemini-3" not in model:
         return None
     if "pro" in model:

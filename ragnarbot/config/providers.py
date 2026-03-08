@@ -57,9 +57,14 @@ PROVIDERS = [
     {
         "id": "gemini",
         "name": "Gemini",
-        "description": "Google models (Gemini 3 Pro, Flash)",
+        "description": "Google models (Gemini 3.1 Pro, 3 Pro, Flash)",
         "api_key_url": "https://aistudio.google.dev/apikey",
         "models": [
+            {
+                "id": "gemini/gemini-3.1-pro-preview",
+                "name": "Gemini 3.1 Pro",
+                "description": "Best reasoning & coding — latest flagship",
+            },
             {
                 "id": "gemini/gemini-3-pro-preview",
                 "name": "Gemini 3 Pro",
@@ -119,6 +124,11 @@ PROVIDERS = [
                 "id": "openrouter/google/gemini-3-flash-preview",
                 "name": "Gemini 3 Flash",
                 "description": "Fast — via OpenRouter",
+            },
+            {
+                "id": "openrouter/google/gemini-3.1-pro-preview",
+                "name": "Gemini 3.1 Pro",
+                "description": "Best reasoning & coding — via OpenRouter",
             },
             {
                 "id": "openrouter/openai/gpt-5.2",
