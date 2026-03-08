@@ -259,13 +259,13 @@ class CacheManager:
         )
 
     @classmethod
-    def flush_for_compaction(cls, messages: list[dict], context_mode: str) -> int:
+    def flush_for_compaction(cls, messages: list[dict], _context_mode: str) -> int:
         """Flush tool results before feeding messages to the compaction LLM.
 
-        Uses hard flush normally, extra_hard for eco mode.
+        Compaction always uses extra-hard flushing to keep the memory artifact
+        focused on outcome-level facts instead of verbose tool payloads.
         """
-        flush_type = "extra_hard" if context_mode == "eco" else "hard"
-        return cls._flush_tool_results(messages, flush_type)
+        return cls._flush_tool_results(messages, "extra_hard")
 
     @staticmethod
     def mark_cache_created(session, usage: dict):

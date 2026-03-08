@@ -8,6 +8,7 @@ from loguru import logger
 
 from ragnarbot.agent.cache import CacheManager
 from ragnarbot.agent.context import ContextBuilder
+from ragnarbot.agent.memory_flush import MemorySegment
 from ragnarbot.agent.tokens import estimate_tokens
 from ragnarbot.prompts.compaction import COMPACTION_SYSTEM_PROMPT
 from ragnarbot.providers.base import LLMProvider
@@ -69,14 +70,14 @@ class Compactor:
         new_start: int,
         tools: list[dict] | None,
         **build_kwargs,
-    ) -> tuple[list[dict], int]:
-        """Perform compaction and return rebuilt (messages, new_start)."""
+    ) -> tuple[list[dict], int, MemorySegment | None]:
+        """Perform compaction and return rebuilt messages plus memory segment."""
         msgs = session.messages
 
         # Nothing to compact if fewer than TAIL_MIN messages in session
         if len(msgs) < self.TAIL_MIN:
             logger.warning("Compaction skipped: fewer than TAIL_MIN session messages")
-            return messages, new_start
+            return messages, new_start, None
 
         # 1. Determine tail (messages to preserve)
         tail_count = self._determine_tail(msgs)
@@ -88,9 +89,14 @@ class Compactor:
 
         if compact_end <= compact_start:
             logger.warning("Compaction skipped: nothing to compact between boundaries")
-            return messages, new_start
+            return messages, new_start, None
 
         to_compact = msgs[compact_start:compact_end]
+        memory_segment = self._build_memory_segment(
+            last_compaction_idx=last_compaction_idx,
+            compact_end=compact_end,
+            context_mode=context_mode,
+        )
 
         # 3. Pre-compact flush on a copy
         flushed = copy.deepcopy(to_compact)
@@ -133,15 +139,15 @@ class Compactor:
                     f"Compaction failed (LLM error): "
                     f"{getattr(response, 'content', '')}"
                 )
-                return messages, new_start
+                return messages, new_start, None
             summary = response.content
         except Exception as e:
             logger.warning(f"Compaction failed (LLM error): {e}")
-            return messages, new_start
+            return messages, new_start, None
 
         if not summary or not summary.strip():
             logger.warning("Compaction skipped: empty summary from LLM")
-            return messages, new_start
+            return messages, new_start, None
 
         logger.info(
             f"Compaction triggered ({context_mode}): "
@@ -165,7 +171,7 @@ class Compactor:
         new_messages = base_messages + current_turn
         new_new_start = len(base_messages)
 
-        return new_messages, new_new_start
+        return new_messages, new_new_start, memory_segment
 
     def _determine_tail(self, session_messages: list[dict]) -> int:
         """Return the number of tail messages to preserve.
@@ -216,6 +222,25 @@ class Compactor:
             if meta.get("type") == "compaction":
                 return i
         return None
+
+    def _build_memory_segment(
+        self,
+        *,
+        last_compaction_idx: int | None,
+        compact_end: int,
+        context_mode: str,
+    ) -> MemorySegment | None:
+        """Return the segment that should be flushed to memory after compaction."""
+        start_idx = 0 if last_compaction_idx is None else last_compaction_idx + 1
+        if compact_end <= start_idx:
+            return None
+
+        return MemorySegment(
+            start_idx=start_idx,
+            end_idx=compact_end,
+            trigger="compaction",
+            flush_type="extra_hard",
+        )
 
     def _format_compaction_input(
         self, messages: list[dict], prev_compaction: dict | None

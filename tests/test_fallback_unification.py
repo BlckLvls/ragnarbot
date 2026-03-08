@@ -77,7 +77,7 @@ class TestCompactorChatFn:
         messages = [{"role": "user", "content": "test"}] * 20
         new_start = 19
 
-        result_messages, result_start = await c.compact(
+        result_messages, result_start, memory_segment = await c.compact(
             session=session,
             context_mode="normal",
             context_builder=MagicMock(),
@@ -87,6 +87,7 @@ class TestCompactorChatFn:
         )
         assert result_messages is messages
         assert result_start == new_start
+        assert memory_segment is None
 
     @pytest.mark.asyncio
     async def test_compact_handles_none_response(self):
@@ -103,7 +104,7 @@ class TestCompactorChatFn:
         messages = [{"role": "user", "content": "test"}] * 20
         new_start = 19
 
-        result_messages, result_start = await c.compact(
+        result_messages, result_start, memory_segment = await c.compact(
             session=session,
             context_mode="normal",
             context_builder=MagicMock(),
@@ -113,6 +114,7 @@ class TestCompactorChatFn:
         )
         assert result_messages is messages
         assert result_start == new_start
+        assert memory_segment is None
 
 
 # ── SubagentManager chat_fn tests ────────────────────────────────

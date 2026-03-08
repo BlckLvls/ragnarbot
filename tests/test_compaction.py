@@ -386,13 +386,10 @@ class TestFlushForCompaction:
         CacheManager.flush_for_compaction(messages, "eco")
         assert messages[0]["content"].startswith(CacheManager.TRIM_TAG)
 
-    def test_normal_uses_hard(self):
+    def test_normal_also_uses_extra_hard(self):
         messages = [{"role": "tool", "tool_call_id": "1", "content": "x" * 5000}]
         CacheManager.flush_for_compaction(messages, "normal")
-        # Hard flush: head + tail with trim tag in middle
-        assert CacheManager.TRIM_TAG in messages[0]["content"]
-        # Should NOT start with TRIM_TAG (hard keeps head)
-        assert not messages[0]["content"].startswith(CacheManager.TRIM_TAG)
+        assert messages[0]["content"].startswith(CacheManager.TRIM_TAG)
 
 
 # ── Full compaction cycle (mocked LLM) ─────────────────────────
@@ -437,7 +434,7 @@ class TestCompactionCycle:
         ]
         new_start = len(messages) - 1
 
-        new_messages, new_new_start = await c.compact(
+        new_messages, new_new_start, memory_segment = await c.compact(
             session=session,
             context_mode="eco",
             context_builder=context_builder,
@@ -468,6 +465,8 @@ class TestCompactionCycle:
         # Verify session_key was passed to build_messages
         call_kwargs = context_builder.build_messages.call_args
         assert call_kwargs.kwargs.get("session_key") == "test"
+        assert memory_segment is not None
+        assert memory_segment.flush_type == "extra_hard"
 
     @pytest.mark.asyncio
     async def test_llm_error_returns_original(self):
@@ -486,7 +485,7 @@ class TestCompactionCycle:
         messages = [{"role": "user", "content": "test"}] * 20
         new_start = 19
 
-        result_messages, result_start = await c.compact(
+        result_messages, result_start, memory_segment = await c.compact(
             session=session,
             context_mode="normal",
             context_builder=MagicMock(),
@@ -496,6 +495,7 @@ class TestCompactionCycle:
         )
         assert result_messages is messages
         assert result_start == new_start
+        assert memory_segment is None
 
     @pytest.mark.asyncio
     async def test_empty_summary_returns_original(self):
@@ -514,7 +514,7 @@ class TestCompactionCycle:
         messages = [{"role": "user", "content": "test"}] * 20
         new_start = 19
 
-        result_messages, result_start = await c.compact(
+        result_messages, result_start, memory_segment = await c.compact(
             session=session,
             context_mode="normal",
             context_builder=MagicMock(),
@@ -523,6 +523,8 @@ class TestCompactionCycle:
             tools=None,
         )
         assert result_messages is messages
+        assert result_start == new_start
+        assert memory_segment is None
 
     @pytest.mark.asyncio
     async def test_too_few_messages_skips(self):
@@ -536,7 +538,7 @@ class TestCompactionCycle:
             session.add_message("user", f"msg {i}")
 
         messages = [{"role": "user", "content": "test"}]
-        result_messages, _ = await c.compact(
+        result_messages, _, memory_segment = await c.compact(
             session=session,
             context_mode="eco",
             context_builder=MagicMock(),
@@ -545,6 +547,7 @@ class TestCompactionCycle:
             tools=None,
         )
         assert result_messages is messages
+        assert memory_segment is None
         provider.chat.assert_not_called()
 
 
