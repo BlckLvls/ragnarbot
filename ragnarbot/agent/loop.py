@@ -12,6 +12,7 @@ from ragnarbot.agent.cache import CacheManager
 from ragnarbot.agent.compactor import Compactor
 from ragnarbot.agent.context import ContextBuilder
 from ragnarbot.agent.fallback import FallbackState
+from ragnarbot.agent.memory_flush import MemoryFlushManager, MemorySegment
 from ragnarbot.agent.subagent import SubagentManager
 from ragnarbot.agent.tools.agent_tools import AgentTool
 from ragnarbot.agent.tools.background import (
@@ -120,6 +121,13 @@ class AgentLoop:
         self.context = ContextBuilder(workspace, heartbeat_interval_m=heartbeat_interval_m)
         self.context.model = self.model
         self.sessions = SessionManager(workspace)
+        self._session_locks: dict[str, asyncio.Lock] = {}
+        self.memory_flush = MemoryFlushManager(
+            workspace=workspace,
+            sessions=self.sessions,
+            chat_fn=self._chat_with_fallback,
+            save_session_fn=self._save_session_locked,
+        )
         self.tools = ToolRegistry()
 
         from ragnarbot.agent.tools.browser import BrowserSessionManager
@@ -214,6 +222,7 @@ class AgentLoop:
         """Run the agent loop, processing messages from the bus."""
         self._running = True
         self._processing_task: asyncio.Task | None = None
+        await self.memory_flush.resume_pending_jobs()
         logger.info("Agent loop started")
 
         while self._running:
@@ -229,7 +238,7 @@ class AgentLoop:
 
             # Read-only commands: respond immediately, even during processing
             if command in self.READ_ONLY_COMMANDS:
-                response = self._handle_command(command, msg)
+                response = await self._handle_command(command, msg)
                 if response:
                     if (command != "stop"
                             and self._processing_task
@@ -255,7 +264,7 @@ class AgentLoop:
                         self._handle_compact_async(msg),
                     )
                 else:
-                    response = self._handle_command(command, msg)
+                    response = await self._handle_command(command, msg)
                     if response:
                         await self.bus.publish_outbound(response)
                 continue
@@ -499,6 +508,15 @@ class AgentLoop:
             self._processing_task = None
         self._reap_processing_task()
 
+    def _get_session_lock(self, session_id: str) -> asyncio.Lock:
+        """Return a shared lock for coordinated session saves."""
+        return self._session_locks.setdefault(session_id, asyncio.Lock())
+
+    async def _save_session_locked(self, session) -> None:
+        """Persist a session under a per-session lock."""
+        async with self._get_session_lock(session.key):
+            self.sessions.save(session)
+
     async def _process_and_send(self, batch_or_msg, system=False):
         """Run processing and publish response (background task wrapper)."""
         if system:
@@ -581,7 +599,7 @@ class AgentLoop:
             # Read-only commands: respond immediately, keep debouncing
             command = msg.metadata.get("command")
             if command in self.READ_ONLY_COMMANDS:
-                response = self._handle_command(command, msg)
+                response = await self._handle_command(command, msg)
                 if response:
                     await self.bus.publish_outbound(response)
                 continue
@@ -782,6 +800,7 @@ class AgentLoop:
         compacted_this_turn = False
         stopped = False
         batch_used_fallback = False  # track once per user message batch
+        start_memory_jobs = False
         self._fb_error_notified = False  # reset per batch
 
         try:
@@ -809,7 +828,7 @@ class AgentLoop:
                     tools=self.tools.get_definitions(),
                     session=session,
                 ):
-                    messages, new_start = await self.compactor.compact(
+                    messages, new_start, memory_segment = await self.compactor.compact(
                         session=session,
                         context_mode=self.context_mode,
                         context_builder=self.context,
@@ -820,6 +839,11 @@ class AgentLoop:
                         chat_id=msg.chat_id,
                         session_metadata=session.metadata,
                     )
+                    if memory_segment is not None:
+                        created_jobs = self.memory_flush.enqueue_segment(
+                            session, memory_segment,
+                        )
+                        start_memory_jobs = start_memory_jobs or bool(created_jobs)
                     compacted_this_turn = True
 
                 # Re-apply previous flush to history messages so the API
@@ -967,7 +991,7 @@ class AgentLoop:
         finally:
             # Persist cache metadata even if tool execution throws, so
             # should_flush() sees the correct created_at on the next turn.
-            self.sessions.save(session)
+            await self._save_session_locked(session)
 
         # Fallback accounting — count once per user message batch
         outbound_content = final_content
@@ -1011,7 +1035,10 @@ class AgentLoop:
                 session.add_message(
                     m_dict["role"], m_dict.get("content"), **extras
                 )
-        self.sessions.save(session)
+        await self._save_session_locked(session)
+
+        if start_memory_jobs:
+            await self.memory_flush.start_session_jobs(session.key)
 
         if stopped or not outbound_content:
             return None
@@ -1022,10 +1049,10 @@ class AgentLoop:
             content=outbound_content
         )
     
-    def _handle_command(self, command: str, msg: InboundMessage) -> OutboundMessage | None:
+    async def _handle_command(self, command: str, msg: InboundMessage) -> OutboundMessage | None:
         """Dispatch a channel command without calling the LLM."""
         if command == "new_chat":
-            return self._handle_new_chat(msg)
+            return await self._handle_new_chat(msg)
         if command == "stop":
             return self._handle_stop(msg)
         if command == "context_mode":
@@ -1041,8 +1068,14 @@ class AgentLoop:
         logger.warning(f"Unknown command: {command}")
         return None
 
-    def _handle_new_chat(self, msg: InboundMessage) -> OutboundMessage:
+    async def _handle_new_chat(self, msg: InboundMessage) -> OutboundMessage:
         """Create a new chat session and return a confirmation message."""
+        old_session = self.sessions.get_or_create(msg.session_key)
+        tail_segment = self._build_new_chat_memory_segment(old_session)
+        if tail_segment is not None:
+            self.memory_flush.enqueue_segment(old_session, tail_segment)
+            await self._save_session_locked(old_session)
+
         session = self.sessions.create_new(msg.session_key)
 
         if msg.channel == "telegram":
@@ -1052,13 +1085,30 @@ class AgentLoop:
                 "first_name": msg.metadata.get("first_name"),
                 "last_name": msg.metadata.get("last_name"),
             }
-            self.sessions.save(session)
+            await self._save_session_locked(session)
+
+        if tail_segment is not None:
+            await self.memory_flush.start_session_jobs(old_session.key)
 
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=f"✨ <b>New chat started</b>\n\n🤖 Model: <code>{self.model}</code>",
             metadata={"raw_html": True},
+        )
+
+    def _build_new_chat_memory_segment(self, session) -> MemorySegment | None:
+        """Return the unflushed tail that should be persisted when starting a new chat."""
+        last_idx = self.compactor._find_last_compaction_idx(session.messages)
+        start_idx = 0 if last_idx is None else last_idx + 1
+        end_idx = len(session.messages)
+        if end_idx <= start_idx:
+            return None
+        return MemorySegment(
+            start_idx=start_idx,
+            end_idx=end_idx,
+            trigger="new_chat",
+            flush_type="extra_hard",
         )
 
     def _handle_stop(self, msg: InboundMessage) -> OutboundMessage:
@@ -1345,8 +1395,9 @@ class AgentLoop:
         )
 
         # Run compaction
+        memory_segment = None
         try:
-            messages, _ = await self.compactor.compact(
+            messages, _, memory_segment = await self.compactor.compact(
                 session=session,
                 context_mode=self.context_mode,
                 context_builder=self.context,
@@ -1371,7 +1422,13 @@ class AgentLoop:
             if m.get("metadata", {}).get("type") == "compaction"
         )
 
-        self.sessions.save(session)
+        if memory_segment is not None:
+            self.memory_flush.enqueue_segment(session, memory_segment)
+
+        await self._save_session_locked(session)
+
+        if memory_segment is not None:
+            await self.memory_flush.start_session_jobs(session.key)
 
         if compactions_after > compactions_before:
             logger.info(f"Manual compaction completed for {session_key}")
@@ -1460,6 +1517,7 @@ class AgentLoop:
         compacted_this_turn = False
         stopped = False
         batch_used_fallback = False
+        start_memory_jobs = False
         self._fb_error_notified = False  # reset per system message
 
         try:
@@ -1487,7 +1545,7 @@ class AgentLoop:
                     tools=self.tools.get_definitions(),
                     session=session,
                 ):
-                    messages, new_start = await self.compactor.compact(
+                    messages, new_start, memory_segment = await self.compactor.compact(
                         session=session,
                         context_mode=self.context_mode,
                         context_builder=self.context,
@@ -1498,6 +1556,11 @@ class AgentLoop:
                         chat_id=origin_chat_id,
                         session_metadata=session.metadata,
                     )
+                    if memory_segment is not None:
+                        created_jobs = self.memory_flush.enqueue_segment(
+                            session, memory_segment,
+                        )
+                        start_memory_jobs = start_memory_jobs or bool(created_jobs)
                     compacted_this_turn = True
 
                 # Re-apply previous flush to history messages
@@ -1624,7 +1687,7 @@ class AgentLoop:
                     final_content = response.content
                     break
         finally:
-            self.sessions.save(session)
+            await self._save_session_locked(session)
 
         # Fallback accounting — count once per system message
         outbound_content = final_content
@@ -1659,7 +1722,10 @@ class AgentLoop:
                     if k in msg.metadata
                 }
             session.add_message(m["role"], m.get("content"), msg_metadata=user_meta, **extras)
-        self.sessions.save(session)
+        await self._save_session_locked(session)
+
+        if start_memory_jobs:
+            await self.memory_flush.start_session_jobs(session.key)
 
         if stopped or not outbound_content:
             return None

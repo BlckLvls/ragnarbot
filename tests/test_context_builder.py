@@ -1,10 +1,12 @@
 """Tests for ContextBuilder built-in file loading and prompt assembly."""
 
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from ragnarbot.agent.context import BUILTIN_DIR, ContextBuilder
+from ragnarbot.agent.memory import MemoryStore
 
 
 class TestBuiltinFilesExist:
@@ -125,3 +127,20 @@ class TestBuildSystemPrompt:
         cb = ContextBuilder(tmp_path / "workspace")
         prompt = cb.build_system_prompt(channel="cli")
         assert "# Telegram Context" not in prompt
+
+    def test_includes_today_and_yesterday_memory(self, tmp_path):
+        cb = ContextBuilder(tmp_path / "workspace")
+        memory = MemoryStore(cb.workspace)
+        today = datetime.now().strftime("%Y-%m-%d")
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+        memory.write_long_term("# Long-term Memory\n\n- durable fact")
+        memory.write_day(today, f"# {today}\n\n- today item")
+        memory.write_day(yesterday, f"# {yesterday}\n\n- yesterday item")
+
+        prompt = cb.build_system_prompt()
+        assert "## Long-term Memory" in prompt
+        assert "## Today's Notes" in prompt
+        assert "## Yesterday's Notes" in prompt
+        assert "today item" in prompt
+        assert "yesterday item" in prompt

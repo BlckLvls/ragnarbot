@@ -1,7 +1,7 @@
 """Memory system for persistent agent memory."""
 
+from datetime import datetime, timedelta
 from pathlib import Path
-from datetime import datetime
 
 from ragnarbot.utils.helpers import ensure_dir, today_date
 
@@ -17,18 +17,39 @@ class MemoryStore:
         self.workspace = workspace
         self.memory_dir = ensure_dir(workspace / "memory")
         self.memory_file = self.memory_dir / "MEMORY.md"
-    
+
+    def get_day_file(self, date_str: str) -> Path:
+        """Get path to a daily memory file."""
+        return self.memory_dir / f"{date_str}.md"
+
     def get_today_file(self) -> Path:
         """Get path to today's memory file."""
-        return self.memory_dir / f"{today_date()}.md"
-    
+        return self.get_day_file(today_date())
+
+    def get_yesterday_file(self) -> Path:
+        """Get path to yesterday's memory file."""
+        yesterday = (datetime.now().date() - timedelta(days=1)).strftime("%Y-%m-%d")
+        return self.get_day_file(yesterday)
+
+    def read_day(self, date_str: str) -> str:
+        """Read a daily memory file."""
+        day_file = self.get_day_file(date_str)
+        if day_file.exists():
+            return day_file.read_text(encoding="utf-8")
+        return ""
+
     def read_today(self) -> str:
         """Read today's memory notes."""
-        today_file = self.get_today_file()
-        if today_file.exists():
-            return today_file.read_text(encoding="utf-8")
-        return ""
-    
+        return self.read_day(today_date())
+
+    def read_yesterday(self) -> str:
+        """Read yesterday's memory notes."""
+        return self.read_day(self.get_yesterday_file().stem)
+
+    def write_day(self, date_str: str, content: str) -> None:
+        """Write the full contents of a daily memory file."""
+        self.get_day_file(date_str).write_text(content, encoding="utf-8")
+
     def append_today(self, content: str) -> None:
         """Append content to today's memory notes."""
         today_file = self.get_today_file()
@@ -63,15 +84,13 @@ class MemoryStore:
         Returns:
             Combined memory content.
         """
-        from datetime import timedelta
-        
         memories = []
         today = datetime.now().date()
         
         for i in range(days):
             date = today - timedelta(days=i)
             date_str = date.strftime("%Y-%m-%d")
-            file_path = self.memory_dir / f"{date_str}.md"
+            file_path = self.get_day_file(date_str)
             
             if file_path.exists():
                 content = file_path.read_text(encoding="utf-8")
@@ -105,5 +124,9 @@ class MemoryStore:
         today = self.read_today()
         if today:
             parts.append("## Today's Notes\n" + today)
+
+        yesterday = self.read_yesterday()
+        if yesterday:
+            parts.append("## Yesterday's Notes\n" + yesterday)
         
         return "\n\n".join(parts) if parts else ""

@@ -6,7 +6,7 @@ _This is your playbook. Not who you are — that's in your Soul. Not what tools 
 
 ## Session Boot
 
-Every session starts cold. You have no memory of what came before except what's written down. Your long-term memory (`MEMORY.md`) and today's daily note are automatically injected into your system prompt — you already have them. No need to read them with a tool.
+Every session starts cold. You have no memory of what came before except what's written down. Your long-term memory (`MEMORY.md`), today's daily note, and yesterday's daily note are automatically injected into your system prompt — you already have them. No need to read them with a tool.
 
 **On first message in a new or compacted session:**
 
@@ -30,8 +30,14 @@ Your memory is a system of files, not a feature you invoke. It requires discipli
 
 This is your persistent knowledge base. It survives across sessions indefinitely.
 
-**Write to it when:**
-- You learn a significant fact about the user (name, role, preferences, timezone)
+**This file is maintained primarily by the background memory flusher.**
+
+**Write to it manually only when:**
+- The user explicitly asks you to remember or correct something there
+- You are fixing or pruning stale long-term memory on purpose
+
+**What belongs here:**
+- You learn a significant technical or project fact that future sessions will need
 - A project has important context that future sessions will need
 - The user explicitly asks you to remember something
 - You discover a technical detail about the user's environment that affects how you work
@@ -54,7 +60,9 @@ Daily notes are for session-specific context that matters today but may not matt
 - The user mentions plans, deadlines, or events for today or this week
 - You need to hand off context between sessions within the same day
 
-Today's daily note is automatically injected into your system prompt alongside `MEMORY.md`. Older notes are available but not loaded by default — read them with `file_read` if you need historical context.
+Today's and yesterday's daily notes are automatically injected into your system prompt alongside `MEMORY.md`. Older notes are available but not loaded by default — read them with `file_read` if you need historical context.
+
+**These files are maintained primarily by the background memory flusher.** Avoid manually appending routine session notes unless the user explicitly wants that or you are fixing a bad memory entry.
 
 ### What Never Goes in Memory
 
