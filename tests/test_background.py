@@ -1,6 +1,7 @@
 """Tests for background process manager and tools."""
 
 import asyncio
+import re
 import time
 from collections import deque
 from unittest.mock import AsyncMock, MagicMock
@@ -44,7 +45,13 @@ def _make_manager(bus=None):
 
 def _extract_job_id(result: str) -> str:
     """Extract job_id from spawn result string."""
-    return result.split("Poll ")[1].split(" set")[0]
+    match = re.search(r"\bid:\s*([a-z0-9-]+)", result, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    match = re.search(r"\bPoll\s+([a-z0-9-]+)\s+set\b", result)
+    if match:
+        return match.group(1)
+    raise AssertionError(f"Could not extract job id from: {result}")
 
 
 async def _kill_all(mgr: BackgroundProcessManager):
