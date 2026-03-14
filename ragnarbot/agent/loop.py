@@ -711,6 +711,83 @@ class AgentLoop:
         logger.info(f"Injected {injected} steering message(s) into active run {session_key}")
         return True
 
+    def _begin_browser_call(
+        self, state: RunState, arguments: dict[str, Any],
+    ) -> BrowserCallState:
+        """Capture browser session state before executing a browser tool call."""
+        action = str(arguments.get("action", ""))
+        call_state = BrowserCallState(
+            action=action,
+            before_ids=self.browser_manager.current_session_ids(),
+            pre_touched=self.browser_manager.estimate_touched_sessions(
+                action, session_id=arguments.get("session_id"),
+            ),
+        )
+        state.active_browser_call = call_state
+        return call_state
+
+    def _record_browser_touch(self, state: RunState, call_state: BrowserCallState) -> None:
+        """Record browser sessions touched by a browser tool call."""
+        touched = set(call_state.pre_touched)
+        after_ids = self.browser_manager.current_session_ids()
+        if call_state.action in {"open", "connect"}:
+            touched.update(after_ids - call_state.before_ids)
+        elif call_state.action == "close_all":
+            touched.update(call_state.before_ids)
+        state.touched_browser_sessions.update(touched)
+
+    def _finalize_active_browser_call(self, state: RunState) -> None:
+        """Flush browser touch tracking for the active browser call, if any."""
+        call_state = state.active_browser_call
+        if call_state is None:
+            return
+        self._record_browser_touch(state, call_state)
+        state.active_browser_call = None
+
+    async def _execute_tool_with_tracking(
+        self,
+        session_key: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> str | list[dict[str, Any]]:
+        """Execute a tool while tracking foreground cancellation state."""
+        state = self._get_run_state(session_key)
+        if state is None:
+            return await self.tools.execute(tool_name, arguments)
+
+        if tool_name == "browser":
+            self._begin_browser_call(state, arguments)
+
+        tool_task = asyncio.create_task(self.tools.execute(tool_name, arguments))
+        state.active_tool_task = tool_task
+        try:
+            return await tool_task
+        finally:
+            if tool_name == "browser":
+                self._finalize_active_browser_call(state)
+            if state.active_tool_task is tool_task:
+                state.active_tool_task = None
+
+    async def _cleanup_stopped_run(self, session_key: str) -> None:
+        """Cleanup foreground resources after a stop request."""
+        state = self._get_run_state(session_key)
+        if state is None:
+            return
+
+        if state.active_tool_task and not state.active_tool_task.done():
+            state.active_tool_task.cancel()
+            try:
+                await state.active_tool_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        self._finalize_active_browser_call(state)
+
+        for browser_session_id in list(state.touched_browser_sessions):
+            if browser_session_id in self.browser_manager.current_session_ids():
+                await self.browser_manager.close(browser_session_id)
+        state.touched_browser_sessions.clear()
+
     def _save_batch_messages(
         self,
         session,
@@ -1190,7 +1267,25 @@ class AgentLoop:
                                 metadata={"intermediate": True, "raw_html": True},
                             ))
 
-                        result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                        try:
+                            result = await self._execute_tool_with_tracking(
+                                session_key, tool_call.name, tool_call.arguments,
+                            )
+                        except asyncio.CancelledError:
+                            if not self._is_stopped(session_key):
+                                raise
+                            logger.info(
+                                f"Tool execution cancelled by stop for {session_key}"
+                            )
+                            stopped = True
+                            messages = self.context.add_tool_result(
+                                messages, tool_call.id, tool_call.name, "[Stopped by user]",
+                            )
+                            for remaining in response.tool_calls[idx + 1:]:
+                                messages = self.context.add_tool_result(
+                                    messages, remaining.id, remaining.name, "[Stopped by user]",
+                                )
+                            break
                         messages = self.context.add_tool_result(
                             messages, tool_call.id, tool_call.name, result
                         )
@@ -1205,6 +1300,9 @@ class AgentLoop:
             # Persist cache metadata even if tool execution throws, so
             # should_flush() sees the correct created_at on the next turn.
             await self._save_session_locked(session)
+
+        if stopped:
+            await self._cleanup_stopped_run(session_key)
 
         # Fallback accounting — count once per user message batch
         outbound_content = final_content
@@ -1251,6 +1349,10 @@ class AgentLoop:
             return self._handle_trace(msg)
         if command == "set_trace_mode":
             return self._handle_set_trace_mode(msg)
+        if command == "steering":
+            return self._handle_steering(msg)
+        if command == "set_steering_mode":
+            return self._handle_set_steering_mode(msg)
         logger.warning(f"Unknown command: {command}")
         return None
 
@@ -1396,6 +1498,49 @@ class AgentLoop:
 
         status = "Enabled" if self.trace_mode else "Disabled"
         text = f"✅ Trace mode: {status}"
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=text,
+            metadata={
+                "raw_html": True,
+                "edit_message_id": msg.metadata.get("callback_message_id"),
+            },
+        )
+
+    def _handle_steering(self, msg: InboundMessage) -> OutboundMessage:
+        """Show current steering mode with toggle button."""
+        enabled = self.steering_enabled
+        status = "Enabled" if enabled else "Disabled"
+        toggle = "off" if enabled else "on"
+        btn_text = "Disable" if enabled else "Enable"
+        text = f"🧭 <b>Steering Mode</b>\n\nCurrent: {status}"
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=text,
+            metadata={
+                "raw_html": True,
+                "inline_keyboard": [[
+                    {"text": btn_text, "callback_data": f"steering_mode:{toggle}"},
+                ]],
+            },
+        )
+
+    def _handle_set_steering_mode(self, msg: InboundMessage) -> OutboundMessage | None:
+        """Toggle steering mode (from callback query)."""
+        value = msg.metadata.get("steering_mode")
+        if value not in ("on", "off"):
+            return None
+
+        self.steering_enabled = value == "on"
+        from ragnarbot.config.loader import load_config, save_config
+        config = load_config()
+        config.agents.defaults.steering_enabled = self.steering_enabled
+        save_config(config)
+
+        status = "Enabled" if self.steering_enabled else "Disabled"
+        text = f"✅ Steering mode: {status}"
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
@@ -1862,7 +2007,25 @@ class AgentLoop:
                                 metadata={"intermediate": True, "raw_html": True},
                             ))
 
-                        result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                        try:
+                            result = await self._execute_tool_with_tracking(
+                                session_key, tool_call.name, tool_call.arguments,
+                            )
+                        except asyncio.CancelledError:
+                            if not self._is_stopped(session_key):
+                                raise
+                            logger.info(
+                                f"Tool execution cancelled by stop for {session_key}"
+                            )
+                            stopped = True
+                            messages = self.context.add_tool_result(
+                                messages, tool_call.id, tool_call.name, "[Stopped by user]",
+                            )
+                            for remaining in response.tool_calls[idx + 1:]:
+                                messages = self.context.add_tool_result(
+                                    messages, remaining.id, remaining.name, "[Stopped by user]",
+                                )
+                            break
                         messages = self.context.add_tool_result(
                             messages, tool_call.id, tool_call.name, result
                         )
@@ -1875,6 +2038,9 @@ class AgentLoop:
                     break
         finally:
             await self._save_session_locked(session)
+
+        if stopped:
+            await self._cleanup_stopped_run(session_key)
 
         # Fallback accounting — count once per system message
         outbound_content = final_content
