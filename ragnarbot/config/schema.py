@@ -66,6 +66,10 @@ class AgentDefaults(BaseModel):
         default=False,
         json_schema_extra={"reload": "hot", "label": "Show tool calls in chat during execution"},
     )
+    steering_enabled: bool = Field(
+        default=True,
+        json_schema_extra={"reload": "hot", "label": "Inject same-session messages into active runs"},
+    )
 
 
 class FallbackConfig(BaseModel):

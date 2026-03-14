@@ -29,6 +29,7 @@ def mock_agent():
     agent.debounce_seconds = 0.5
     agent.context_mode = "normal"
     agent.max_context_tokens = 200_000
+    agent.steering_enabled = True
     agent.cache_manager = MagicMock()
     agent.compactor = MagicMock()
     agent.brave_api_key = None
@@ -89,6 +90,22 @@ async def test_set_action_saves_and_hot_reloads(config_tool, mock_agent):
     data = json.loads(result)
     assert data["new_value"] == 1.0
     assert data["status"] == "applied"
+
+
+@pytest.mark.asyncio
+async def test_set_action_hot_reloads_steering_mode(config_tool, mock_agent):
+    with (
+        patch(LOAD_CONFIG, return_value=Config()),
+        patch(SAVE_CONFIG),
+    ):
+        result = await config_tool.execute(
+            action="set", path="agents.defaults.steering_enabled", value="false",
+        )
+
+    data = json.loads(result)
+    assert data["new_value"] is False
+    assert data["status"] == "applied"
+    assert mock_agent.steering_enabled is False
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,8 @@ When the user replies to a specific message, you will see the quoted content inl
 
 When a message was forwarded from another user, you will see `[forwarded_from:@username (Name)]`.
 
+During an active tool/reasoning loop, a same-chat follow-up may appear with the tag `[Steering message during active task]`. This is still a user message. Treat it as fresh guidance for the next step of the current task.
+
 **Do NOT include these tags, quote formatting, or separators in your own responses.** They are metadata for your awareness only.
 
 ## Responding to Messages

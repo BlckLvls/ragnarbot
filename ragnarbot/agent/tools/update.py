@@ -154,24 +154,18 @@ class UpdateTool(Tool):
 
         # Try uv first, fall back to pip
         try:
-            proc = await asyncio.create_subprocess_exec(
+            returncode, stdout, stderr = await self._run_subprocess(
                 "uv", "tool", "upgrade", "ragnarbot-ai",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await proc.communicate()
-            if proc.returncode != 0:
+            if returncode != 0:
                 raise RuntimeError(stderr.decode().strip())
         except FileNotFoundError:
             # uv not available, try pip
             try:
-                proc = await asyncio.create_subprocess_exec(
+                returncode, stdout, stderr = await self._run_subprocess(
                     "pip", "install", "--upgrade", "ragnarbot-ai",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
                 )
-                stdout, stderr = await proc.communicate()
-                if proc.returncode != 0:
+                if returncode != 0:
                     raise RuntimeError(stderr.decode().strip())
             except FileNotFoundError:
                 return json.dumps({
@@ -197,3 +191,25 @@ class UpdateTool(Tool):
             "old_version": current,
             "new_version": latest,
         })
+
+    @staticmethod
+    async def _run_subprocess(*argv: str) -> tuple[int, bytes, bytes]:
+        """Run a subprocess and ensure it is killed on cancellation."""
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await proc.communicate()
+        except asyncio.CancelledError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await proc.wait()
+            except Exception:
+                pass
+            raise
+        return proc.returncode or 0, stdout, stderr

@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+from collections import deque
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -47,6 +49,28 @@ from ragnarbot.providers.base import LLMProvider, LLMResponse
 from ragnarbot.session.manager import SessionManager
 
 
+@dataclass
+class BrowserCallState:
+    """Tracks browser state for the currently executing browser tool call."""
+
+    action: str
+    before_ids: set[str]
+    pre_touched: set[str] = field(default_factory=set)
+
+
+@dataclass
+class RunState:
+    """Mutable state for the currently active foreground agent run."""
+
+    session_key: str
+    stop_event: asyncio.Event = field(default_factory=asyncio.Event)
+    pending_steering: deque[InboundMessage] = field(default_factory=deque)
+    injected_steering: list[dict[str, Any]] = field(default_factory=list)
+    active_tool_task: asyncio.Task | None = None
+    active_browser_call: BrowserCallState | None = None
+    touched_browser_sessions: set[str] = field(default_factory=set)
+
+
 class AgentLoop:
     """
     The agent loop is the core processing engine.
@@ -61,6 +85,9 @@ class AgentLoop:
 
     COMPACT_MIN_MESSAGES = 60
     READ_ONLY_COMMANDS = frozenset({"context_info", "context_mode", "stop", "trace"})
+    IMMEDIATE_COMMANDS = READ_ONLY_COMMANDS | frozenset({
+        "set_context_mode", "set_trace_mode", "steering", "set_steering_mode",
+    })
 
     def __init__(
         self,
@@ -82,6 +109,7 @@ class AgentLoop:
         fallback_config: "FallbackConfig | None" = None,
         provider_factory: "Callable | None" = None,
         trace_mode: bool = False,
+        steering_enabled: bool = True,
         browser_config: "BrowserConfig | None" = None,
     ):
         from ragnarbot.config.schema import ExecToolConfig
@@ -100,6 +128,7 @@ class AgentLoop:
         self.max_context_tokens = max_context_tokens
         self.context_mode = context_mode
         self.trace_mode = trace_mode
+        self.steering_enabled = steering_enabled
         self.cache_manager = CacheManager(max_context_tokens=max_context_tokens)
 
         # Fallback model support
@@ -156,6 +185,8 @@ class AgentLoop:
 
         self._running = False
         self._restart_requested = False
+        self._processing_task: asyncio.Task | None = None
+        self._run_state: RunState | None = None
         self._stop_events: dict[str, asyncio.Event] = {}
         self._processing_session_key: str | None = None
         self.last_active_chat: tuple[str, str] | None = None
@@ -221,7 +252,6 @@ class AgentLoop:
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
         self._running = True
-        self._processing_task: asyncio.Task | None = None
         await self.memory_flush.resume_pending_jobs()
         logger.info("Agent loop started")
 
@@ -236,8 +266,8 @@ class AgentLoop:
 
             command = msg.metadata.get("command")
 
-            # Read-only commands: respond immediately, even during processing
-            if command in self.READ_ONLY_COMMANDS:
+            # Immediate commands: respond immediately, even during processing
+            if command in self.IMMEDIATE_COMMANDS:
                 response = await self._handle_command(command, msg)
                 if response:
                     if (command != "stop"
@@ -247,8 +277,10 @@ class AgentLoop:
                     await self.bus.publish_outbound(response)
                 continue
 
-            # Everything else: wait for active processing first
-            await self._await_processing_task()
+            if self._processing_task and not self._processing_task.done():
+                if self._queue_steering_message(msg):
+                    continue
+                await self._await_processing_task()
 
             # System messages → background task
             if msg.channel == "system":
@@ -291,6 +323,9 @@ class AgentLoop:
         logger.info("Restart requested — will restart after current processing completes")
 
     def _is_stopped(self, session_key: str) -> bool:
+        state = self._get_run_state(session_key)
+        if state is not None:
+            return state.stop_event.is_set()
         event = self._stop_events.get(session_key)
         return event is not None and event.is_set()
 
@@ -298,15 +333,55 @@ class AgentLoop:
         """Returns True if there was something to stop."""
         if (self._processing_task and not self._processing_task.done()
                 and self._processing_session_key == session_key):
-            event = self._stop_events.get(session_key)
+            state = self._get_run_state(session_key)
+            event = state.stop_event if state else self._stop_events.get(session_key)
             if event:
                 event.set()
+                if state and state.active_tool_task and not state.active_tool_task.done():
+                    state.active_tool_task.cancel()
                 return True
         return False
 
-    def _clear_stop(self, session_key: str):
-        """Reset stop state with a fresh (unset) event for this session."""
-        self._stop_events[session_key] = asyncio.Event()
+    def _get_run_state(self, session_key: str | None = None) -> RunState | None:
+        """Return the active run state, optionally scoped to a session."""
+        if self._run_state is None:
+            return None
+        if session_key is None or self._run_state.session_key == session_key:
+            return self._run_state
+        return None
+
+    def _start_run_state(self, session_key: str) -> RunState:
+        """Create a fresh run state for the active session."""
+        event = asyncio.Event()
+        self._stop_events[session_key] = event
+        self._run_state = RunState(session_key=session_key, stop_event=event)
+        return self._run_state
+
+    async def _requeue_pending_steering(self, state: RunState) -> None:
+        """Push any unconsumed steering messages back onto the bus."""
+        while state.pending_steering:
+            await self.bus.publish_inbound(state.pending_steering.popleft())
+
+    async def _finish_run_state(self, session_key: str) -> None:
+        """Clear the active run state and preserve pending steering as next turns."""
+        state = self._get_run_state(session_key)
+        if state is not None:
+            await self._requeue_pending_steering(state)
+            self._run_state = None
+        self._stop_events.pop(session_key, None)
+
+    def _queue_steering_message(self, msg: InboundMessage) -> bool:
+        """Queue a same-session message as steering during an active run."""
+        if not self.steering_enabled:
+            return False
+        if msg.channel == "system" or msg.metadata.get("command"):
+            return False
+        state = self._get_run_state(msg.session_key)
+        if state is None:
+            return False
+        state.pending_steering.append(msg)
+        logger.info(f"Queued steering message for active run {msg.session_key}")
+        return True
 
     async def _chat_or_stop(
         self, session_key: str, provider: LLMProvider | None = None, **chat_kwargs,
@@ -517,6 +592,277 @@ class AgentLoop:
         async with self._get_session_lock(session.key):
             self.sessions.save(session)
 
+    @staticmethod
+    def _message_extras(message: dict[str, Any]) -> dict[str, Any]:
+        """Extract session-persisted extras from an LLM-format message."""
+        extras: dict[str, Any] = {}
+        if "tool_calls" in message:
+            extras["tool_calls"] = message["tool_calls"]
+        if "tool_call_id" in message:
+            extras["tool_call_id"] = message["tool_call_id"]
+        if "name" in message:
+            extras["name"] = message["name"]
+        return extras
+
+    @staticmethod
+    def _message_user_meta(msg: InboundMessage, steering: bool = False) -> dict[str, Any]:
+        """Build session metadata for a user message."""
+        meta = {
+            key: msg.metadata[key]
+            for key in ("message_id", "reply_to", "forwarded_from")
+            if key in msg.metadata
+        }
+        if steering:
+            meta["type"] = "steering"
+        return meta
+
+    async def _prepare_inbound_message(
+        self,
+        session,
+        msg: InboundMessage,
+        *,
+        include_timestamp: bool,
+        steering: bool = False,
+    ) -> dict[str, Any]:
+        """Convert an inbound message into LLM-ready content plus save metadata."""
+        from datetime import datetime as _dt
+        from ragnarbot.session.manager import _build_message_prefix
+
+        media_refs: list[dict[str, str]] = []
+        if self.media_manager:
+            for att in msg.attachments:
+                if att.type == "photo" and att.data:
+                    ext = _ext_from_mime(att.mime_type)
+                    filename = await self.media_manager.save_photo(
+                        session.key, att.data, ext,
+                    )
+                    media_refs.append({"type": "photo", "filename": filename})
+
+        reply_to = msg.metadata.get("reply_to")
+        if reply_to and isinstance(reply_to, dict) and self.media_manager:
+            photo_data = reply_to.pop("photo_data", None)
+            photo_mime = reply_to.pop("photo_mime", None)
+            if photo_data:
+                ext = _ext_from_mime(photo_mime)
+                filename = await self.media_manager.save_photo(
+                    session.key, photo_data, ext,
+                )
+                media_refs.append({"type": "photo", "filename": filename})
+                reply_to["has_photo"] = True
+
+        if self.media_manager:
+            photo_paths = [
+                str(self.media_manager.get_photo_path(session.key, ref["filename"]))
+                for ref in media_refs
+                if ref["type"] == "photo"
+            ]
+            if photo_paths:
+                markers = "\n".join(f"[photo saved: {p}]" for p in photo_paths)
+                msg.content = f"{msg.content}\n{markers}" if msg.content else markers
+
+        current_meta: dict[str, Any] = {}
+        if include_timestamp:
+            current_meta["timestamp"] = _dt.now().isoformat()
+        if steering:
+            current_meta["type"] = "steering"
+        for key in ("reply_to", "forwarded_from"):
+            if key in msg.metadata:
+                current_meta[key] = msg.metadata[key]
+        prefix = _build_message_prefix(current_meta, include_timestamp=include_timestamp)
+        prefixed_content = prefix + msg.content if prefix else msg.content
+
+        system_note = msg.metadata.get("system_note")
+        if system_note:
+            prefixed_content += f"\n\n{system_note}"
+
+        return {
+            "prefixed_content": prefixed_content,
+            "media_refs": media_refs,
+            "media": msg.media if msg.media else None,
+            "raw_msg": msg,
+        }
+
+    async def _inject_pending_steering(
+        self,
+        session_key: str,
+        session,
+        messages: list[dict[str, Any]],
+    ) -> bool:
+        """Append queued steering messages before the next LLM call."""
+        state = self._get_run_state(session_key)
+        if state is None or not state.pending_steering:
+            return False
+
+        injected = 0
+        while state.pending_steering:
+            steering_msg = state.pending_steering.popleft()
+            prepared = await self._prepare_inbound_message(
+                session, steering_msg, include_timestamp=True, steering=True,
+            )
+            messages.append(self.context.build_user_message(
+                content=prepared["prefixed_content"],
+                media=prepared["media"],
+                media_refs=prepared["media_refs"] or None,
+                session_key=session.key,
+            ))
+            state.injected_steering.append(prepared)
+            injected += 1
+
+        logger.info(f"Injected {injected} steering message(s) into active run {session_key}")
+        return True
+
+    def _begin_browser_call(
+        self, state: RunState, arguments: dict[str, Any],
+    ) -> BrowserCallState:
+        """Capture browser session state before executing a browser tool call."""
+        action = str(arguments.get("action", ""))
+        call_state = BrowserCallState(
+            action=action,
+            before_ids=self.browser_manager.current_session_ids(),
+            pre_touched=self.browser_manager.estimate_touched_sessions(
+                action, session_id=arguments.get("session_id"),
+            ),
+        )
+        state.active_browser_call = call_state
+        return call_state
+
+    def _record_browser_touch(self, state: RunState, call_state: BrowserCallState) -> None:
+        """Record browser sessions touched by a browser tool call."""
+        touched = set(call_state.pre_touched)
+        after_ids = self.browser_manager.current_session_ids()
+        if call_state.action in {"open", "connect"}:
+            touched.update(after_ids - call_state.before_ids)
+        elif call_state.action == "close_all":
+            touched.update(call_state.before_ids)
+        state.touched_browser_sessions.update(touched)
+
+    def _finalize_active_browser_call(self, state: RunState) -> None:
+        """Flush browser touch tracking for the active browser call, if any."""
+        call_state = state.active_browser_call
+        if call_state is None:
+            return
+        self._record_browser_touch(state, call_state)
+        state.active_browser_call = None
+
+    async def _execute_tool_with_tracking(
+        self,
+        session_key: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> str | list[dict[str, Any]]:
+        """Execute a tool while tracking foreground cancellation state."""
+        state = self._get_run_state(session_key)
+        if state is None:
+            return await self.tools.execute(tool_name, arguments)
+
+        if tool_name == "browser":
+            self._begin_browser_call(state, arguments)
+
+        tool_task = asyncio.create_task(self.tools.execute(tool_name, arguments))
+        state.active_tool_task = tool_task
+        try:
+            return await tool_task
+        finally:
+            if tool_name == "browser":
+                self._finalize_active_browser_call(state)
+            if state.active_tool_task is tool_task:
+                state.active_tool_task = None
+
+    async def _cleanup_stopped_run(self, session_key: str) -> None:
+        """Cleanup foreground resources after a stop request."""
+        state = self._get_run_state(session_key)
+        if state is None:
+            return
+
+        if state.active_tool_task and not state.active_tool_task.done():
+            state.active_tool_task.cancel()
+            try:
+                await state.active_tool_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        self._finalize_active_browser_call(state)
+
+        for browser_session_id in list(state.touched_browser_sessions):
+            if browser_session_id in self.browser_manager.current_session_ids():
+                await self.browser_manager.close(browser_session_id)
+        state.touched_browser_sessions.clear()
+
+    def _save_batch_messages(
+        self,
+        session,
+        messages: list[dict[str, Any]],
+        new_start: int,
+        batch_data: list[dict[str, Any]],
+        steering_data: list[dict[str, Any]],
+    ) -> None:
+        """Persist the current user turn, including injected steering."""
+        steering_idx = 0
+        for idx, message in enumerate(messages[new_start:]):
+            extras = self._message_extras(message)
+            if message["role"] == "user":
+                if idx < len(batch_data):
+                    prepared = batch_data[idx]
+                    raw = prepared["raw_msg"]
+                    if prepared["media_refs"]:
+                        extras["media_refs"] = prepared["media_refs"]
+                    session.add_message(
+                        "user",
+                        raw.content,
+                        msg_metadata=self._message_user_meta(raw),
+                        **extras,
+                    )
+                else:
+                    prepared = steering_data[steering_idx]
+                    steering_idx += 1
+                    raw = prepared["raw_msg"]
+                    if prepared["media_refs"]:
+                        extras["media_refs"] = prepared["media_refs"]
+                    session.add_message(
+                        "user",
+                        raw.content,
+                        msg_metadata=self._message_user_meta(raw, steering=True),
+                        **extras,
+                    )
+            else:
+                session.add_message(message["role"], message.get("content"), **extras)
+
+    def _save_system_messages(
+        self,
+        session,
+        messages: list[dict[str, Any]],
+        new_start: int,
+        msg: InboundMessage,
+        steering_data: list[dict[str, Any]],
+    ) -> None:
+        """Persist a system-triggered turn plus any injected steering."""
+        steering_idx = 0
+        for idx, message in enumerate(messages[new_start:]):
+            extras = self._message_extras(message)
+            if message["role"] == "user":
+                if idx == 0:
+                    session.add_message(
+                        "user",
+                        f"[System: {msg.sender_id}] {msg.content}",
+                        msg_metadata=self._message_user_meta(msg),
+                        **extras,
+                    )
+                    continue
+
+                prepared = steering_data[steering_idx]
+                steering_idx += 1
+                raw = prepared["raw_msg"]
+                if prepared["media_refs"]:
+                    extras["media_refs"] = prepared["media_refs"]
+                session.add_message(
+                    "user",
+                    raw.content,
+                    msg_metadata=self._message_user_meta(raw, steering=True),
+                    **extras,
+                )
+            else:
+                session.add_message(message["role"], message.get("content"), **extras)
+
     async def _process_and_send(self, batch_or_msg, system=False):
         """Run processing and publish response (background task wrapper)."""
         if system:
@@ -529,7 +875,7 @@ class AgentLoop:
             session_key = f"{msg.channel}:{msg.chat_id}"
 
         self._processing_session_key = session_key
-        self._clear_stop(session_key)
+        self._start_run_state(session_key)
 
         try:
             if system:
@@ -567,7 +913,7 @@ class AgentLoop:
                     ))
         finally:
             self._processing_session_key = None
-            self._stop_events.pop(session_key, None)
+            await self._finish_run_state(session_key)
 
     async def _debounce(self, first: InboundMessage) -> list[InboundMessage]:
         """Collect rapid-fire messages from the same session into a batch.
@@ -636,9 +982,6 @@ class AgentLoop:
         Returns:
             The response message, or None if no response needed.
         """
-        from datetime import datetime as _dt
-        from ragnarbot.session.manager import _build_message_prefix
-
         msg = batch[0]
 
         if msg.channel != "cli":
@@ -708,65 +1051,11 @@ class AgentLoop:
             reaction_tool.set_context(msg.channel, msg.chat_id, last_message_id)
 
         # -- Per-message processing: attachments, prefixes, media_refs --
-        batch_data: list[dict] = []  # {prefixed_content, media_refs, media, raw_msg}
+        batch_data: list[dict] = []
         for m in batch:
-            # Process attachments
-            media_refs: list[dict[str, str]] = []
-            if self.media_manager:
-                for att in m.attachments:
-                    if att.type == "photo" and att.data:
-                        ext = _ext_from_mime(att.mime_type)
-                        filename = await self.media_manager.save_photo(
-                            session.key, att.data, ext
-                        )
-                        media_refs.append({"type": "photo", "filename": filename})
-
-            # Process reply-to photo — save to disk, add to media_refs
-            reply_to = m.metadata.get("reply_to")
-            if reply_to and isinstance(reply_to, dict) and self.media_manager:
-                photo_data = reply_to.pop("photo_data", None)
-                photo_mime = reply_to.pop("photo_mime", None)
-                if photo_data:
-                    ext = _ext_from_mime(photo_mime)
-                    filename = await self.media_manager.save_photo(
-                        session.key, photo_data, ext
-                    )
-                    media_refs.append({"type": "photo", "filename": filename})
-                    reply_to["has_photo"] = True
-
-            # Inject photo path markers into content
-            if self.media_manager:
-                photo_paths = [
-                    str(self.media_manager.get_photo_path(session.key, ref["filename"]))
-                    for ref in media_refs
-                    if ref["type"] == "photo"
-                ]
-                if photo_paths:
-                    markers = "\n".join(f"[photo saved: {p}]" for p in photo_paths)
-                    m.content = f"{m.content}\n{markers}" if m.content else markers
-
-            # Build prefix tags (timestamp only on the first message in the batch)
-            is_first = m is batch[0]
-            current_meta: dict = {}
-            if is_first:
-                current_meta["timestamp"] = _dt.now().isoformat()
-            for k in ("reply_to", "forwarded_from"):
-                if k in m.metadata:
-                    current_meta[k] = m.metadata[k]
-            prefix = _build_message_prefix(current_meta, include_timestamp=is_first)
-            prefixed_content = prefix + m.content if prefix else m.content
-
-            # Append ephemeral system note (visible to LLM only, not saved to session)
-            system_note = m.metadata.get("system_note")
-            if system_note:
-                prefixed_content += f"\n\n{system_note}"
-
-            batch_data.append({
-                "prefixed_content": prefixed_content,
-                "media_refs": media_refs,
-                "media": m.media if m.media else None,
-                "raw_msg": m,
-            })
+            batch_data.append(await self._prepare_inbound_message(
+                session, m, include_timestamp=(m is batch[0]),
+            ))
 
         # -- Build LLM messages: first item uses build_messages (includes history) --
         first = batch_data[0]
@@ -978,13 +1267,32 @@ class AgentLoop:
                                 metadata={"intermediate": True, "raw_html": True},
                             ))
 
-                        result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                        try:
+                            result = await self._execute_tool_with_tracking(
+                                session_key, tool_call.name, tool_call.arguments,
+                            )
+                        except asyncio.CancelledError:
+                            if not self._is_stopped(session_key):
+                                raise
+                            logger.info(
+                                f"Tool execution cancelled by stop for {session_key}"
+                            )
+                            stopped = True
+                            messages = self.context.add_tool_result(
+                                messages, tool_call.id, tool_call.name, "[Stopped by user]",
+                            )
+                            for remaining in response.tool_calls[idx + 1:]:
+                                messages = self.context.add_tool_result(
+                                    messages, remaining.id, remaining.name, "[Stopped by user]",
+                                )
+                            break
                         messages = self.context.add_tool_result(
                             messages, tool_call.id, tool_call.name, result
                         )
 
                     if stopped:
                         break
+                    await self._inject_pending_steering(session_key, session, messages)
                 else:
                     final_content = response.content
                     break
@@ -992,6 +1300,9 @@ class AgentLoop:
             # Persist cache metadata even if tool execution throws, so
             # should_flush() sees the correct created_at on the next turn.
             await self._save_session_locked(session)
+
+        if stopped:
+            await self._cleanup_stopped_run(session_key)
 
         # Fallback accounting — count once per user message batch
         outbound_content = final_content
@@ -1004,37 +1315,10 @@ class AgentLoop:
 
         if not stopped:
             messages.append({"role": "assistant", "content": final_content or ""})
-        else:
-            messages.append({"role": "user", "content": "[Stopped by user]"})
 
-        # -- Save new messages to session --
-        # User messages come first (one per batch item), then assistant/tool messages.
-        for i, m_dict in enumerate(messages[new_start:]):
-            extras: dict[str, Any] = {}
-            if "tool_calls" in m_dict:
-                extras["tool_calls"] = m_dict["tool_calls"]
-            if "tool_call_id" in m_dict:
-                extras["tool_call_id"] = m_dict["tool_call_id"]
-            if "name" in m_dict:
-                extras["name"] = m_dict["name"]
-
-            # User messages (first len(batch) items) get per-message metadata
-            if i < len(batch):
-                raw = batch_data[i]["raw_msg"]
-                user_meta = {
-                    k: raw.metadata[k]
-                    for k in ("message_id", "reply_to", "forwarded_from")
-                    if k in raw.metadata
-                }
-                if batch_data[i]["media_refs"]:
-                    extras["media_refs"] = batch_data[i]["media_refs"]
-                session.add_message(
-                    m_dict["role"], raw.content, msg_metadata=user_meta, **extras
-                )
-            else:
-                session.add_message(
-                    m_dict["role"], m_dict.get("content"), **extras
-                )
+        state = self._get_run_state(session_key)
+        steering_data = state.injected_steering if state is not None else []
+        self._save_batch_messages(session, messages, new_start, batch_data, steering_data)
         await self._save_session_locked(session)
 
         if start_memory_jobs:
@@ -1065,6 +1349,10 @@ class AgentLoop:
             return self._handle_trace(msg)
         if command == "set_trace_mode":
             return self._handle_set_trace_mode(msg)
+        if command == "steering":
+            return self._handle_steering(msg)
+        if command == "set_steering_mode":
+            return self._handle_set_steering_mode(msg)
         logger.warning(f"Unknown command: {command}")
         return None
 
@@ -1210,6 +1498,49 @@ class AgentLoop:
 
         status = "Enabled" if self.trace_mode else "Disabled"
         text = f"✅ Trace mode: {status}"
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=text,
+            metadata={
+                "raw_html": True,
+                "edit_message_id": msg.metadata.get("callback_message_id"),
+            },
+        )
+
+    def _handle_steering(self, msg: InboundMessage) -> OutboundMessage:
+        """Show current steering mode with toggle button."""
+        enabled = self.steering_enabled
+        status = "Enabled" if enabled else "Disabled"
+        toggle = "off" if enabled else "on"
+        btn_text = "Disable" if enabled else "Enable"
+        text = f"🧭 <b>Steering Mode</b>\n\nCurrent: {status}"
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=text,
+            metadata={
+                "raw_html": True,
+                "inline_keyboard": [[
+                    {"text": btn_text, "callback_data": f"steering_mode:{toggle}"},
+                ]],
+            },
+        )
+
+    def _handle_set_steering_mode(self, msg: InboundMessage) -> OutboundMessage | None:
+        """Toggle steering mode (from callback query)."""
+        value = msg.metadata.get("steering_mode")
+        if value not in ("on", "off"):
+            return None
+
+        self.steering_enabled = value == "on"
+        from ragnarbot.config.loader import load_config, save_config
+        config = load_config()
+        config.agents.defaults.steering_enabled = self.steering_enabled
+        save_config(config)
+
+        status = "Enabled" if self.steering_enabled else "Disabled"
+        text = f"✅ Steering mode: {status}"
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
@@ -1676,18 +2007,40 @@ class AgentLoop:
                                 metadata={"intermediate": True, "raw_html": True},
                             ))
 
-                        result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                        try:
+                            result = await self._execute_tool_with_tracking(
+                                session_key, tool_call.name, tool_call.arguments,
+                            )
+                        except asyncio.CancelledError:
+                            if not self._is_stopped(session_key):
+                                raise
+                            logger.info(
+                                f"Tool execution cancelled by stop for {session_key}"
+                            )
+                            stopped = True
+                            messages = self.context.add_tool_result(
+                                messages, tool_call.id, tool_call.name, "[Stopped by user]",
+                            )
+                            for remaining in response.tool_calls[idx + 1:]:
+                                messages = self.context.add_tool_result(
+                                    messages, remaining.id, remaining.name, "[Stopped by user]",
+                                )
+                            break
                         messages = self.context.add_tool_result(
                             messages, tool_call.id, tool_call.name, result
                         )
 
                     if stopped:
                         break
+                    await self._inject_pending_steering(session_key, session, messages)
                 else:
                     final_content = response.content
                     break
         finally:
             await self._save_session_locked(session)
+
+        if stopped:
+            await self._cleanup_stopped_run(session_key)
 
         # Fallback accounting — count once per system message
         outbound_content = final_content
@@ -1699,29 +2052,11 @@ class AgentLoop:
             outbound_content += f"\n\n_\u26a1 fallback: {self._fallback_model}_"
 
         if not stopped:
-            # Add final assistant message to the messages list (without tag)
             messages.append({"role": "assistant", "content": final_content or ""})
 
-        # Override the user message content to mark it as system
-        messages[new_start]["content"] = f"[System: {msg.sender_id}] {msg.content}"
-
-        # Save ALL new messages to session
-        for i, m in enumerate(messages[new_start:]):
-            extras = {}
-            if "tool_calls" in m:
-                extras["tool_calls"] = m["tool_calls"]
-            if "tool_call_id" in m:
-                extras["tool_call_id"] = m["tool_call_id"]
-            if "name" in m:
-                extras["name"] = m["name"]
-            user_meta = None
-            if i == 0:
-                user_meta = {
-                    k: msg.metadata[k]
-                    for k in ("message_id", "reply_to", "forwarded_from")
-                    if k in msg.metadata
-                }
-            session.add_message(m["role"], m.get("content"), msg_metadata=user_meta, **extras)
+        state = self._get_run_state(session_key)
+        steering_data = state.injected_steering if state is not None else []
+        self._save_system_messages(session, messages, new_start, msg, steering_data)
         await self._save_session_locked(session)
 
         if start_memory_jobs:

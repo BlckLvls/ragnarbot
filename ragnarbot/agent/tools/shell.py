@@ -68,7 +68,7 @@ class ExecTool(Tool):
             guard_error = self._guard_command(command, cwd)
             if guard_error:
                 return guard_error
-        
+        process = None
         try:
             process = await asyncio.create_subprocess_shell(
                 command,
@@ -82,6 +82,17 @@ class ExecTool(Tool):
                     process.communicate(),
                     timeout=self.timeout
                 )
+            except asyncio.CancelledError:
+                if process.returncode is None:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        await process.wait()
+                    except Exception:
+                        pass
+                raise
             except asyncio.TimeoutError:
                 process.kill()
                 return f"Error: Command timed out after {self.timeout} seconds"
@@ -108,6 +119,8 @@ class ExecTool(Tool):
             
             return result
             
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             return f"Error executing command: {str(e)}"
 

@@ -326,6 +326,13 @@ class ConfigTool(Tool):
             agent.compactor.max_context_tokens = tokens
             return "Max context tokens updated."
 
+        if path == "agents.defaults.steering_enabled":
+            agent.steering_enabled = (
+                bool(value) if isinstance(value, bool)
+                else str(value).lower() in ("true", "1")
+            )
+            return "Steering mode default updated."
+
         if path in ("tools.web.search.engine", "tools.web.search.max_results"):
             return self._reload_web_search()
 

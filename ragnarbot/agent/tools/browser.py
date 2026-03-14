@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import sys
 import time
@@ -124,7 +125,14 @@ class BrowserSessionManager:
             sys.executable, "-m", "patchright", "install", "chromium",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
-        await proc.wait()
+        try:
+            await proc.wait()
+        except asyncio.CancelledError:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()
+            raise
         if proc.returncode != 0:
             raise RuntimeError(
                 "Failed to install Chromium. Run manually: patchright install chromium"
@@ -167,6 +175,26 @@ class BrowserSessionManager:
             )
         return self._sessions[session_id]
 
+    def current_session_ids(self) -> set[str]:
+        """Return a snapshot of active browser session IDs."""
+        return set(self._sessions.keys())
+
+    def estimate_touched_sessions(
+        self, action: str, session_id: str | None = None,
+    ) -> set[str]:
+        """Best-effort estimate of sessions touched by a browser action."""
+        if action == "list_sessions":
+            return set()
+        if action == "close_all":
+            return set(self._sessions.keys())
+        if session_id and session_id in self._sessions:
+            return {session_id}
+        if action == "open" and self._sessions:
+            return {next(iter(self._sessions.keys()))}
+        if len(self._sessions) == 1 and action not in {"open", "connect"}:
+            return {next(iter(self._sessions.keys()))}
+        return set()
+
     # ── Session lifecycle ──────────────────────────────────────────
 
     async def open(
@@ -198,6 +226,7 @@ class BrowserSessionManager:
         vw = self._config.viewport_width
         vh = self._config.viewport_height
         session_id = str(uuid.uuid4())[:8]
+        context = None
 
         AGENT_PROFILE.mkdir(parents=True, exist_ok=True)
 
@@ -239,6 +268,11 @@ class BrowserSessionManager:
                 created_at=time.time(),
                 last_activity=time.time(),
             )
+        except asyncio.CancelledError:
+            if context is not None:
+                with contextlib.suppress(Exception):
+                    await context.close()
+            raise
         except Exception as e:
             msg = str(e).lower()
             if "executable" in msg or "not found" in msg:
@@ -264,9 +298,16 @@ class BrowserSessionManager:
 
     async def connect(self, cdp_url: str) -> str:
         pw = await self._ensure_playwright()
-        browser = await pw.chromium.connect_over_cdp(cdp_url)
-        context = browser.contexts[0] if browser.contexts else await browser.new_context()
-        page = context.pages[0] if context.pages else await context.new_page()
+        browser = None
+        try:
+            browser = await pw.chromium.connect_over_cdp(cdp_url)
+            context = browser.contexts[0] if browser.contexts else await browser.new_context()
+            page = context.pages[0] if context.pages else await context.new_page()
+        except asyncio.CancelledError:
+            if browser is not None:
+                with contextlib.suppress(Exception):
+                    await browser.close()
+            raise
 
         session_id = str(uuid.uuid4())[:8]
         session = BrowserSession(
