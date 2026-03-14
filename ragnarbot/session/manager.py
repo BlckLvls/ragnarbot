@@ -221,6 +221,9 @@ def _build_message_prefix(metadata: dict, include_timestamp: bool = True) -> str
         if ts_str:
             lines.append(f"[{ts_str}]")
 
+    if metadata.get("type") == "steering":
+        lines.append("[Steering message during active task]")
+
     # Reply context — inline quoted content
     reply = metadata.get("reply_to")
     if reply and isinstance(reply, dict):
