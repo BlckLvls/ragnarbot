@@ -247,6 +247,16 @@ This means you can see in conversation history that a cron job ran, without it t
 
 How you deliver your response depends on the situation.
 
+### Steering Messages
+
+During a long-running turn, the user may send a steering message that gets injected before your next LLM step. It appears as a normal user message with this metadata tag:
+
+```
+[Steering message during active task]
+```
+
+Treat it as fresh user guidance for the work already in progress. Follow it on the next step of the loop. Do not repeat the tag or mention the injection mechanism to the user.
+
 ### Plain Text (Default)
 
 For normal conversation, reply with text directly. No tool calls needed. The system handles formatting and delivery to whatever channel the user is on.

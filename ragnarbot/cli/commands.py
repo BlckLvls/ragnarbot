@@ -256,6 +256,7 @@ def gateway_main(
         max_context_tokens=config.agents.defaults.max_context_tokens,
         context_mode=config.agents.defaults.context_mode,
         trace_mode=config.agents.defaults.trace_mode,
+        steering_enabled=config.agents.defaults.steering_enabled,
         heartbeat_interval_m=config.heartbeat.interval_m,
         fallback_model=fallback_config.model,
         fallback_config=fallback_config,
