@@ -4,22 +4,28 @@ import subprocess
 from pathlib import Path
 
 from ragnarbot.daemon.base import DaemonError, DaemonInfo, DaemonManager, DaemonStatus
-from ragnarbot.daemon.resolve import get_log_dir, resolve_executable
-
-UNIT_NAME = "ragnarbot-gateway.service"
-UNIT_DIR = Path.home() / ".config" / "systemd" / "user"
-UNIT_PATH = UNIT_DIR / UNIT_NAME
+from ragnarbot.daemon.resolve import (
+    get_log_dir,
+    get_systemd_unit_dir,
+    get_systemd_unit_name,
+    get_systemd_unit_path,
+    resolve_executable,
+    service_cli_args,
+)
 
 
 class SystemdManager(DaemonManager):
 
     @property
     def service_file(self) -> Path:
-        return UNIT_PATH
+        return get_systemd_unit_path()
 
     def install(self) -> None:
         exe = resolve_executable()
-        exec_start = " ".join(exe) + " gateway"
+        unit_name = get_systemd_unit_name()
+        unit_dir = get_systemd_unit_dir()
+        unit_path = get_systemd_unit_path()
+        exec_start = " ".join([*exe, *service_cli_args()])
 
         unit = f"""\
 [Unit]
@@ -35,44 +41,48 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 """
-        UNIT_DIR.mkdir(parents=True, exist_ok=True)
-        UNIT_PATH.write_text(unit)
+        unit_dir.mkdir(parents=True, exist_ok=True)
+        unit_path.write_text(unit)
 
         self._ctl("daemon-reload")
-        self._ctl("enable", UNIT_NAME)
+        self._ctl("enable", unit_name)
 
     def uninstall(self) -> None:
+        unit_name = get_systemd_unit_name()
+        unit_path = get_systemd_unit_path()
         if self.is_installed():
             try:
-                self._ctl("disable", UNIT_NAME)
+                self._ctl("disable", unit_name)
             except DaemonError:
                 pass
-            UNIT_PATH.unlink(missing_ok=True)
+            unit_path.unlink(missing_ok=True)
             self._ctl("daemon-reload")
 
     def start(self) -> None:
         if not self.is_installed():
             raise DaemonError("Service not installed. Run install() first.")
-        self._ctl("start", UNIT_NAME)
+        self._ctl("start", get_systemd_unit_name())
 
     def stop(self) -> None:
         if not self.is_installed():
             raise DaemonError("Service not installed.")
-        self._ctl("stop", UNIT_NAME)
+        self._ctl("stop", get_systemd_unit_name())
 
     def restart(self) -> None:
         if not self.is_installed():
             raise DaemonError("Service not installed.")
-        self._ctl("restart", UNIT_NAME)
+        self._ctl("restart", get_systemd_unit_name())
 
     def status(self) -> DaemonInfo:
         if not self.is_installed():
             return DaemonInfo(status=DaemonStatus.NOT_INSTALLED)
 
         log_dir = get_log_dir()
+        unit_name = get_systemd_unit_name()
+        unit_path = get_systemd_unit_path()
         try:
             result = subprocess.run(
-                ["systemctl", "--user", "is-active", UNIT_NAME],
+                ["systemctl", "--user", "is-active", unit_name],
                 capture_output=True, text=True,
             )
             active = result.stdout.strip() == "active"
@@ -86,17 +96,17 @@ WantedBy=default.target
         return DaemonInfo(
             status=DaemonStatus.RUNNING if active else DaemonStatus.STOPPED,
             pid=pid,
-            service_file=UNIT_PATH,
+            service_file=unit_path,
             log_path=log_dir / "gateway.log",
         )
 
     def is_installed(self) -> bool:
-        return UNIT_PATH.exists()
+        return get_systemd_unit_path().exists()
 
     def _get_pid(self) -> int | None:
         try:
             result = subprocess.run(
-                ["systemctl", "--user", "show", "-p", "MainPID", UNIT_NAME],
+                ["systemctl", "--user", "show", "-p", "MainPID", get_systemd_unit_name()],
                 capture_output=True, text=True,
             )
             # Output: MainPID=12345

@@ -5,45 +5,52 @@ import subprocess
 from pathlib import Path
 
 from ragnarbot.daemon.base import DaemonError, DaemonInfo, DaemonManager, DaemonStatus
-from ragnarbot.daemon.resolve import get_log_dir, resolve_executable
-
-LABEL = "com.ragnarbot.gateway"
-PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+from ragnarbot.daemon.resolve import (
+    get_launchd_label,
+    get_launchd_plist_path,
+    get_log_dir,
+    resolve_executable,
+    service_cli_args,
+)
 
 
 class LaunchdManager(DaemonManager):
 
     @property
     def service_file(self) -> Path:
-        return PLIST_PATH
+        return get_launchd_plist_path()
 
     def install(self) -> None:
         exe = resolve_executable()
         log_dir = get_log_dir()
+        plist_path = get_launchd_plist_path()
+        label = get_launchd_label()
 
         plist = {
-            "Label": LABEL,
-            "ProgramArguments": [*exe, "gateway"],
+            "Label": label,
+            "ProgramArguments": [*exe, *service_cli_args()],
             "RunAtLoad": True,
             "KeepAlive": True,
             "StandardOutPath": str(log_dir / "gateway.log"),
             "StandardErrorPath": str(log_dir / "gateway.err.log"),
         }
 
-        PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(PLIST_PATH, "wb") as f:
+        plist_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(plist_path, "wb") as f:
             plistlib.dump(plist, f)
 
     def uninstall(self) -> None:
-        if PLIST_PATH.exists():
-            PLIST_PATH.unlink()
+        plist_path = get_launchd_plist_path()
+        if plist_path.exists():
+            plist_path.unlink()
 
     def start(self) -> None:
         if not self.is_installed():
             raise DaemonError("Service not installed. Run install() first.")
+        plist_path = get_launchd_plist_path()
         try:
             subprocess.run(
-                ["launchctl", "load", str(PLIST_PATH)],
+                ["launchctl", "load", str(plist_path)],
                 check=True, capture_output=True, text=True,
             )
         except subprocess.CalledProcessError as e:
@@ -52,9 +59,10 @@ class LaunchdManager(DaemonManager):
     def stop(self) -> None:
         if not self.is_installed():
             raise DaemonError("Service not installed.")
+        plist_path = get_launchd_plist_path()
         try:
             subprocess.run(
-                ["launchctl", "unload", str(PLIST_PATH)],
+                ["launchctl", "unload", str(plist_path)],
                 check=True, capture_output=True, text=True,
             )
         except subprocess.CalledProcessError as e:
@@ -71,9 +79,11 @@ class LaunchdManager(DaemonManager):
             return DaemonInfo(status=DaemonStatus.NOT_INSTALLED)
 
         log_dir = get_log_dir()
+        plist_path = get_launchd_plist_path()
+        label = get_launchd_label()
         try:
             result = subprocess.run(
-                ["launchctl", "list", LABEL],
+                ["launchctl", "list", label],
                 capture_output=True, text=True,
             )
             if result.returncode == 0:
@@ -81,7 +91,7 @@ class LaunchdManager(DaemonManager):
                 return DaemonInfo(
                     status=DaemonStatus.RUNNING,
                     pid=pid,
-                    service_file=PLIST_PATH,
+                    service_file=plist_path,
                     log_path=log_dir / "gateway.log",
                 )
         except FileNotFoundError:
@@ -89,12 +99,12 @@ class LaunchdManager(DaemonManager):
 
         return DaemonInfo(
             status=DaemonStatus.STOPPED,
-            service_file=PLIST_PATH,
+            service_file=plist_path,
             log_path=log_dir / "gateway.log",
         )
 
     def is_installed(self) -> bool:
-        return PLIST_PATH.exists()
+        return get_launchd_plist_path().exists()
 
     @staticmethod
     def _parse_pid(output: str) -> int | None:

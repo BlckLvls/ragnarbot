@@ -14,10 +14,20 @@ from ragnarbot.daemon.resolve import (
     _probe_path_helper,
     _well_known_dirs,
     detect_platform,
+    get_launchd_label,
+    get_launchd_plist_path,
     get_log_dir,
+    get_systemd_unit_name,
+    get_systemd_unit_path,
     resolve_executable,
     resolve_path,
+    service_cli_args,
 )
+
+
+@pytest.fixture(autouse=True)
+def default_profile(monkeypatch):
+    monkeypatch.setenv("RAGNARBOT_PROFILE", "default")
 
 
 class TestDetectPlatform:
@@ -67,7 +77,7 @@ class TestResolveExecutable:
 class TestGetLogDir:
     def test_creates_dir(self, tmp_path):
         log_dir = tmp_path / ".ragnarbot" / "logs"
-        with patch("ragnarbot.daemon.resolve.Path.home", return_value=tmp_path):
+        with patch("ragnarbot.instance.Path.home", return_value=tmp_path):
             result = get_log_dir()
             assert result == log_dir
             assert log_dir.is_dir()
@@ -116,7 +126,8 @@ class TestLaunchdManager:
         log_dir = tmp_path / "logs"
 
         with (
-            patch("ragnarbot.daemon.launchd.PLIST_PATH", plist_path),
+            patch("ragnarbot.daemon.launchd.get_launchd_plist_path", return_value=plist_path),
+            patch("ragnarbot.daemon.launchd.get_launchd_label", return_value="com.ragnarbot.gateway"),
             patch("ragnarbot.daemon.launchd.resolve_executable", return_value=["/usr/bin/ragnarbot"]),
             patch("ragnarbot.daemon.launchd.get_log_dir", return_value=log_dir),
         ):
@@ -128,7 +139,7 @@ class TestLaunchdManager:
             plist = plistlib.load(f)
 
         assert plist["Label"] == "com.ragnarbot.gateway"
-        assert plist["ProgramArguments"] == ["/usr/bin/ragnarbot", "gateway"]
+        assert plist["ProgramArguments"] == ["/usr/bin/ragnarbot", "--profile", "default", "gateway"]
         assert plist["RunAtLoad"] is True
         assert plist["KeepAlive"] is True
 
@@ -138,7 +149,7 @@ class TestLaunchdManager:
         plist_path = tmp_path / "com.ragnarbot.gateway.plist"
         plist_path.touch()
 
-        with patch("ragnarbot.daemon.launchd.PLIST_PATH", plist_path):
+        with patch("ragnarbot.daemon.launchd.get_launchd_plist_path", return_value=plist_path):
             manager = LaunchdManager()
             manager.uninstall()
 
@@ -149,7 +160,7 @@ class TestLaunchdManager:
 
         plist_path = tmp_path / "com.ragnarbot.gateway.plist"
 
-        with patch("ragnarbot.daemon.launchd.PLIST_PATH", plist_path):
+        with patch("ragnarbot.daemon.launchd.get_launchd_plist_path", return_value=plist_path):
             manager = LaunchdManager()
             assert not manager.is_installed()
             plist_path.touch()
@@ -159,7 +170,7 @@ class TestLaunchdManager:
         from ragnarbot.daemon.launchd import LaunchdManager
 
         plist_path = tmp_path / "com.ragnarbot.gateway.plist"
-        with patch("ragnarbot.daemon.launchd.PLIST_PATH", plist_path):
+        with patch("ragnarbot.daemon.launchd.get_launchd_plist_path", return_value=plist_path):
             manager = LaunchdManager()
             info = manager.status()
             assert info.status == DaemonStatus.NOT_INSTALLED
@@ -168,10 +179,15 @@ class TestLaunchdManager:
         from ragnarbot.daemon.launchd import LaunchdManager
 
         plist_path = tmp_path / "com.ragnarbot.gateway.plist"
-        with patch("ragnarbot.daemon.launchd.PLIST_PATH", plist_path):
+        with patch("ragnarbot.daemon.launchd.get_launchd_plist_path", return_value=plist_path):
             manager = LaunchdManager()
             with pytest.raises(DaemonError, match="not installed"):
                 manager.start()
+
+    def test_custom_profile_launchd_label(self, monkeypatch):
+        monkeypatch.setenv("RAGNARBOT_PROFILE", "vodichezka")
+        assert get_launchd_label() == "com.ragnarbot.gateway.vodichezka"
+        assert get_launchd_plist_path().name == "com.ragnarbot.gateway.vodichezka.plist"
 
 
 class TestSystemdManager:
@@ -181,8 +197,9 @@ class TestSystemdManager:
         unit_path = tmp_path / "ragnarbot-gateway.service"
 
         with (
-            patch("ragnarbot.daemon.systemd.UNIT_DIR", tmp_path),
-            patch("ragnarbot.daemon.systemd.UNIT_PATH", unit_path),
+            patch("ragnarbot.daemon.systemd.get_systemd_unit_dir", return_value=tmp_path),
+            patch("ragnarbot.daemon.systemd.get_systemd_unit_path", return_value=unit_path),
+            patch("ragnarbot.daemon.systemd.get_systemd_unit_name", return_value="ragnarbot-gateway.service"),
             patch("ragnarbot.daemon.systemd.resolve_executable", return_value=["/usr/bin/ragnarbot"]),
             patch("ragnarbot.daemon.systemd.SystemdManager._ctl") as mock_ctl,
         ):
@@ -191,7 +208,7 @@ class TestSystemdManager:
 
         assert unit_path.exists()
         content = unit_path.read_text()
-        assert "ExecStart=/usr/bin/ragnarbot gateway" in content
+        assert "ExecStart=/usr/bin/ragnarbot --profile default gateway" in content
         assert "Restart=on-failure" in content
         assert mock_ctl.call_count == 2  # daemon-reload + enable
 
@@ -200,7 +217,7 @@ class TestSystemdManager:
 
         unit_path = tmp_path / "ragnarbot-gateway.service"
 
-        with patch("ragnarbot.daemon.systemd.UNIT_PATH", unit_path):
+        with patch("ragnarbot.daemon.systemd.get_systemd_unit_path", return_value=unit_path):
             manager = SystemdManager()
             assert not manager.is_installed()
             unit_path.touch()
@@ -210,7 +227,7 @@ class TestSystemdManager:
         from ragnarbot.daemon.systemd import SystemdManager
 
         unit_path = tmp_path / "ragnarbot-gateway.service"
-        with patch("ragnarbot.daemon.systemd.UNIT_PATH", unit_path):
+        with patch("ragnarbot.daemon.systemd.get_systemd_unit_path", return_value=unit_path):
             manager = SystemdManager()
             info = manager.status()
             assert info.status == DaemonStatus.NOT_INSTALLED
@@ -219,10 +236,19 @@ class TestSystemdManager:
         from ragnarbot.daemon.systemd import SystemdManager
 
         unit_path = tmp_path / "ragnarbot-gateway.service"
-        with patch("ragnarbot.daemon.systemd.UNIT_PATH", unit_path):
+        with patch("ragnarbot.daemon.systemd.get_systemd_unit_path", return_value=unit_path):
             manager = SystemdManager()
             with pytest.raises(DaemonError, match="not installed"):
                 manager.start()
+
+    def test_custom_profile_systemd_name(self, monkeypatch):
+        monkeypatch.setenv("RAGNARBOT_PROFILE", "vodichezka")
+        assert get_systemd_unit_name() == "ragnarbot-gateway-vodichezka.service"
+        assert get_systemd_unit_path().name == "ragnarbot-gateway-vodichezka.service"
+
+
+def test_service_cli_args():
+    assert service_cli_args() == ["--profile", "default", "gateway"]
 
 
 class TestDaemonConfig:
