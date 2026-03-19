@@ -9,6 +9,7 @@ from typing import Any
 from ragnarbot.agent.agents_loader import AgentsLoader
 from ragnarbot.agent.memory import MemoryStore
 from ragnarbot.agent.skills import SkillsLoader
+from ragnarbot.instance import get_instance, runtime_name, tilde_path
 
 DEFAULTS_DIR = Path(__file__).parent.parent / "workspace_defaults"
 BUILTIN_DIR = Path(__file__).parent.parent / "builtin"
@@ -131,7 +132,7 @@ Use `agent_spawn` to start a task with a specific agent type, or omit the agent 
         utc_offset = time.strftime("%z")
         workspace_path = str(self.workspace.expanduser().resolve())
 
-        return f"""# ragnarbot
+        return f"""# {runtime_name()}
 
 **Timezone:** {tz_name} (UTC{utc_offset[:3]}:{utc_offset[3:]})
 **Workspace:** {workspace_path}"""
@@ -143,6 +144,7 @@ Use `agent_spawn` to start a task with a specific agent type, or omit the agent 
         utc_offset = time.strftime("%z")
         workspace_path = str(self.workspace.expanduser().resolve())
         timezone = f"{tz_name} (UTC{utc_offset[:3]}:{utc_offset[3:]})"
+        instance = get_instance()
 
         parts = []
         for filename in self.BUILTIN_FILES:
@@ -153,6 +155,8 @@ Use `agent_spawn` to start a task with a specific agent type, or omit the agent 
                     workspace_path=workspace_path,
                     timezone=timezone,
                     heartbeat_interval_m=self.heartbeat_interval_m,
+                    instance_name=instance.runtime_name,
+                    data_root=tilde_path(instance.data_root),
                 )
                 parts.append(content)
         return "\n\n---\n\n".join(parts) if parts else ""
@@ -297,7 +301,7 @@ Use `agent_spawn` to start a task with a specific agent type, or omit the agent 
 
     def _media_base_dir(self) -> Path:
         """Return the base media directory."""
-        return Path.home() / ".ragnarbot" / "media"
+        return get_instance().media_path
 
     def _build_user_content(
         self,
@@ -353,7 +357,7 @@ Use `agent_spawn` to start a task with a specific agent type, or omit the agent 
                 return text + "\n\n" + placeholder if text else placeholder
 
         return images + [{"type": "text", "text": text}]
-    
+
     def build_user_message(
         self,
         content: str,
@@ -387,13 +391,13 @@ Use `agent_spawn` to start a task with a specific agent type, or omit the agent 
     ) -> list[dict[str, Any]]:
         """
         Add a tool result to the message list.
-        
+
         Args:
             messages: Current message list.
             tool_call_id: ID of the tool call.
             tool_name: Name of the tool.
             result: Tool execution result.
-        
+
         Returns:
             Updated message list.
         """
@@ -404,7 +408,7 @@ Use `agent_spawn` to start a task with a specific agent type, or omit the agent 
             "content": result
         })
         return messages
-    
+
     def add_assistant_message(
         self,
         messages: list[dict[str, Any]],
@@ -413,19 +417,19 @@ Use `agent_spawn` to start a task with a specific agent type, or omit the agent 
     ) -> list[dict[str, Any]]:
         """
         Add an assistant message to the message list.
-        
+
         Args:
             messages: Current message list.
             content: Message content.
             tool_calls: Optional tool calls.
-        
+
         Returns:
             Updated message list.
         """
         msg: dict[str, Any] = {"role": "assistant", "content": content or ""}
-        
+
         if tool_calls:
             msg["tool_calls"] = tool_calls
-        
+
         messages.append(msg)
         return messages

@@ -58,7 +58,7 @@ Fetch a URL and extract its content as markdown or plain text. Use when you have
 ## Browser
 
 ### browser
-Control a Chromium browser — open pages, interact with elements, take screenshots, run JavaScript, manage tabs. A single tool with an `action` parameter. The browser maintains its own persistent profile at `~/.ragnarbot/browser-profile/`. Logins and cookies persist across sessions. Chromium is auto-installed on first use.
+Control a Chromium browser — open pages, interact with elements, take screenshots, run JavaScript, manage tabs. A single tool with an `action` parameter. The browser maintains its own persistent profile at `{data_root}/browser-profile/`. Logins and cookies persist across sessions. Chromium is auto-installed on first use.
 
 **Session lifecycle:**
 - `open` — launch a new browser session. Optional: `url`, `headless` (default: `true`). Reuses existing session if one is already open.
@@ -155,7 +155,7 @@ Capture the final output of an isolated cron job or heartbeat check. Available d
 
 ### Cron logs
 
-Execution history is stored at `~/.ragnarbot/cron/logs/{{job_id}}.jsonl`. Each entry contains timestamp, status, duration, input, and output. Logs persist even after one-shot jobs auto-delete. Use `file_read` to inspect them.
+Execution history is stored at `{data_root}/cron/logs/{{job_id}}.jsonl`. Each entry contains timestamp, status, duration, input, and output. Logs persist even after one-shot jobs auto-delete. Use `file_read` to inspect them.
 
 ## Heartbeat
 

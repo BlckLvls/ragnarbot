@@ -109,7 +109,7 @@ Run `init_agent.py` to scaffold the directory:
 Arguments:
 
 - `name` (required): Agent name in kebab-case (max 64 chars)
-- `--path` (optional): Parent directory. Defaults to `~/.ragnarbot/workspace/agents/`
+- `--path` (optional): Parent directory. Defaults to the active profile workspace's `agents/` directory (`~/.ragnarbot/workspace/agents/` for the default profile, `~/.ragnarbot-<profile>/workspace/agents/` for custom profiles)
 
 Examples:
 
