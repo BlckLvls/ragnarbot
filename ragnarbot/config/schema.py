@@ -42,6 +42,11 @@ class AgentDefaults(BaseModel):
         default="anthropic/claude-opus-4-6",
         json_schema_extra={"reload": "warm", "label": "LLM model identifier (provider/model)"},
     )
+    reasoning_level: str = Field(
+        default="medium",
+        pattern="^(off|low|medium|high|ultra)$",
+        json_schema_extra={"reload": "hot", "label": "Unified reasoning level"},
+    )
     max_context_tokens: int = Field(
         default=200_000,
         json_schema_extra={"reload": "hot", "label": "Maximum context window tokens"},

@@ -53,6 +53,7 @@ from ragnarbot.instance import (
 )
 from ragnarbot.media.manager import MediaManager
 from ragnarbot.providers.base import LLMProvider, LLMResponse
+from ragnarbot.providers.reasoning import SUPPORTED_REASONING_LEVELS, resolve_reasoning
 from ragnarbot.session.manager import SessionManager
 
 if TYPE_CHECKING:
@@ -96,9 +97,11 @@ class AgentLoop:
     """
 
     COMPACT_MIN_MESSAGES = 60
-    READ_ONLY_COMMANDS = frozenset({"context_info", "context_mode", "stop", "trace"})
+    READ_ONLY_COMMANDS = frozenset({
+        "context_info", "context_mode", "reasoning", "stop", "trace",
+    })
     IMMEDIATE_COMMANDS = READ_ONLY_COMMANDS | frozenset({
-        "set_context_mode", "set_trace_mode", "steering", "set_steering_mode",
+        "set_context_mode", "set_reasoning_level", "set_trace_mode", "steering", "set_steering_mode",
     })
 
     def __init__(
@@ -116,6 +119,7 @@ class AgentLoop:
         debounce_seconds: float = 0.5,
         max_context_tokens: int = 200_000,
         context_mode: str = "normal",
+        reasoning_level: str = "medium",
         heartbeat_interval_m: int = 30,
         fallback_model: str | None = None,
         fallback_config: "FallbackConfig | None" = None,
@@ -138,6 +142,7 @@ class AgentLoop:
         self.debounce_seconds = debounce_seconds
         self.max_context_tokens = max_context_tokens
         self.context_mode = context_mode
+        self.reasoning_level = reasoning_level
         self.trace_mode = trace_mode
         self.steering_enabled = steering_enabled
         self.cache_manager = CacheManager(max_context_tokens=max_context_tokens)
@@ -476,13 +481,14 @@ class AgentLoop:
         use_primary = not state.fallback_mode or state.should_probe_primary(probe_interval)
         response = None
         primary_error = None
+        chat_kwargs.setdefault("reasoning_level", self.reasoning_level)
+        chat_kwargs.setdefault("model", self.model)
 
         if use_primary:
             if state.fallback_mode:
                 state.mark_primary_probed()
                 logger.info("Probing primary provider for recovery...")
 
-            chat_kwargs["model"] = self.model
             if session_key:
                 response = await self._chat_or_stop(
                     session_key, provider=self.provider, **chat_kwargs,
@@ -1361,6 +1367,10 @@ class AgentLoop:
             return self._handle_set_context_mode(msg)
         if command == "context_info":
             return self._handle_context_info(msg)
+        if command == "reasoning":
+            return self._handle_reasoning(msg)
+        if command == "set_reasoning_level":
+            return self._handle_set_reasoning_level(msg)
         if command == "trace":
             return self._handle_trace(msg)
         if command == "set_trace_mode":
@@ -1521,6 +1531,84 @@ class AgentLoop:
             metadata={
                 "raw_html": True,
                 "edit_message_id": msg.metadata.get("callback_message_id"),
+            },
+        )
+
+    def _active_reasoning_model(self) -> str:
+        """Return the model currently used for responses."""
+        if self._fallback_state.fallback_mode and self._fallback_model:
+            return self._fallback_model
+        return self.model
+
+    def _build_reasoning_message(self) -> str:
+        """Render the reasoning-level control panel."""
+        model = self._active_reasoning_model()
+        resolution = resolve_reasoning(model, self.reasoning_level)
+        model_text = model.replace("openrouter/", "openrouter/")
+
+        lines = [
+            "🧠 <b>Reasoning Level</b>",
+            "",
+            f"Stored: <b>{resolution.stored_level}</b>",
+            f"Effective: <b>{resolution.effective_level}</b>",
+            f"Model: <code>{model_text}</code>",
+        ]
+        if resolution.note:
+            lines.extend(["", f"Note: {resolution.note}"])
+        return "\n".join(lines)
+
+    def _handle_reasoning(self, msg: InboundMessage) -> OutboundMessage:
+        """Show reasoning-level picker."""
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=self._build_reasoning_message(),
+            metadata={
+                "raw_html": True,
+                "inline_keyboard": [
+                    [
+                        {"text": "off", "callback_data": "reasoning_level:off"},
+                        {"text": "low", "callback_data": "reasoning_level:low"},
+                        {"text": "medium", "callback_data": "reasoning_level:medium"},
+                    ],
+                    [
+                        {"text": "high", "callback_data": "reasoning_level:high"},
+                        {"text": "ultra", "callback_data": "reasoning_level:ultra"},
+                    ],
+                ],
+            },
+        )
+
+    def _handle_set_reasoning_level(self, msg: InboundMessage) -> OutboundMessage | None:
+        """Persist a new reasoning level and refresh the panel."""
+        level = msg.metadata.get("reasoning_level")
+        if level not in SUPPORTED_REASONING_LEVELS:
+            return None
+
+        self.reasoning_level = level
+        from ragnarbot.config.loader import load_config, save_config
+        config = load_config()
+        config.agents.defaults.reasoning_level = level
+        save_config(config)
+
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=self._build_reasoning_message(),
+            metadata={
+                "raw_html": True,
+                "edit_message_id": msg.metadata.get("callback_message_id"),
+                "inline_keyboard": [
+                    [
+                        {"text": "off", "callback_data": "reasoning_level:off"},
+                        {"text": "low", "callback_data": "reasoning_level:low"},
+                        {"text": "medium", "callback_data": "reasoning_level:medium"},
+                    ],
+                    [
+                        {"text": "high", "callback_data": "reasoning_level:high"},
+                        {"text": "ultra", "callback_data": "reasoning_level:ultra"},
+                    ],
+                ],
             },
         )
 
@@ -2431,15 +2519,26 @@ class AgentLoop:
                 session_metadata=session_metadata,
             )
 
+        chat_kwargs: dict[str, Any] = {
+            "messages": None,
+            "tools": None,
+        }
+        if definition and definition.model != "default":
+            chat_kwargs["model"] = definition.model
+        if definition and definition.reasoning_level != "inherit":
+            chat_kwargs["reasoning_level"] = definition.reasoning_level
+
         batch_used_fallback = False
         while True:
             tools_defs = tools.get_definitions()
             api_messages = [
                 {k: v for k, v in m.items() if k != "_ts"} for m in messages
             ]
+            chat_kwargs["messages"] = api_messages
+            chat_kwargs["tools"] = tools_defs
             response, used_fallback, _ = await self._chat_with_fallback(
                 None,
-                messages=api_messages, tools=tools_defs,
+                **chat_kwargs,
             )
             if used_fallback:
                 batch_used_fallback = True

@@ -6,6 +6,7 @@ from typing import Any
 from anthropic import AsyncAnthropic
 
 from ragnarbot.providers.base import DEFAULT_MAX_TOKENS, LLMProvider, LLMResponse, ToolCallRequest
+from ragnarbot.providers.reasoning import resolve_reasoning
 
 # Headers required by Anthropic API for OAuth token authentication.
 _OAUTH_HEADERS = {
@@ -63,8 +64,10 @@ class AnthropicProvider(LLMProvider):
         model: str | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        reasoning_level: str | None = None,
     ) -> LLMResponse:
         model = model or self.default_model
+        reasoning = resolve_reasoning(model, reasoning_level)
         max_tokens = max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
         # Strip provider prefix — config stores "anthropic/claude-...", SDK expects "claude-..."
         if model.startswith("anthropic/"):
@@ -90,6 +93,10 @@ class AnthropicProvider(LLMProvider):
 
         if tools:
             kwargs["tools"] = self._convert_tools(tools)
+        if reasoning.anthropic_thinking is not None:
+            kwargs["thinking"] = reasoning.anthropic_thinking
+        if reasoning.anthropic_output_config is not None:
+            kwargs["output_config"] = reasoning.anthropic_output_config
 
         try:
             # Use streaming to avoid Anthropic SDK ValueError for max_tokens > ~21k

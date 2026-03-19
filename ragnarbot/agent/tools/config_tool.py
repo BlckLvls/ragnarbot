@@ -319,6 +319,10 @@ class ConfigTool(Tool):
             agent.context_mode = str(value)
             return "Context mode updated."
 
+        if path == "agents.defaults.reasoning_level":
+            agent.reasoning_level = str(value)
+            return "Reasoning level updated."
+
         if path == "agents.defaults.max_context_tokens":
             tokens = int(value)
             agent.max_context_tokens = tokens

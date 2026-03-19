@@ -4,7 +4,10 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from ragnarbot.providers.reasoning import SUPPORTED_REASONING_LEVELS
+
 BUILTIN_AGENTS_DIR = Path(__file__).parent.parent / "agents"
+SUPPORTED_AGENT_REASONING_LEVELS = {"inherit", *SUPPORTED_REASONING_LEVELS}
 
 
 @dataclass
@@ -18,6 +21,7 @@ class AgentDefinition:
     allowed_skills: str | list[str]  # "all", "none", or explicit list
     body: str  # markdown instructions (frontmatter stripped)
     path: str  # filesystem path to AGENT.md
+    reasoning_level: str = "inherit"  # inherit or explicit unified level
 
 
 class AgentsLoader:
@@ -149,6 +153,10 @@ class AgentsLoader:
         else:
             allowed_skills = skills_raw
 
+        reasoning_level = meta.get("reasoningLevel", "inherit")
+        if reasoning_level not in SUPPORTED_AGENT_REASONING_LEVELS:
+            reasoning_level = "inherit"
+
         return AgentDefinition(
             name=meta.get("name", path.parent.name),
             description=meta.get("description", ""),
@@ -157,6 +165,7 @@ class AgentsLoader:
             allowed_skills=allowed_skills,
             body=body,
             path=str(path),
+            reasoning_level=reasoning_level,
         )
 
     def _parse_frontmatter(self, content: str) -> dict[str, str]:

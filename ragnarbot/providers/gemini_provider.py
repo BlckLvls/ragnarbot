@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 
 from ragnarbot.providers.base import DEFAULT_MAX_TOKENS, LLMProvider, LLMResponse, ToolCallRequest
+from ragnarbot.providers.reasoning import resolve_reasoning
 
 CODE_ASSIST_BASE = "https://cloudcode-pa.googleapis.com"
 STREAM_URL = f"{CODE_ASSIST_BASE}/v1internal:streamGenerateContent"
@@ -23,13 +24,6 @@ _CLIENT_METADATA = json.dumps({
     "platform": "PLATFORM_UNSPECIFIED",
     "pluginType": "GEMINI",
 })
-
-# Gemini 3+ models require thinkingConfig — without it the API returns empty body.
-_GEMINI3_THINKING = {
-    "pro": {"includeThoughts": True, "thinkingLevel": "LOW"},
-    "flash": {"includeThoughts": True, "thinkingLevel": "MEDIUM"},
-}
-
 
 class GeminiCodeAssistProvider(LLMProvider):
     """LLM provider for Gemini via the Code Assist API (OAuth)."""
@@ -51,10 +45,12 @@ class GeminiCodeAssistProvider(LLMProvider):
         model: str | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        reasoning_level: str | None = None,
     ) -> LLMResponse:
         from ragnarbot.auth.gemini_oauth import get_access_token
 
         model = model or self.default_model
+        reasoning = resolve_reasoning(model, reasoning_level)
         max_tokens = max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
 
         # Strip provider prefix (e.g. "gemini/gemini-2.5-flash" → "gemini-2.5-flash")
@@ -77,10 +73,8 @@ class GeminiCodeAssistProvider(LLMProvider):
         if temperature is not None:
             generation_config["temperature"] = temperature
 
-        # Gemini 3 models require thinkingConfig
-        thinking = _get_thinking_config(model)
-        if thinking:
-            generation_config["thinkingConfig"] = thinking
+        if reasoning.gemini_thinking_config:
+            generation_config["thinkingConfig"] = reasoning.gemini_thinking_config
 
         gemini_request: dict[str, Any] = {"contents": contents}
         if system_instruction:
@@ -308,18 +302,6 @@ class GeminiCodeAssistProvider(LLMProvider):
 
     def get_default_model(self) -> str:
         return self.default_model
-
-
-def _get_thinking_config(model: str) -> dict[str, Any] | None:
-    """Return thinkingConfig for Gemini 3+ models, None for others."""
-    if "gemini-3" not in model:
-        return None
-    if "pro" in model:
-        return _GEMINI3_THINKING["pro"]
-    if "flash" in model:
-        return _GEMINI3_THINKING["flash"]
-    return _GEMINI3_THINKING["flash"]
-
 
 def _content_to_parts(content: Any) -> list[dict]:
     """Convert message content to Gemini parts."""

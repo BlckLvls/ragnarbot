@@ -2,7 +2,7 @@
 
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -13,7 +13,6 @@ from ragnarbot.agent.subagent import (
     SubagentManager,
 )
 from ragnarbot.agent.tools.agent_tools import ACTIONS, AgentTool
-
 
 # ---------------------------------------------------------------------------
 # AgentsLoader
@@ -49,7 +48,11 @@ class TestAgentsLoader:
 
     def test_load_agent_parses_frontmatter(self, tmp_path):
         builtin = tmp_path / "builtin"
-        content = "---\nname: researcher\ndescription: A researcher\nmodel: gpt-4\nallowedTools: [web_search, web_fetch]\n---\n\n# Instructions\nDo research."
+        content = (
+            "---\nname: researcher\ndescription: A researcher\nmodel: gpt-4\n"
+            "reasoningLevel: high\nallowedTools: [web_search, web_fetch]\n---\n\n"
+            "# Instructions\nDo research."
+        )
         self._write_agent(builtin, "researcher", content)
         loader = AgentsLoader(tmp_path / "workspace", builtin_agents_dir=builtin)
         defn = loader.load_agent("researcher")
@@ -57,6 +60,7 @@ class TestAgentsLoader:
         assert defn.name == "researcher"
         assert defn.description == "A researcher"
         assert defn.model == "gpt-4"
+        assert defn.reasoning_level == "high"
         assert defn.allowed_tools == ["web_search", "web_fetch"]
         assert "# Instructions" in defn.body
 
@@ -68,7 +72,19 @@ class TestAgentsLoader:
         defn = loader.load_agent("helper")
         assert defn is not None
         assert defn.model == "default"
+        assert defn.reasoning_level == "inherit"
         assert defn.allowed_tools == "all"
+
+    def test_load_agent_invalid_reasoning_level_falls_back_to_inherit(self, tmp_path):
+        builtin = tmp_path / "builtin"
+        content = (
+            "---\nname: helper\ndescription: A helper\nreasoningLevel: turbo\n---\nBody here."
+        )
+        self._write_agent(builtin, "helper", content)
+        loader = AgentsLoader(tmp_path / "workspace", builtin_agents_dir=builtin)
+        defn = loader.load_agent("helper")
+        assert defn is not None
+        assert defn.reasoning_level == "inherit"
 
     def test_load_agent_not_found(self, tmp_path):
         loader = AgentsLoader(tmp_path / "workspace", builtin_agents_dir=tmp_path / "nope")
@@ -347,6 +363,113 @@ async def test_subagent_chat_does_not_pass_explicit_max_tokens(tmp_path):
     )
 
 
+@pytest.mark.asyncio
+async def test_subagent_inherits_parent_reasoning_level_and_keeps_its_model(tmp_path):
+    """Subagents should use the parent loop's reasoning level and their own model."""
+    from ragnarbot.agent.loop import AgentLoop
+    from ragnarbot.agent.subagent import AgentTask
+    from ragnarbot.agent.tools.deliver_result import DeliverResultTool
+    from ragnarbot.agent.tools.registry import ToolRegistry
+    from ragnarbot.config.schema import ExecToolConfig
+    from ragnarbot.providers.base import LLMResponse
+
+    provider = MagicMock()
+    provider.get_default_model.return_value = "openai/gpt-5.4"
+    provider.chat = AsyncMock(return_value=LLMResponse(content="done"))
+
+    bus = MagicMock()
+    bus.publish_outbound = AsyncMock()
+    bus.publish_inbound = AsyncMock()
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    loop = AgentLoop(
+        bus=bus,
+        provider=provider,
+        workspace=workspace,
+        model="openai/gpt-5.4",
+        reasoning_level="ultra",
+        exec_config=ExecToolConfig(),
+    )
+
+    task = AgentTask(
+        id="sub1",
+        label="subagent test",
+        agent_name=None,
+        task="do something",
+        status=AgentTaskStatus.running,
+        messages=[],
+        stop_event=asyncio.Event(),
+        created_at="",
+        origin={"channel": "cli", "chat_id": "direct"},
+    )
+
+    tools = ToolRegistry()
+    deliver_tool = DeliverResultTool()
+    tools.register(deliver_tool)
+
+    await loop.subagents._run_agent(
+        task,
+        definition=None,
+        model="openai/gpt-5-mini",
+        tools=tools,
+        deliver_tool=deliver_tool,
+    )
+
+    call_kwargs = provider.chat.await_args.kwargs
+    assert call_kwargs["reasoning_level"] == "ultra"
+    assert call_kwargs["model"] == "openai/gpt-5-mini"
+
+
+@pytest.mark.asyncio
+async def test_named_subagent_uses_reasoning_level_from_agent_definition(tmp_path):
+    """Named subagents can override the parent reasoning level from AGENT.md."""
+    from ragnarbot.agent.loop import AgentLoop
+    from ragnarbot.config.schema import ExecToolConfig
+    from ragnarbot.providers.base import LLMResponse
+
+    builtin = tmp_path / "builtin"
+    d = builtin / "researcher"
+    d.mkdir(parents=True)
+    (d / "AGENT.md").write_text(
+        "---\nname: researcher\ndescription: Research\nreasoningLevel: low\n---\nDo work.",
+        encoding="utf-8",
+    )
+    loader = AgentsLoader(tmp_path / "workspace", builtin_agents_dir=builtin)
+
+    provider = MagicMock()
+    provider.get_default_model.return_value = "openai/gpt-5.4"
+    provider.chat = AsyncMock(return_value=LLMResponse(content="done"))
+
+    bus = MagicMock()
+    bus.publish_outbound = AsyncMock()
+    bus.publish_inbound = AsyncMock()
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    loop = AgentLoop(
+        bus=bus,
+        provider=provider,
+        workspace=workspace,
+        model="openai/gpt-5.4",
+        reasoning_level="ultra",
+        exec_config=ExecToolConfig(),
+    )
+    loop.context.agents = loader
+    loop.subagents.agents_loader = loader
+
+    result = await loop.subagents.spawn(task="hello", agent_name="researcher")
+    assert "started" in result.lower()
+
+    await asyncio.sleep(0.3)
+
+    call_kwargs = provider.chat.await_args.kwargs
+    assert call_kwargs["reasoning_level"] == "low"
+    assert call_kwargs["model"] == "openai/gpt-5.4"
+
+
 def test_safe_tool_names():
     """Verify safe tool names constant is populated correctly."""
     assert "file_read" in SAFE_TOOL_NAMES
@@ -616,7 +739,7 @@ class TestCronToolAgentParam:
     async def test_add_job_passes_agent(self):
         """CronTool._add_job passes agent to CronService.add_job."""
         from ragnarbot.agent.tools.cron import CronTool
-        from ragnarbot.cron.types import CronJob, CronPayload, CronSchedule, CronJobState
+        from ragnarbot.cron.types import CronJob, CronJobState, CronPayload, CronSchedule
 
         svc = MagicMock()
         svc.add_job.return_value = CronJob(
@@ -645,7 +768,7 @@ class TestCronToolAgentParam:
     async def test_add_job_ignores_agent_for_session_mode(self):
         """Agent is not set when mode is session."""
         from ragnarbot.agent.tools.cron import CronTool
-        from ragnarbot.cron.types import CronJob, CronPayload, CronSchedule, CronJobState
+        from ragnarbot.cron.types import CronJob, CronJobState, CronPayload, CronSchedule
 
         svc = MagicMock()
         svc.add_job.return_value = CronJob(
@@ -673,7 +796,7 @@ class TestCronToolAgentParam:
     async def test_update_job_passes_agent(self):
         """CronTool._update_job passes agent to CronService.update_job."""
         from ragnarbot.agent.tools.cron import CronTool
-        from ragnarbot.cron.types import CronJob, CronPayload, CronSchedule, CronJobState
+        from ragnarbot.cron.types import CronJob, CronJobState, CronPayload, CronSchedule
 
         svc = MagicMock()
         svc.update_job.return_value = CronJob(
@@ -686,7 +809,7 @@ class TestCronToolAgentParam:
 
         tool = CronTool(cron_service=svc)
         tool.set_context("telegram", "123")
-        result = await tool.execute(
+        await tool.execute(
             action="update",
             job_id="abc",
             agent="deep-researcher",
@@ -700,7 +823,7 @@ class TestCronToolAgentParam:
     async def test_list_jobs_shows_agent(self):
         """CronTool._list_jobs includes agent in output when set."""
         from ragnarbot.agent.tools.cron import CronTool
-        from ragnarbot.cron.types import CronJob, CronPayload, CronSchedule, CronJobState
+        from ragnarbot.cron.types import CronJob, CronJobState, CronPayload, CronSchedule
 
         svc = MagicMock()
         svc.list_jobs.return_value = [
@@ -726,7 +849,7 @@ class TestCronToolAgentParam:
         # plain job should NOT have agent info
         assert "def" in result
         lines = result.split("\n")
-        plain_line = [l for l in lines if "def" in l][0]
+        plain_line = [line for line in lines if "def" in line][0]
         assert "agent:" not in plain_line
 
 
@@ -910,3 +1033,162 @@ class TestCronIsolatedAgentProfile:
         assert reg.has("web_search")
         assert reg.has("deliver_result")
         assert not reg.has("exec")
+
+    @pytest.mark.asyncio
+    async def test_process_cron_isolated_inherits_global_reasoning_by_default(self, tmp_path):
+        """Cron isolated runs inherit the loop reasoning level when no agent override exists."""
+        from ragnarbot.providers.base import LLMResponse
+
+        loop = self._make_agent_loop(tmp_path)
+        loop.model = "openai/gpt-5.4"
+        loop.reasoning_level = "high"
+        loop.provider.chat = AsyncMock(return_value=LLMResponse(content="done"))
+
+        result = await loop.process_cron_isolated(
+            job_name="job",
+            message="Do work",
+            schedule_desc="every 1h",
+            channel="telegram",
+            chat_id="123",
+        )
+
+        assert result == "done"
+        call_kwargs = loop.provider.chat.await_args.kwargs
+        assert call_kwargs["model"] == "openai/gpt-5.4"
+        assert call_kwargs["reasoning_level"] == "high"
+
+    @pytest.mark.asyncio
+    async def test_process_cron_isolated_agent_profile_uses_model_and_reasoning_override(
+        self, tmp_path,
+    ):
+        """Cron agent profiles should apply both AGENT.md model and reasoningLevel."""
+        from ragnarbot.providers.base import LLMResponse
+
+        builtin = tmp_path / "builtin"
+        d = builtin / "researcher"
+        d.mkdir(parents=True)
+        (d / "AGENT.md").write_text(
+            "---\nname: researcher\ndescription: Research\n"
+            "model: openai/gpt-5-mini\nreasoningLevel: low\n---\nDo work.",
+            encoding="utf-8",
+        )
+        loader = AgentsLoader(tmp_path / "workspace", builtin_agents_dir=builtin)
+        loop = self._make_agent_loop(tmp_path, agents_loader=loader)
+        loop.reasoning_level = "ultra"
+        loop.provider.chat = AsyncMock(return_value=LLMResponse(content="done"))
+
+        result = await loop.process_cron_isolated(
+            job_name="job",
+            message="Do work",
+            schedule_desc="every 1h",
+            channel="telegram",
+            chat_id="123",
+            agent_name="researcher",
+        )
+
+        assert result == "done"
+        call_kwargs = loop.provider.chat.await_args.kwargs
+        assert call_kwargs["model"] == "openai/gpt-5-mini"
+        assert call_kwargs["reasoning_level"] == "low"
+
+
+@pytest.mark.asyncio
+async def test_process_heartbeat_inherits_global_reasoning_level(tmp_path):
+    """Heartbeat isolated runs inherit the loop's global reasoning level."""
+    from ragnarbot.agent.loop import AgentLoop
+    from ragnarbot.config.schema import ExecToolConfig
+    from ragnarbot.providers.base import LLMResponse
+
+    provider = MagicMock()
+    provider.get_default_model.return_value = "openai/gpt-5.4"
+    provider.chat = AsyncMock(return_value=LLMResponse(content="done"))
+
+    bus = MagicMock()
+    bus.publish_outbound = AsyncMock()
+    bus.publish_inbound = AsyncMock()
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    loop = AgentLoop(
+        bus=bus,
+        provider=provider,
+        workspace=workspace,
+        model="openai/gpt-5.4",
+        reasoning_level="high",
+        exec_config=ExecToolConfig(),
+    )
+    loop.last_active_chat = ("telegram", "123")
+
+    result, channel, chat_id = await loop.process_heartbeat()
+
+    assert result is None
+    assert channel == "telegram"
+    assert chat_id == "123"
+    call_kwargs = provider.chat.await_args.kwargs
+    assert call_kwargs["model"] == "openai/gpt-5.4"
+    assert call_kwargs["reasoning_level"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_compactor_inherits_global_reasoning_level(tmp_path):
+    """Compactor calls should inherit the loop's global reasoning level."""
+    from ragnarbot.agent.loop import AgentLoop
+    from ragnarbot.config.schema import ExecToolConfig
+    from ragnarbot.providers.base import LLMResponse
+
+    provider = MagicMock()
+    provider.get_default_model.return_value = "openai/gpt-5.4"
+    provider.chat = AsyncMock(return_value=LLMResponse(content="summary"))
+
+    with patch("ragnarbot.agent.loop.SubagentManager"):
+        loop = AgentLoop(
+            bus=MagicMock(),
+            provider=provider,
+            workspace=tmp_path / "workspace",
+            model="openai/gpt-5.4",
+            reasoning_level="medium",
+            exec_config=ExecToolConfig(),
+        )
+
+    await loop.compactor._chat_fn(
+        None,
+        messages=[{"role": "user", "content": "Summarize this"}],
+        tools=None,
+    )
+
+    call_kwargs = provider.chat.await_args.kwargs
+    assert call_kwargs["model"] == "openai/gpt-5.4"
+    assert call_kwargs["reasoning_level"] == "medium"
+
+
+@pytest.mark.asyncio
+async def test_memory_flush_inherits_global_reasoning_level(tmp_path):
+    """Memory flush calls should inherit the loop's global reasoning level."""
+    from ragnarbot.agent.loop import AgentLoop
+    from ragnarbot.config.schema import ExecToolConfig
+    from ragnarbot.providers.base import LLMResponse
+
+    provider = MagicMock()
+    provider.get_default_model.return_value = "openai/gpt-5.4"
+    provider.chat = AsyncMock(return_value=LLMResponse(content="memory"))
+
+    with patch("ragnarbot.agent.loop.SubagentManager"):
+        loop = AgentLoop(
+            bus=MagicMock(),
+            provider=provider,
+            workspace=tmp_path / "workspace",
+            model="openai/gpt-5.4",
+            reasoning_level="medium",
+            exec_config=ExecToolConfig(),
+        )
+
+    await loop.memory_flush._chat_fn(
+        None,
+        messages=[{"role": "user", "content": "Extract memory"}],
+        tools=None,
+    )
+
+    call_kwargs = provider.chat.await_args.kwargs
+    assert call_kwargs["model"] == "openai/gpt-5.4"
+    assert call_kwargs["reasoning_level"] == "medium"
