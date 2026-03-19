@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from loguru import logger
 
 from ragnarbot.agent.tools.base import Tool
+from ragnarbot.instance import ensure_instance_root
 
 if TYPE_CHECKING:
     from patchright.async_api import BrowserContext, Page, Playwright
@@ -32,9 +33,6 @@ STEALTH_ARGS = [
     "--disable-ipc-flooding-protection",
     "--font-render-hinting=none",
 ]
-
-AGENT_PROFILE = Path.home() / ".ragnarbot" / "browser-profile"
-SCREENSHOT_DIR = Path.home() / ".ragnarbot" / "browser-screenshots"
 
 GOTO_TIMEOUT_MS = 30_000  # 30s navigation timeout
 
@@ -73,6 +71,7 @@ class BrowserSessionManager:
 
     def __init__(self, config: Any):
         self._config = config
+        self._instance = ensure_instance_root()
         self._playwright: Playwright | None = None
         self._sessions: dict[str, BrowserSession] = {}
         self._chromium_installed: bool = False
@@ -228,14 +227,15 @@ class BrowserSessionManager:
         session_id = str(uuid.uuid4())[:8]
         context = None
 
-        AGENT_PROFILE.mkdir(parents=True, exist_ok=True)
+        agent_profile = self._instance.browser_profile_path
+        agent_profile.mkdir(parents=True, exist_ok=True)
 
         try:
             # In headed mode, don't force viewport — let the window
             # determine content size naturally (avoids Retina scaling issues).
             viewport_cfg = None if not h else {"width": vw, "height": vh}
             context = await pw.chromium.launch_persistent_context(
-                user_data_dir=str(AGENT_PROFILE),
+                user_data_dir=str(agent_profile),
                 headless=h,
                 args=self._build_args(),
                 ignore_default_args=[
@@ -459,10 +459,11 @@ class BrowserSessionManager:
             img_bytes = await session.page.screenshot(full_page=full_page)
 
         # Save to disk so the agent can send the file to the user
-        SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        screenshot_dir = self._instance.browser_screenshots_path
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
         ts = int(time.time())
         filename = f"{session.session_id}_{ts}.png"
-        filepath = SCREENSHOT_DIR / filename
+        filepath = screenshot_dir / filename
         filepath.write_bytes(img_bytes)
         session._screenshot_paths.append(filepath)
 
