@@ -5,17 +5,17 @@ from pathlib import Path
 from typing import Any
 
 from ragnarbot.config.schema import Config
+from ragnarbot.instance import ensure_instance_root
 
 
 def get_config_path() -> Path:
-    """Get the default configuration file path."""
-    return Path.home() / ".ragnarbot" / "config.json"
+    """Get the active profile's configuration file path."""
+    return ensure_instance_root().config_path
 
 
 def get_data_dir() -> Path:
-    """Get the ragnarbot data directory."""
-    from ragnarbot.utils.helpers import get_data_path
-    return get_data_path()
+    """Get the active profile's data directory."""
+    return ensure_instance_root().data_root
 
 
 def load_config(config_path: Path | None = None) -> Config:

@@ -239,7 +239,7 @@ This means you can see in conversation history that a cron job ran, without it t
 - `cron(action="list")` — see all jobs with IDs, schedules, modes, and status
 - `cron(action="update", job_id="...", ...)` — change schedule, message, mode, or enable/disable
 - `cron(action="remove", job_id="...")` — permanently delete a job
-- Execution logs persist at `~/.ragnarbot/cron/logs/{{job_id}}.jsonl` even after jobs are deleted
+- Execution logs persist at `{data_root}/cron/logs/{{job_id}}.jsonl` even after jobs are deleted
 
 ---
 
@@ -422,7 +422,7 @@ When you learn a new workflow or the user teaches you a pattern, consider whethe
 
 ## Browser Protocol
 
-The `browser` tool gives you control over a Chromium browser with a persistent profile. Chromium is auto-installed on first use. The persistent profile at `~/.ragnarbot/browser-profile/` preserves cookies, logins, and local storage across sessions automatically.
+The `browser` tool gives you control over a Chromium browser with a persistent profile. Chromium is auto-installed on first use. The persistent profile at `{data_root}/browser-profile/` preserves cookies, logins, and local storage across sessions automatically.
 
 ### Tool Selection Hierarchy
 

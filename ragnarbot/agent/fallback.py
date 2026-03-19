@@ -3,9 +3,12 @@
 import json
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 
-STATE_FILE = Path.home() / ".ragnarbot" / "fallback_state.json"
+from ragnarbot.instance import ensure_instance_root
+
+
+def _state_file():
+    return ensure_instance_root().fallback_state_path
 
 
 @dataclass
@@ -18,11 +21,12 @@ class FallbackState:
 
     def save(self) -> None:
         """Persist to disk. Only call when state changes."""
+        state_file = _state_file()
         if self.consecutive_failures == 0 and not self.fallback_mode:
-            STATE_FILE.unlink(missing_ok=True)
+            state_file.unlink(missing_ok=True)
             return
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        STATE_FILE.write_text(json.dumps({
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps({
             "consecutive_failures": self.consecutive_failures,
             "fallback_mode": self.fallback_mode,
         }))
@@ -30,9 +34,10 @@ class FallbackState:
     @classmethod
     def load(cls) -> "FallbackState":
         """Load from disk, or return fresh state if no file."""
-        if STATE_FILE.exists():
+        state_file = _state_file()
+        if state_file.exists():
             try:
-                data = json.loads(STATE_FILE.read_text())
+                data = json.loads(state_file.read_text())
                 return cls(
                     consecutive_failures=data.get("consecutive_failures", 0),
                     fallback_mode=data.get("fallback_mode", False),

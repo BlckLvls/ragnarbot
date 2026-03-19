@@ -6,6 +6,8 @@ import string
 from dataclasses import dataclass
 from pathlib import Path
 
+from ragnarbot.instance import ensure_instance_root
+
 
 @dataclass
 class GrantInfo:
@@ -23,7 +25,7 @@ class PendingGrantStore:
     """
 
     def __init__(self, path: Path | None = None):
-        self._path = path or (Path.home() / ".ragnarbot" / "pending_grants.json")
+        self._path = path or ensure_instance_root().pending_grants_path
 
     def _load(self) -> dict:
         if self._path.exists():

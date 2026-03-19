@@ -5,7 +5,7 @@ import json
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from loguru import logger
 
@@ -44,9 +44,21 @@ from ragnarbot.agent.tools.update import UpdateTool
 from ragnarbot.agent.tools.web import WebFetchTool, WebSearchTool
 from ragnarbot.bus.events import InboundMessage, OutboundMessage
 from ragnarbot.bus.queue import MessageBus
+from ragnarbot.instance import (
+    bind_pending_update_target,
+    clear_pending_update,
+    load_pending_update,
+    pending_update_target,
+    record_last_active_chat,
+)
 from ragnarbot.media.manager import MediaManager
 from ragnarbot.providers.base import LLMProvider, LLMResponse
 from ragnarbot.session.manager import SessionManager
+
+if TYPE_CHECKING:
+    from ragnarbot.agent.agents_loader import AgentDefinition
+    from ragnarbot.config.schema import BrowserConfig, ExecToolConfig, FallbackConfig
+    from ragnarbot.cron.service import CronService
 
 
 @dataclass
@@ -113,7 +125,6 @@ class AgentLoop:
         browser_config: "BrowserConfig | None" = None,
     ):
         from ragnarbot.config.schema import ExecToolConfig
-        from ragnarbot.cron.service import CronService
         self.bus = bus
         self.provider = provider
         self.workspace = workspace
@@ -191,7 +202,7 @@ class AgentLoop:
         self._processing_session_key: str | None = None
         self.last_active_chat: tuple[str, str] | None = None
         self._register_default_tools()
-    
+
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
         # File tools
@@ -199,7 +210,7 @@ class AgentLoop:
         self.tools.register(WriteFileTool())
         self.tools.register(EditFileTool())
         self.tools.register(ListDirTool())
-        
+
         # Shell tool
         self.tools.register(ExecTool(
             working_dir=str(self.workspace),
@@ -207,11 +218,11 @@ class AgentLoop:
             restrict_to_workspace=self.exec_config.restrict_to_workspace,
             safety_guard=self.exec_config.safety_guard,
         ))
-        
+
         # Web tools
         self.tools.register(WebSearchTool(engine=self.search_engine, api_key=self.brave_api_key))
         self.tools.register(WebFetchTool())
-        
+
         # Telegram media & reaction tools
         send_cb = self.bus.publish_outbound
         self.tools.register(SendPhotoTool(send_callback=send_cb))
@@ -225,7 +236,7 @@ class AgentLoop:
         # Browser tool
         from ragnarbot.agent.tools.browser import BrowserTool
         self.tools.register(BrowserTool(manager=self.browser_manager))
-        
+
         # Cron tool (for scheduling)
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
@@ -282,6 +293,9 @@ class AgentLoop:
                     continue
                 await self._await_processing_task()
 
+            if msg.channel not in {"system", "cli"} and not command:
+                await self.deliver_pending_update_notice(msg.channel, msg.chat_id)
+
             # System messages → background task
             if msg.channel == "system":
                 self._processing_task = asyncio.create_task(
@@ -306,7 +320,7 @@ class AgentLoop:
             self._processing_task = asyncio.create_task(
                 self._process_and_send(batch),
             )
-    
+
     def stop(self) -> None:
         """Stop the agent loop."""
         self._running = False
@@ -626,6 +640,7 @@ class AgentLoop:
     ) -> dict[str, Any]:
         """Convert an inbound message into LLM-ready content plus save metadata."""
         from datetime import datetime as _dt
+
         from ragnarbot.session.manager import _build_message_prefix
 
         media_refs: list[dict[str, str]] = []
@@ -986,6 +1001,7 @@ class AgentLoop:
 
         if msg.channel != "cli":
             self.last_active_chat = (msg.channel, msg.chat_id)
+            record_last_active_chat(msg.channel, msg.chat_id)
 
         logger.info(
             f"Processing batch of {len(batch)} message(s) from {msg.channel}:{msg.sender_id}"
@@ -1332,7 +1348,7 @@ class AgentLoop:
             chat_id=msg.chat_id,
             content=outbound_content
         )
-    
+
     async def _handle_command(self, command: str, msg: InboundMessage) -> OutboundMessage | None:
         """Dispatch a channel command without calling the LLM."""
         if command == "new_chat":
@@ -1778,7 +1794,7 @@ class AgentLoop:
     async def _process_system_message(self, msg: InboundMessage) -> OutboundMessage | None:
         """
         Process a system message (e.g., subagent announce).
-        
+
         The chat_id field contains "original_channel:original_chat_id" to route
         the response back to the correct destination.
         """
@@ -2070,7 +2086,89 @@ class AgentLoop:
             chat_id=origin_chat_id,
             content=outbound_content
         )
-    
+
+    @staticmethod
+    def _pending_update_system_content(payload: dict[str, Any]) -> str:
+        """Build a system message for pending shared-binary updates."""
+        old_ver = payload.get("old_version", "?")
+        new_ver = payload.get("new_version", "?")
+        summary = payload.get("summary", "Release notes available.")
+        changelog_url = payload.get("changelog_url", "")
+        excerpt = payload.get("body_excerpt", "")
+        requires_restart = payload.get("requires_restart", True)
+
+        if requires_restart:
+            content = (
+                f"[System: This profile is still running the old gateway process, "
+                f"but the shared update is already installed. Tell the user that "
+                f"the bot was updated from v{old_ver} to v{new_ver}. Mention this "
+                f"summary: {summary}. Changelog: {changelog_url}. Ask whether they "
+                f"want to restart now to apply the update in this profile. If they "
+                f"agree, use the restart tool.]"
+            )
+        else:
+            content = (
+                f"[System: This profile was offline when the shared update was installed, "
+                f"and it is already running the new version. Tell the user that the bot "
+                f"was updated from v{old_ver} to v{new_ver}. Mention this summary: "
+                f"{summary}. Changelog: {changelog_url}. Make it clear that no restart "
+                f"is needed in this profile.]"
+            )
+        if excerpt:
+            content += f"\n\n[Release excerpt]\n{excerpt}"
+        return content
+
+    async def queue_pending_update_notice(self) -> bool:
+        """Queue a pending update notice using the last known active chat."""
+        payload = load_pending_update()
+        if not payload:
+            return False
+
+        channel, chat_id = pending_update_target(payload)
+        if not channel or not chat_id:
+            return False
+
+        await self.bus.publish_inbound(InboundMessage(
+            channel="system",
+            sender_id="update",
+            chat_id=f"{channel}:{chat_id}",
+            content=self._pending_update_system_content(payload),
+        ))
+        return True
+
+    async def deliver_pending_update_notice(
+        self, channel: str | None = None, chat_id: str | None = None,
+    ) -> bool:
+        """Deliver a pending update notice immediately when a target chat is known."""
+        payload = load_pending_update()
+        if not payload:
+            return False
+
+        target_channel, target_chat_id = pending_update_target(payload)
+        if target_channel and target_chat_id:
+            if channel != target_channel or chat_id != target_chat_id:
+                return False
+        else:
+            if not channel or not chat_id:
+                return False
+            payload = bind_pending_update_target(channel, chat_id) or payload
+            target_channel, target_chat_id = pending_update_target(payload)
+        if not target_channel or not target_chat_id:
+            return False
+
+        outbound = await self._process_system_message(InboundMessage(
+            channel="system",
+            sender_id="update",
+            chat_id=f"{target_channel}:{target_chat_id}",
+            content=self._pending_update_system_content(payload),
+        ))
+        if outbound:
+            await self.bus.publish_outbound(outbound)
+            if not payload.get("requires_restart", True):
+                clear_pending_update()
+            return True
+        return False
+
     async def process_direct(
         self,
         content: str,
@@ -2080,13 +2178,13 @@ class AgentLoop:
     ) -> str:
         """
         Process a message directly (for CLI or cron usage).
-        
+
         Args:
             content: The message content.
             session_key: Session identifier.
             channel: Source channel (for context).
             chat_id: Source chat ID (for context).
-        
+
         Returns:
             The agent's response.
         """
@@ -2096,7 +2194,7 @@ class AgentLoop:
             chat_id=chat_id,
             content=content
         )
-        
+
         response = await self._process_batch([msg])
         return response.content if response else ""
 
@@ -2243,7 +2341,6 @@ class AgentLoop:
         Combines the CRON_ISOLATED.md rules with the AGENT.md body into
         a single system prompt.
         """
-        import time as _time
 
         cron_ctx = session_metadata["cron_isolated"]
 

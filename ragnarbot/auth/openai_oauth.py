@@ -12,12 +12,12 @@ from __future__ import annotations
 import base64
 import json
 import time
-from pathlib import Path
 
 from ragnarbot.auth.oauth_flow import (
     refresh_token_request,
     run_oauth_flow,
 )
+from ragnarbot.instance import ensure_instance_root
 
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 AUTH_URL = "https://auth.openai.com/oauth/authorize"
@@ -26,7 +26,9 @@ SCOPES = "openid profile email offline_access"
 REDIRECT_PORT = 1455
 CALLBACK_PATH = "/auth/callback"
 
-TOKEN_FILE = Path.home() / ".ragnarbot" / "oauth" / "openai.json"
+
+def _token_file():
+    return ensure_instance_root().oauth_dir / "openai.json"
 
 
 def authenticate(console) -> bool:
@@ -78,10 +80,11 @@ def authenticate(console) -> bool:
 
 def load_tokens() -> dict | None:
     """Load stored tokens from disk, or None if not found."""
-    if not TOKEN_FILE.exists():
+    token_file = _token_file()
+    if not token_file.exists():
         return None
     try:
-        return json.loads(TOKEN_FILE.read_text())
+        return json.loads(token_file.read_text())
     except (json.JSONDecodeError, OSError):
         return None
 
@@ -149,9 +152,10 @@ def _extract_account_id(token: str) -> str | None:
 
 def _save_tokens(data: dict) -> None:
     """Persist token data to disk."""
-    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    TOKEN_FILE.write_text(json.dumps(data, indent=2))
-    TOKEN_FILE.chmod(0o600)
+    token_file = _token_file()
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text(json.dumps(data, indent=2))
+    token_file.chmod(0o600)
 
 
 def _set_credentials_marker() -> None:

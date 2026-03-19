@@ -5,6 +5,8 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
+from ragnarbot.instance import workspace_config_value
+
 
 class TelegramConfig(BaseModel):
     """Telegram channel configuration."""
@@ -33,7 +35,7 @@ OAUTH_SUPPORTED_PROVIDERS = {"anthropic", "gemini", "openai"}
 class AgentDefaults(BaseModel):
     """Default agent configuration."""
     workspace: str = Field(
-        default="~/.ragnarbot/workspace",
+        default_factory=workspace_config_value,
         json_schema_extra={"reload": "cold", "label": "Workspace directory path"},
     )
     model: str = Field(

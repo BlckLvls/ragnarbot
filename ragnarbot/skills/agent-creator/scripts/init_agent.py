@@ -6,8 +6,14 @@ import re
 import sys
 from pathlib import Path
 
-DEFAULT_PATH = Path.home() / ".ragnarbot" / "workspace" / "agents"
+from ragnarbot.instance import get_instance
+
 NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+
+
+def default_path() -> Path:
+    """Resolve the active profile's default agent directory."""
+    return get_instance().workspace_path / "agents"
 
 SAFE_TOOLS = [
     "file_read", "file_write", "file_edit", "list_dir",
@@ -49,11 +55,12 @@ TODO — describe the structure of your deliverable.
 
 
 def main() -> None:
+    default = default_path()
     parser = argparse.ArgumentParser(description="Initialize a new agent definition.")
     parser.add_argument("name", type=validate_name, help="Agent name (kebab-case)")
     parser.add_argument(
-        "--path", type=Path, default=DEFAULT_PATH,
-        help=f"Parent directory (default: {DEFAULT_PATH})",
+        "--path", type=Path, default=default,
+        help=f"Parent directory (default: {default})",
     )
     args = parser.parse_args()
 

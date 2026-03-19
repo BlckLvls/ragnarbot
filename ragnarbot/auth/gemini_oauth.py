@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 
 import httpx
 
@@ -19,6 +18,7 @@ from ragnarbot.auth.oauth_flow import (
     refresh_token_request,
     run_oauth_flow,
 )
+from ragnarbot.instance import ensure_instance_root
 
 CLIENT_ID = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
 CLIENT_SECRET = "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"
@@ -34,7 +34,9 @@ CODE_ASSIST_BASE = "https://cloudcode-pa.googleapis.com"
 REDIRECT_PORT = 8585
 CALLBACK_PATH = "/callback"
 
-TOKEN_FILE = Path.home() / ".ragnarbot" / "oauth" / "gemini.json"
+
+def _token_file():
+    return ensure_instance_root().oauth_dir / "gemini.json"
 
 
 def authenticate(console) -> bool:
@@ -81,10 +83,11 @@ def authenticate(console) -> bool:
 
 def load_tokens() -> dict | None:
     """Load stored tokens from disk, or None if not found."""
-    if not TOKEN_FILE.exists():
+    token_file = _token_file()
+    if not token_file.exists():
         return None
     try:
-        return json.loads(TOKEN_FILE.read_text())
+        return json.loads(token_file.read_text())
     except (json.JSONDecodeError, OSError):
         return None
 
@@ -154,9 +157,10 @@ def is_authenticated() -> bool:
 
 def _save_tokens(data: dict) -> None:
     """Persist token data to disk."""
-    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    TOKEN_FILE.write_text(json.dumps(data, indent=2))
-    TOKEN_FILE.chmod(0o600)
+    token_file = _token_file()
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text(json.dumps(data, indent=2))
+    token_file.chmod(0o600)
 
 
 def _set_credentials_marker() -> None:

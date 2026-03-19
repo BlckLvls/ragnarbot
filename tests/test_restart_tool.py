@@ -1,12 +1,11 @@
 """Tests for the restart tool."""
 
 import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ragnarbot.agent.tools.restart import RESTART_MARKER, RestartTool
+from ragnarbot.agent.tools.restart import RestartTool
 
 
 @pytest.fixture
@@ -46,7 +45,7 @@ async def test_execute_returns_json(restart_tool):
 @pytest.mark.asyncio
 async def test_execute_writes_marker_with_context(restart_tool, tmp_path):
     marker = tmp_path / ".restart_marker"
-    with patch("ragnarbot.agent.tools.restart.RESTART_MARKER", marker):
+    with patch("ragnarbot.agent.tools.restart.get_restart_marker_path", return_value=marker):
         restart_tool.set_context("telegram", "12345")
         await restart_tool.execute()
 
@@ -60,7 +59,7 @@ async def test_execute_writes_marker_with_context(restart_tool, tmp_path):
 @pytest.mark.asyncio
 async def test_execute_no_marker_without_context(restart_tool, tmp_path):
     marker = tmp_path / ".restart_marker"
-    with patch("ragnarbot.agent.tools.restart.RESTART_MARKER", marker):
+    with patch("ragnarbot.agent.tools.restart.get_restart_marker_path", return_value=marker):
         # No set_context called — channel/chat_id are empty
         await restart_tool.execute()
     assert not marker.exists()

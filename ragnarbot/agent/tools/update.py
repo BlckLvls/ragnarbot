@@ -4,20 +4,35 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
+import signal
 from typing import TYPE_CHECKING, Any
 
 import httpx
 
 import ragnarbot
 from ragnarbot.agent.tools.base import Tool
+from ragnarbot.instance import (
+    clear_pending_update,
+    ensure_instance_root,
+    get_instance,
+    get_live_gateway_pid,
+    instance_profiles_on_disk,
+    last_active_chat,
+    load_pending_update,
+    resolve_active_profile,
+    save_pending_update,
+    signal_live_gateway,
+)
 
 if TYPE_CHECKING:
     from ragnarbot.agent.loop import AgentLoop
 
 GITHUB_REPO = "BlckLvls/ragnarbot"
 GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}"
-UPDATE_MARKER = Path.home() / ".ragnarbot" / ".update_marker"
+
+
+def get_update_marker_path():
+    return ensure_instance_root().update_marker_path
 
 
 def _parse_version(ver: str) -> tuple[int, ...]:
@@ -91,9 +106,85 @@ class UpdateTool(Tool):
         version_tags.sort(key=_parse_version)
         return version_tags[-1].lstrip("v")
 
+    async def _get_release(self, version: str) -> dict[str, Any]:
+        """Fetch GitHub release metadata for a concrete version."""
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(f"{GITHUB_API}/releases/tags/v{version}")
+            r.raise_for_status()
+            return r.json()
+
+    @staticmethod
+    def _summarize_release_body(body: str) -> tuple[str, str]:
+        """Return a short summary line and truncated body excerpt."""
+        lines = [line.strip() for line in body.splitlines() if line.strip()]
+        summary = "Release notes available."
+        for line in lines:
+            cleaned = line.lstrip("#*- ").strip()
+            if cleaned:
+                summary = cleaned[:160]
+                break
+        excerpt = body.strip()[:1200]
+        return summary, excerpt
+
+    def _write_update_marker(
+        self, current: str, latest: str, release: dict[str, Any],
+    ) -> None:
+        marker_path = get_update_marker_path()
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        marker_path.write_text(json.dumps({
+            "channel": self._channel,
+            "chat_id": self._chat_id,
+            "old_version": current,
+            "new_version": latest,
+            "changelog_url": release.get("html_url", ""),
+        }))
+
+    def _mark_other_profiles_pending(
+        self, current: str, latest: str, release: dict[str, Any],
+    ) -> list[str]:
+        """Persist pending-update markers for every other known profile."""
+        summary, excerpt = self._summarize_release_body(release.get("body", ""))
+        payload_base = {
+            "old_version": current,
+            "new_version": latest,
+            "summary": summary,
+            "body_excerpt": excerpt,
+            "changelog_url": release.get("html_url", ""),
+            "release_name": release.get("name", f"v{latest}"),
+            "published_at": release.get("published_at", ""),
+        }
+        current_profile = resolve_active_profile()
+        notified: list[str] = []
+
+        for profile in instance_profiles_on_disk():
+            if profile == current_profile:
+                continue
+            info = get_instance(profile)
+            if not info.data_root.exists():
+                continue
+
+            target_channel, target_chat_id = last_active_chat(profile)
+            live_pid = get_live_gateway_pid(profile)
+            payload = {
+                **payload_base,
+                "requires_restart": live_pid is not None,
+            }
+            if target_channel and target_chat_id:
+                payload["target_channel"] = target_channel
+                payload["target_chat_id"] = target_chat_id
+
+            save_pending_update(payload, profile)
+            notified.append(profile)
+
+            if live_pid is not None:
+                signal_live_gateway(signal.SIGUSR2, profile)
+
+        return notified
+
     async def _action_check(self) -> str:
         """Check if a newer version is available."""
         current = ragnarbot.__version__
+        pending = load_pending_update()
         try:
             latest = await self._get_latest_version()
         except Exception as e:
@@ -104,6 +195,7 @@ class UpdateTool(Tool):
             "current_version": current,
             "latest_version": latest,
             "update_available": update_available,
+            "pending_update": pending,
         })
 
     async def _action_changelog(self, version: str | None = None) -> str:
@@ -114,12 +206,7 @@ class UpdateTool(Tool):
             else:
                 target = await self._get_latest_version()
 
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                r = await client.get(
-                    f"{GITHUB_API}/releases/tags/v{target}"
-                )
-                r.raise_for_status()
-                data = r.json()
+            data = await self._get_release(target)
 
             return json.dumps({
                 "version": target,
@@ -152,6 +239,11 @@ class UpdateTool(Tool):
                 "current_version": current,
             })
 
+        try:
+            release = await self._get_release(latest)
+        except Exception as e:
+            return json.dumps({"error": f"Failed to fetch release notes: {e}"})
+
         # Try uv first, fall back to pip
         try:
             returncode, stdout, stderr = await self._run_subprocess(
@@ -176,20 +268,16 @@ class UpdateTool(Tool):
         except RuntimeError as e:
             return json.dumps({"error": f"uv upgrade failed: {e}"})
 
-        # Write update marker for post-restart notification
-        UPDATE_MARKER.parent.mkdir(parents=True, exist_ok=True)
-        UPDATE_MARKER.write_text(json.dumps({
-            "channel": self._channel,
-            "chat_id": self._chat_id,
-            "old_version": current,
-            "new_version": latest,
-        }))
+        clear_pending_update()
+        self._write_update_marker(current, latest, release)
+        notified_profiles = self._mark_other_profiles_pending(current, latest, release)
 
         self._agent.request_restart()
         return json.dumps({
             "status": "updating",
             "old_version": current,
             "new_version": latest,
+            "notified_profiles": notified_profiles,
         })
 
     @staticmethod

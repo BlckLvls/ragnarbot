@@ -3,6 +3,8 @@
 from datetime import datetime
 from pathlib import Path
 
+from ragnarbot.instance import ensure_instance_root, get_instance
+
 
 def ensure_dir(path: Path) -> Path:
     """Ensure a directory exists, creating it if necessary."""
@@ -11,8 +13,8 @@ def ensure_dir(path: Path) -> Path:
 
 
 def get_data_path() -> Path:
-    """Get the ragnarbot data directory (~/.ragnarbot)."""
-    return ensure_dir(Path.home() / ".ragnarbot")
+    """Get the active profile's data directory."""
+    return ensure_instance_root().data_root
 
 
 def get_workspace_path(workspace: str | None = None) -> Path:
@@ -20,7 +22,7 @@ def get_workspace_path(workspace: str | None = None) -> Path:
     Get the workspace path.
 
     Args:
-        workspace: Optional workspace path. Defaults to ~/.ragnarbot/workspace.
+        workspace: Optional workspace path. Defaults to the active profile workspace.
 
     Returns:
         Expanded and ensured workspace path.
@@ -28,13 +30,13 @@ def get_workspace_path(workspace: str | None = None) -> Path:
     if workspace:
         path = Path(workspace).expanduser()
     else:
-        path = Path.home() / ".ragnarbot" / "workspace"
+        path = get_instance().workspace_path
     return ensure_dir(path)
 
 
 def get_sessions_path() -> Path:
     """Get the sessions storage directory."""
-    return ensure_dir(get_data_path() / "sessions")
+    return ensure_dir(get_instance().sessions_path)
 
 
 def get_chats_path() -> Path:

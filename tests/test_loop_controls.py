@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ragnarbot.bus.events import InboundMessage
+from ragnarbot.bus.events import InboundMessage, OutboundMessage
 from ragnarbot.channels.telegram import BOT_COMMANDS
 from ragnarbot.providers.base import LLMResponse, ToolCallRequest
 from ragnarbot.session.manager import Session
@@ -162,3 +162,72 @@ async def test_cleanup_stopped_run_closes_touched_browser_sessions(tmp_path):
 def test_telegram_commands_include_steering():
     """Telegram command list exposes the steering toggle."""
     assert ("steering", "Toggle in-loop steering") in BOT_COMMANDS
+
+
+@pytest.mark.asyncio
+async def test_deliver_pending_update_notice_skips_wrong_chat(tmp_path):
+    """Stored pending-update targets must not leak into another chat."""
+    agent = _make_agent(tmp_path)
+    agent._process_system_message = AsyncMock(return_value=OutboundMessage(
+        channel="telegram", chat_id="123", content="notice",
+    ))
+
+    with patch("ragnarbot.agent.loop.load_pending_update", return_value={
+        "requires_restart": True,
+        "target_channel": "telegram",
+        "target_chat_id": "123",
+    }):
+        delivered = await agent.deliver_pending_update_notice("telegram", "999")
+
+    assert delivered is False
+    agent._process_system_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_deliver_pending_update_notice_binds_first_chat_and_clears_info_notice(tmp_path):
+    """Info-only update notices bind to the first eligible chat and clear after delivery."""
+    agent = _make_agent(tmp_path)
+    agent._process_system_message = AsyncMock(return_value=OutboundMessage(
+        channel="telegram", chat_id="123", content="notice",
+    ))
+
+    payload = {
+        "requires_restart": False,
+        "old_version": "0.3.0",
+        "new_version": "0.4.0",
+    }
+    bound_payload = {
+        **payload,
+        "target_channel": "telegram",
+        "target_chat_id": "123",
+    }
+
+    with (
+        patch("ragnarbot.agent.loop.load_pending_update", return_value=payload),
+        patch("ragnarbot.agent.loop.bind_pending_update_target", return_value=bound_payload) as mock_bind,
+        patch("ragnarbot.agent.loop.clear_pending_update") as mock_clear,
+    ):
+        delivered = await agent.deliver_pending_update_notice("telegram", "123")
+
+    assert delivered is True
+    mock_bind.assert_called_once_with("telegram", "123")
+    mock_clear.assert_called_once()
+    agent.bus.publish_outbound.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_queue_pending_update_notice_uses_persisted_target(tmp_path):
+    """Signal-driven notices should use the stored target chat."""
+    agent = _make_agent(tmp_path)
+
+    with patch("ragnarbot.agent.loop.load_pending_update", return_value={
+        "requires_restart": True,
+        "target_channel": "telegram",
+        "target_chat_id": "123",
+    }):
+        queued = await agent.queue_pending_update_notice()
+
+    assert queued is True
+    agent.bus.publish_inbound.assert_awaited_once()
+    queued_msg = agent.bus.publish_inbound.await_args.args[0]
+    assert queued_msg.chat_id == "telegram:123"

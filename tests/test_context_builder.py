@@ -1,12 +1,16 @@
 """Tests for ContextBuilder built-in file loading and prompt assembly."""
 
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import pytest
 
 from ragnarbot.agent.context import BUILTIN_DIR, ContextBuilder
 from ragnarbot.agent.memory import MemoryStore
+
+
+@pytest.fixture(autouse=True)
+def default_profile(monkeypatch):
+    monkeypatch.setenv("RAGNARBOT_PROFILE", "default")
 
 
 class TestBuiltinFilesExist:
@@ -38,6 +42,7 @@ class TestLoadBuiltinFiles:
         assert workspace_path in result
         assert "{workspace_path}" not in result
         assert "{timezone}" not in result
+        assert "{data_root}" not in result
 
     def test_escaped_braces_preserved(self, tmp_path):
         cb = self._make_builder(tmp_path)
@@ -144,3 +149,12 @@ class TestBuildSystemPrompt:
         assert "## Yesterday's Notes" in prompt
         assert "today item" in prompt
         assert "yesterday item" in prompt
+
+    def test_custom_profile_uses_runtime_name_and_paths(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("RAGNARBOT_PROFILE", "vodichezka")
+        cb = ContextBuilder(tmp_path / "workspace")
+        prompt = cb.build_system_prompt()
+        assert "# ragnarbot-vodichezka" in prompt
+        assert "~/.ragnarbot-vodichezka/browser-profile/" in prompt
+        assert "~/.ragnarbot/browser-profile/" not in prompt
+        assert "~/.ragnarbot/workspace" not in prompt

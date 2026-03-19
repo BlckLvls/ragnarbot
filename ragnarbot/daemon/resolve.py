@@ -7,6 +7,11 @@ import sys
 from pathlib import Path
 
 from ragnarbot.daemon.base import DaemonError
+from ragnarbot.instance import (
+    ensure_instance_root,
+    instance_name_for_service,
+    resolve_active_profile,
+)
 
 
 class UnsupportedPlatformError(DaemonError):
@@ -48,10 +53,42 @@ def resolve_executable() -> list[str]:
 
 
 def get_log_dir() -> Path:
-    """Return ~/.ragnarbot/logs/, creating it if needed."""
-    log_dir = Path.home() / ".ragnarbot" / "logs"
+    """Return the active profile's log dir, creating it if needed."""
+    log_dir = ensure_instance_root().log_dir
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir
+
+
+def service_cli_args(profile: str | None = None) -> list[str]:
+    """Return the CLI arguments required to start a profile-specific gateway."""
+    return ["--profile", resolve_active_profile(profile), "gateway"]
+
+
+def get_launchd_label(profile: str | None = None) -> str:
+    """Return the launchd service label for a profile."""
+    suffix = instance_name_for_service(profile)
+    return "com.ragnarbot.gateway" if not suffix else f"com.ragnarbot.gateway.{suffix}"
+
+
+def get_launchd_plist_path(profile: str | None = None) -> Path:
+    """Return the launchd plist path for a profile."""
+    return Path.home() / "Library" / "LaunchAgents" / f"{get_launchd_label(profile)}.plist"
+
+
+def get_systemd_unit_name(profile: str | None = None) -> str:
+    """Return the systemd --user unit name for a profile."""
+    suffix = instance_name_for_service(profile)
+    return "ragnarbot-gateway.service" if not suffix else f"ragnarbot-gateway-{suffix}.service"
+
+
+def get_systemd_unit_dir() -> Path:
+    """Return the systemd --user unit directory."""
+    return Path.home() / ".config" / "systemd" / "user"
+
+
+def get_systemd_unit_path(profile: str | None = None) -> Path:
+    """Return the systemd --user unit path for a profile."""
+    return get_systemd_unit_dir() / get_systemd_unit_name(profile)
 
 
 # ---------------------------------------------------------------------------

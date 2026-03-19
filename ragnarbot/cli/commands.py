@@ -9,6 +9,20 @@ from rich.console import Console
 from rich.table import Table
 
 from ragnarbot import __logo__, __version__
+from ragnarbot.instance import (
+    GatewayClaimError,
+    acquire_gateway_claim,
+    clear_pending_update,
+    get_instance,
+    get_live_gateway_pid,
+    load_pending_update,
+    record_process_start,
+    release_gateway_claim,
+    runtime_name,
+    set_active_profile,
+    signal_live_gateway,
+    tilde_path,
+)
 
 app = typer.Typer(
     name="ragnarbot",
@@ -69,20 +83,76 @@ def _validate_auth(config, creds):
     return None
 
 
-def version_callback(value: bool):
-    if value:
-        console.print(f"{__logo__} ragnarbot v{__version__}")
-        raise typer.Exit()
+def _running_gateway_pid() -> int | None:
+    """Return the live PID for the active profile, if any."""
+    return get_live_gateway_pid()
+
+
+def _acquire_gateway_claim_or_exit(instance=None) -> None:
+    """Acquire the profile-local gateway claim or exit with a user-facing error."""
+    instance = instance or get_instance()
+    try:
+        acquire_gateway_claim()
+    except GatewayClaimError as e:
+        pid = e.pid
+        console.print(
+            f"[red]Error:[/red] {instance.runtime_name} is already running "
+            f"(PID {pid if pid is not None else '?'}, profile '{instance.profile}')."
+        )
+        raise typer.Exit(1)
+
+
+def _pending_update_mode(payload: dict | None) -> str | None:
+    """Return the display mode for a pending update payload."""
+    if not payload:
+        return None
+    return "pending restart" if payload.get("requires_restart", True) else "pending notice"
+
+
+def _print_pending_update(prefix: str = "Update") -> None:
+    """Print the current profile's pending-update state if present."""
+    pending = load_pending_update()
+    if not pending:
+        return
+    mode = _pending_update_mode(pending) or "pending"
+    console.print(
+        f"{prefix}:      [yellow]{mode}[/yellow] "
+        f"{pending.get('old_version', '?')} -> {pending.get('new_version', '?')}"
+    )
+
+
+def _reconcile_pending_update_after_startup() -> dict | None:
+    """Clear restart-required pending updates once the new version is running."""
+    pending = load_pending_update()
+    if (
+        pending
+        and pending.get("requires_restart", True)
+        and pending.get("new_version") == __version__
+    ):
+        clear_pending_update()
+        return None
+    return pending
 
 
 @app.callback()
 def main(
+    profile: str | None = typer.Option(
+        None, "--profile", help="Run against a specific profile root",
+    ),
     version: bool = typer.Option(
-        None, "--version", "-v", callback=version_callback, is_eager=True
+        None, "--version", "-v", is_eager=True,
     ),
 ):
     """ragnarbot - Personal AI Assistant."""
-    pass
+    try:
+        set_active_profile(profile)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(2)
+
+    if version:
+        console.print(f"{__logo__} {runtime_name()} v{__version__}")
+        raise typer.Exit()
 
 
 # ============================================================================
@@ -155,6 +225,7 @@ def bootstrap():
 def _create_workspace_templates(workspace: Path):
     """Copy default workspace files from workspace_defaults/ if missing."""
     import shutil
+
     from ragnarbot.agent.context import DEFAULTS_DIR
 
     for default_file in DEFAULTS_DIR.rglob("*"):
@@ -199,349 +270,359 @@ def gateway_main(
         import logging
         logging.basicConfig(level=logging.DEBUG)
 
-    console.print(f"{__logo__} Starting ragnarbot gateway on port {port}...")
+    instance = get_instance()
+    _acquire_gateway_claim_or_exit(instance)
+    record_process_start(os.getpid(), __version__)
 
-    from ragnarbot.daemon.resolve import resolve_path
-    resolve_path()
+    agent = None
+    restart_requested = False
 
-    from ragnarbot.config.migration import run_startup_migration
-    if not run_startup_migration(console):
-        raise typer.Exit(0)
+    try:
+        console.print(f"{__logo__} Starting {instance.runtime_name} gateway on port {port}...")
 
-    config = load_config()
-    creds = load_credentials()
+        from ragnarbot.daemon.resolve import resolve_path
+        resolve_path()
 
-    # Create components
-    bus = MessageBus()
+        from ragnarbot.config.migration import run_startup_migration
+        if not run_startup_migration(console):
+            raise typer.Exit(0)
 
-    # Validate auth configuration
-    error = _validate_auth(config, creds)
-    if error:
-        console.print(f"[red]Error: {error}[/red]")
-        raise typer.Exit(1)
+        config = load_config()
+        creds = load_credentials()
 
-    provider = _create_provider(
-        config.agents.defaults.model, config.agents.defaults.auth_method, creds,
-    )
+        # Create components
+        bus = MessageBus()
 
-    # Fallback config
-    fallback_config = config.agents.fallback
+        # Validate auth configuration
+        error = _validate_auth(config, creds)
+        if error:
+            console.print(f"[red]Error: {error}[/red]")
+            raise typer.Exit(1)
 
-    # Service credentials
-    brave_api_key = creds.services.brave_search.api_key or None
-    search_engine = config.tools.web.search.engine
+        provider = _create_provider(
+            config.agents.defaults.model, config.agents.defaults.auth_method, creds,
+        )
 
-    # Create media manager
-    media_dir = get_data_dir() / "media"
-    media_dir.mkdir(parents=True, exist_ok=True)
-    media_manager = MediaManager(base_dir=media_dir)
+        fallback_config = config.agents.fallback
+        brave_api_key = creds.services.brave_search.api_key or None
+        search_engine = config.tools.web.search.engine
 
-    # Create cron service first (callback set after agent creation)
-    cron_store_path = get_data_dir() / "cron" / "jobs.json"
-    cron = CronService(cron_store_path)
+        media_dir = get_data_dir() / "media"
+        media_dir.mkdir(parents=True, exist_ok=True)
+        media_manager = MediaManager(base_dir=media_dir)
 
-    # Create agent with cron service
-    agent = AgentLoop(
-        bus=bus,
-        provider=provider,
-        workspace=config.workspace_path,
-        model=config.agents.defaults.model,
-        brave_api_key=brave_api_key,
-        search_engine=search_engine,
-        exec_config=config.tools.exec,
-        cron_service=cron,
-        stream_steps=config.agents.defaults.stream_steps,
-        media_manager=media_manager,
-        debounce_seconds=config.agents.defaults.debounce_seconds,
-        max_context_tokens=config.agents.defaults.max_context_tokens,
-        context_mode=config.agents.defaults.context_mode,
-        trace_mode=config.agents.defaults.trace_mode,
-        steering_enabled=config.agents.defaults.steering_enabled,
-        heartbeat_interval_m=config.heartbeat.interval_m,
-        fallback_model=fallback_config.model,
-        fallback_config=fallback_config,
-        provider_factory=lambda model, auth_method: _create_provider(
-            model, auth_method, creds,
-        ),
-        browser_config=config.tools.browser,
-    )
+        cron_store_path = get_data_dir() / "cron" / "jobs.json"
+        cron = CronService(cron_store_path)
 
-    # Set cron callback (needs agent)
-    def _format_schedule(schedule) -> str:
-        if schedule.kind == "every" and schedule.every_ms:
-            secs = schedule.every_ms // 1000
-            if secs >= 3600:
-                return f"every {secs // 3600}h"
-            if secs >= 60:
-                return f"every {secs // 60}m"
-            return f"every {secs}s"
-        if schedule.kind == "cron" and schedule.expr:
-            return f"cron({schedule.expr})"
-        if schedule.kind == "at":
-            return "one-time"
-        return "unknown"
+        agent = AgentLoop(
+            bus=bus,
+            provider=provider,
+            workspace=config.workspace_path,
+            model=config.agents.defaults.model,
+            brave_api_key=brave_api_key,
+            search_engine=search_engine,
+            exec_config=config.tools.exec,
+            cron_service=cron,
+            stream_steps=config.agents.defaults.stream_steps,
+            media_manager=media_manager,
+            debounce_seconds=config.agents.defaults.debounce_seconds,
+            max_context_tokens=config.agents.defaults.max_context_tokens,
+            context_mode=config.agents.defaults.context_mode,
+            trace_mode=config.agents.defaults.trace_mode,
+            steering_enabled=config.agents.defaults.steering_enabled,
+            heartbeat_interval_m=config.heartbeat.interval_m,
+            fallback_model=fallback_config.model,
+            fallback_config=fallback_config,
+            provider_factory=lambda model, auth_method: _create_provider(
+                model, auth_method, creds,
+            ),
+            browser_config=config.tools.browser,
+        )
 
-    async def on_cron_job(job: CronJob) -> str | None:
-        """Execute a cron job through the agent."""
-        import time as _time
-        from ragnarbot.cron.logger import log_execution
+        def _format_schedule(schedule) -> str:
+            if schedule.kind == "every" and schedule.every_ms:
+                secs = schedule.every_ms // 1000
+                if secs >= 3600:
+                    return f"every {secs // 3600}h"
+                if secs >= 60:
+                    return f"every {secs // 60}m"
+                return f"every {secs}s"
+            if schedule.kind == "cron" and schedule.expr:
+                return f"cron({schedule.expr})"
+            if schedule.kind == "at":
+                return "one-time"
+            return "unknown"
 
-        start_time = _time.time()
-        response = None
-        status = "ok"
-        error = None
+        async def on_cron_job(job: CronJob) -> str | None:
+            """Execute a cron job through the agent."""
+            import time as _time
 
-        try:
-            if job.payload.mode == "session":
-                # Inject into user's active session via inbound queue
-                cron_header = f"[Cron task: {job.name}]\n---\n{job.payload.message}"
-                from ragnarbot.bus.events import InboundMessage
-                await bus.publish_inbound(InboundMessage(
-                    channel=job.payload.channel or "cli",
-                    sender_id="cron",
-                    chat_id=job.payload.to or "direct",
-                    content=cron_header,
-                    metadata={"cron_job_id": job.id},
-                ))
-                response = "(queued to session)"
-            else:
-                # Isolated mode — fully parallel, no locks
-                schedule_desc = _format_schedule(job.schedule)
-                response = await agent.process_cron_isolated(
-                    job_name=job.name,
-                    message=job.payload.message,
-                    schedule_desc=schedule_desc,
-                    channel=job.payload.channel or "cli",
-                    chat_id=job.payload.to or "direct",
-                    agent_name=job.payload.agent,
-                )
-                # Deliver result to user
-                if response and job.payload.to:
-                    from ragnarbot.bus.events import OutboundMessage
-                    await bus.publish_outbound(OutboundMessage(
+            from ragnarbot.cron.logger import log_execution
+
+            start_time = _time.time()
+            response = None
+            status = "ok"
+            error = None
+
+            try:
+                if job.payload.mode == "session":
+                    cron_header = f"[Cron task: {job.name}]\n---\n{job.payload.message}"
+                    from ragnarbot.bus.events import InboundMessage
+                    await bus.publish_inbound(InboundMessage(
                         channel=job.payload.channel or "cli",
-                        chat_id=job.payload.to,
-                        content=response,
+                        sender_id="cron",
+                        chat_id=job.payload.to or "direct",
+                        content=cron_header,
+                        metadata={"cron_job_id": job.id},
                     ))
-        except Exception as e:
-            status = "error"
-            error = str(e)
-            raise
-        finally:
-            duration = _time.time() - start_time
-            log_execution(job, response, status, duration, error)
-
-            # Append a silent marker to the user's active session so the
-            # main agent knows an isolated job ran (without triggering a turn).
-            if job.payload.mode == "isolated" and job.payload.to:
-                try:
-                    channel = job.payload.channel or "cli"
-                    session_key = f"{channel}:{job.payload.to}"
-                    session = agent.sessions.get_or_create(session_key)
-                    ts = _time.strftime("%Y-%m-%d %H:%M:%S")
-                    marker = (
-                        f"[Cron result: {job.name} | id: {job.id} "
-                        f"| {ts} | status: {status}]"
+                    response = "(queued to session)"
+                else:
+                    schedule_desc = _format_schedule(job.schedule)
+                    response = await agent.process_cron_isolated(
+                        job_name=job.name,
+                        message=job.payload.message,
+                        schedule_desc=schedule_desc,
+                        channel=job.payload.channel or "cli",
+                        chat_id=job.payload.to or "direct",
+                        agent_name=job.payload.agent,
                     )
-                    session.add_message("assistant", marker)
-                    agent.sessions.save(session)
-                except Exception as marker_err:
-                    from loguru import logger as _log
-                    _log.warning(f"Failed to save cron marker: {marker_err}")
-
-        return response
-    cron.on_job = on_cron_job
-
-    # Create heartbeat service
-    import time as _time
-    from ragnarbot.bus.events import InboundMessage as _InboundMessage
-
-    async def on_heartbeat() -> tuple[str | None, str | None, str | None]:
-        return await agent.process_heartbeat()
-
-    async def on_heartbeat_deliver(result: str, channel: str, chat_id: str):
-        """Phase 2: inject heartbeat result into user's active chat."""
-        await bus.publish_inbound(_InboundMessage(
-            channel=channel,
-            sender_id="heartbeat",
-            chat_id=chat_id,
-            content=f"[Heartbeat report]\n---\n{result}",
-            metadata={
-                "heartbeat_result": True,
-                "system_note": (
-                    "[System] This is an internal message — the user does not see it. "
-                    "Relay the results to the user naturally, in the tone and context "
-                    "of your conversation. Do not mention the heartbeat mechanism."
-                ),
-            },
-        ))
-
-    async def on_heartbeat_complete(channel: str | None, chat_id: str | None):
-        """Save silent marker to user's session."""
-        if not channel or not chat_id:
-            return
-        session_key = f"{channel}:{chat_id}"
-        session = agent.sessions.get_or_create(session_key)
-        ts = _time.strftime("%Y-%m-%d %H:%M:%S")
-        marker = f"[Heartbeat check | {ts} | silent]"
-        session.add_message("assistant", marker)
-        agent.sessions.save(session)
-
-    heartbeat = HeartbeatService(
-        workspace=config.workspace_path,
-        on_heartbeat=on_heartbeat,
-        on_deliver=on_heartbeat_deliver,
-        on_complete=on_heartbeat_complete,
-        interval_m=config.heartbeat.interval_m,
-        enabled=config.heartbeat.enabled,
-    )
-
-    # Create channel manager
-    channels = ChannelManager(config, bus, creds, media_manager=media_manager)
-
-    if channels.enabled_channels:
-        console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
-    else:
-        console.print("[yellow]Warning: No channels enabled[/yellow]")
-
-    cron_status = cron.status()
-    if cron_status["jobs"] > 0:
-        console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
-
-    hb_status = f"every {config.heartbeat.interval_m}m" if config.heartbeat.enabled else "disabled"
-    console.print(f"[green]✓[/green] Heartbeat: {hb_status}")
-
-    pid_path = Path.home() / ".ragnarbot" / "gateway.pid"
-
-    async def run():
-        # Write PID file
-        pid_path.parent.mkdir(parents=True, exist_ok=True)
-        pid_path.write_text(str(os.getpid()))
-
-        # If this is a post-update restart, notify the originating channel
-        from ragnarbot.agent.tools.update import UPDATE_MARKER, GITHUB_REPO
-        if UPDATE_MARKER.exists():
-            try:
-                import json as _json
-                marker = _json.loads(UPDATE_MARKER.read_text())
-                origin_channel = marker["channel"]
-                origin_chat_id = marker["chat_id"]
-                old_ver = marker.get("old_version", "?")
-                new_ver = marker.get("new_version", "?")
-                changelog_url = (
-                    f"https://github.com/{GITHUB_REPO}/compare/v{old_ver}...v{new_ver}"
-                )
-                from ragnarbot.bus.events import InboundMessage
-                await bus.publish_inbound(InboundMessage(
-                    channel="system",
-                    sender_id="gateway",
-                    chat_id=f"{origin_channel}:{origin_chat_id}",
-                    content=(
-                        f"[System: ragnarbot updated from v{old_ver} to v{new_ver}. "
-                        f"Changelog: {changelog_url}]"
-                    ),
-                ))
-                console.print(
-                    f"[green]✓[/green] Post-update notification queued "
-                    f"for {origin_channel}:{origin_chat_id} (v{old_ver} → v{new_ver})"
-                )
+                    if response and job.payload.to:
+                        from ragnarbot.bus.events import OutboundMessage
+                        await bus.publish_outbound(OutboundMessage(
+                            channel=job.payload.channel or "cli",
+                            chat_id=job.payload.to,
+                            content=response,
+                        ))
             except Exception as e:
-                console.print(
-                    f"[yellow]Warning: could not inject update notification: {e}[/yellow]"
-                )
+                status = "error"
+                error = str(e)
+                raise
             finally:
-                UPDATE_MARKER.unlink(missing_ok=True)
+                duration = _time.time() - start_time
+                log_execution(job, response, status, duration, error)
 
-        # If this is a restart, inject a notification into the originating channel
-        from ragnarbot.agent.tools.restart import RESTART_MARKER
-        if RESTART_MARKER.exists():
-            try:
-                import json as _json
-                marker = _json.loads(RESTART_MARKER.read_text())
-                origin_channel = marker["channel"]
-                origin_chat_id = marker["chat_id"]
-                from ragnarbot.bus.events import InboundMessage
-                await bus.publish_inbound(InboundMessage(
-                    channel="system",
-                    sender_id="gateway",
-                    chat_id=f"{origin_channel}:{origin_chat_id}",
-                    content=(
-                        "[System: gateway restarted successfully. "
-                        "Config changes are now active.]"
+                if job.payload.mode == "isolated" and job.payload.to:
+                    try:
+                        channel = job.payload.channel or "cli"
+                        session_key = f"{channel}:{job.payload.to}"
+                        session = agent.sessions.get_or_create(session_key)
+                        ts = _time.strftime("%Y-%m-%d %H:%M:%S")
+                        marker = (
+                            f"[Cron result: {job.name} | id: {job.id} "
+                            f"| {ts} | status: {status}]"
+                        )
+                        session.add_message("assistant", marker)
+                        agent.sessions.save(session)
+                    except Exception as marker_err:
+                        from loguru import logger as _log
+                        _log.warning(f"Failed to save cron marker: {marker_err}")
+
+            return response
+
+        cron.on_job = on_cron_job
+
+        import time as _time
+
+        from ragnarbot.bus.events import InboundMessage as _InboundMessage
+
+        async def on_heartbeat() -> tuple[str | None, str | None, str | None]:
+            return await agent.process_heartbeat()
+
+        async def on_heartbeat_deliver(result: str, channel: str, chat_id: str):
+            """Phase 2: inject heartbeat result into user's active chat."""
+            await bus.publish_inbound(_InboundMessage(
+                channel=channel,
+                sender_id="heartbeat",
+                chat_id=chat_id,
+                content=f"[Heartbeat report]\n---\n{result}",
+                metadata={
+                    "heartbeat_result": True,
+                    "system_note": (
+                        "[System] This is an internal message — the user does not see it. "
+                        "Relay the results to the user naturally, in the tone and context "
+                        "of your conversation. Do not mention the heartbeat mechanism."
                     ),
-                ))
-                console.print(
-                    f"[green]✓[/green] Post-restart notification queued "
-                    f"for {origin_channel}:{origin_chat_id}"
-                )
-            except Exception as e:
-                console.print(f"[yellow]Warning: could not inject restart notification: {e}[/yellow]")
-            finally:
-                RESTART_MARKER.unlink(missing_ok=True)
+                },
+            ))
 
-        # SIGUSR1 handler for config reload
-        reload_event = asyncio.Event()
-        loop = asyncio.get_running_loop()
+        async def on_heartbeat_complete(channel: str | None, chat_id: str | None):
+            """Save silent marker to user's session."""
+            if not channel or not chat_id:
+                return
+            session_key = f"{channel}:{chat_id}"
+            session = agent.sessions.get_or_create(session_key)
+            ts = _time.strftime("%Y-%m-%d %H:%M:%S")
+            marker = f"[Heartbeat check | {ts} | silent]"
+            session.add_message("assistant", marker)
+            agent.sessions.save(session)
 
-        import signal
-        try:
-            loop.add_signal_handler(signal.SIGUSR1, reload_event.set)
-        except NotImplementedError:
-            pass  # Windows — signal handler not supported
+        heartbeat = HeartbeatService(
+            workspace=config.workspace_path,
+            on_heartbeat=on_heartbeat,
+            on_deliver=on_heartbeat_deliver,
+            on_complete=on_heartbeat_complete,
+            interval_m=config.heartbeat.interval_m,
+            enabled=config.heartbeat.enabled,
+        )
 
-        async def _config_reloader():
-            while True:
-                await reload_event.wait()
-                reload_event.clear()
+        channels = ChannelManager(config, bus, creds, media_manager=media_manager)
+
+        if channels.enabled_channels:
+            console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
+        else:
+            console.print("[yellow]Warning: No channels enabled[/yellow]")
+
+        cron_status = cron.status()
+        if cron_status["jobs"] > 0:
+            console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
+
+        hb_status = f"every {config.heartbeat.interval_m}m" if config.heartbeat.enabled else "disabled"
+        console.print(f"[green]✓[/green] Heartbeat: {hb_status}")
+
+        async def run():
+            _reconcile_pending_update_after_startup()
+
+            # If this is a post-update restart, notify the originating channel
+            from ragnarbot.agent.tools.update import GITHUB_REPO, get_update_marker_path
+            update_marker = get_update_marker_path()
+            if update_marker.exists():
                 try:
-                    new_config = load_config()
-                    for ch in channels.channels.values():
-                        ch.config = getattr(new_config.channels, ch.name, ch.config)
-                    console.print("[green]✓[/green] Config reloaded (SIGUSR1)")
+                    import json as _json
+                    marker = _json.loads(update_marker.read_text())
+                    origin_channel = marker["channel"]
+                    origin_chat_id = marker["chat_id"]
+                    old_ver = marker.get("old_version", "?")
+                    new_ver = marker.get("new_version", "?")
+                    changelog_url = marker.get("changelog_url") or (
+                        f"https://github.com/{GITHUB_REPO}/compare/v{old_ver}...v{new_ver}"
+                    )
+                    from ragnarbot.bus.events import InboundMessage
+                    await bus.publish_inbound(InboundMessage(
+                        channel="system",
+                        sender_id="gateway",
+                        chat_id=f"{origin_channel}:{origin_chat_id}",
+                        content=(
+                            f"[System: ragnarbot updated from v{old_ver} to v{new_ver}. "
+                            f"Changelog: {changelog_url}]"
+                        ),
+                    ))
+                    console.print(
+                        f"[green]✓[/green] Post-update notification queued "
+                        f"for {origin_channel}:{origin_chat_id} (v{old_ver} → v{new_ver})"
+                    )
                 except Exception as e:
-                    console.print(f"[red]Config reload failed: {e}[/red]")
+                    console.print(
+                        f"[yellow]Warning: could not inject update notification: {e}[/yellow]"
+                    )
+                finally:
+                    update_marker.unlink(missing_ok=True)
 
-        try:
-            await cron.start()
-            await heartbeat.start()
-
-            agent_task = asyncio.create_task(agent.run())
-            channel_task = asyncio.create_task(channels.start_all())
-            reloader_task = asyncio.create_task(_config_reloader())
-
-            # Wait for agent to finish (normal stop or restart request)
-            await agent_task
-
-            # Cancel other tasks
-            for task in [channel_task, reloader_task]:
-                task.cancel()
+            # If this is a restart, inject a notification into the originating channel
+            from ragnarbot.agent.tools.restart import get_restart_marker_path
+            restart_marker = get_restart_marker_path()
+            if restart_marker.exists():
                 try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+                    import json as _json
+                    marker = _json.loads(restart_marker.read_text())
+                    origin_channel = marker["channel"]
+                    origin_chat_id = marker["chat_id"]
+                    from ragnarbot.bus.events import InboundMessage
+                    await bus.publish_inbound(InboundMessage(
+                        channel="system",
+                        sender_id="gateway",
+                        chat_id=f"{origin_channel}:{origin_chat_id}",
+                        content=(
+                            "[System: gateway restarted successfully. "
+                            "Config changes are now active.]"
+                        ),
+                    ))
+                    console.print(
+                        f"[green]✓[/green] Post-restart notification queued "
+                        f"for {origin_channel}:{origin_chat_id}"
+                    )
+                except Exception as e:
+                    console.print(f"[yellow]Warning: could not inject restart notification: {e}[/yellow]")
+                finally:
+                    restart_marker.unlink(missing_ok=True)
 
-            # Cleanup
-            await agent.browser_manager.close_all()
-            heartbeat.stop()
-            cron.stop()
-            await channels.stop_all()
-        except KeyboardInterrupt:
-            console.print("\nShutting down...")
-            await agent.browser_manager.close_all()
-            heartbeat.stop()
-            cron.stop()
-            agent.stop()
-            await channels.stop_all()
+            # SIGUSR1 handler for config reload, SIGUSR2 for pending update notices.
+            reload_event = asyncio.Event()
+            update_notice_event = asyncio.Event()
+            loop = asyncio.get_running_loop()
 
-    asyncio.run(run())
+            import signal
+            try:
+                loop.add_signal_handler(signal.SIGUSR1, reload_event.set)
+                loop.add_signal_handler(signal.SIGUSR2, update_notice_event.set)
+            except NotImplementedError:
+                pass  # Windows — signal handler not supported
 
-    if agent.restart_requested:
-        pid_path.unlink(missing_ok=True)
-        console.print("[green]✓[/green] Restarting gateway...")
-        import sys
-        os.execv(sys.executable, [sys.executable] + sys.argv)
-    else:
-        pid_path.unlink(missing_ok=True)
+            async def _config_reloader():
+                while True:
+                    await reload_event.wait()
+                    reload_event.clear()
+                    try:
+                        new_config = load_config()
+                        for ch in channels.channels.values():
+                            ch.config = getattr(new_config.channels, ch.name, ch.config)
+                        console.print("[green]✓[/green] Config reloaded (SIGUSR1)")
+                    except Exception as e:
+                        console.print(f"[red]Config reload failed: {e}[/red]")
+
+            async def _pending_update_notifier():
+                while True:
+                    await update_notice_event.wait()
+                    update_notice_event.clear()
+                    try:
+                        delivered = await agent.queue_pending_update_notice()
+                        if delivered:
+                            console.print("[green]✓[/green] Pending update notice queued.")
+                    except Exception as e:
+                        console.print(f"[yellow]Warning: pending update notice failed: {e}[/yellow]")
+
+            try:
+                await cron.start()
+                await heartbeat.start()
+
+                agent_task = asyncio.create_task(agent.run())
+                channel_task = asyncio.create_task(channels.start_all())
+                reloader_task = asyncio.create_task(_config_reloader())
+                notice_task = asyncio.create_task(_pending_update_notifier())
+
+                # Wait for agent to finish (normal stop or restart request)
+                await agent_task
+
+                # Cancel other tasks
+                for task in [channel_task, reloader_task, notice_task]:
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+
+                # Cleanup
+                await agent.browser_manager.close_all()
+                heartbeat.stop()
+                cron.stop()
+                await channels.stop_all()
+            except KeyboardInterrupt:
+                console.print("\nShutting down...")
+                await agent.browser_manager.close_all()
+                heartbeat.stop()
+                cron.stop()
+                agent.stop()
+                await channels.stop_all()
+
+        asyncio.run(run())
+
+        restart_requested = bool(agent and agent.restart_requested)
+        if restart_requested:
+            console.print("[green]✓[/green] Restarting gateway...")
+            import sys
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+    finally:
+        if not restart_requested:
+            release_gateway_claim()
 
 
 @gateway_app.command("start")
@@ -561,6 +642,11 @@ def gateway_start():
         raise typer.Exit(0)
 
     try:
+        pid = _running_gateway_pid()
+        if pid:
+            console.print(f"[green]Gateway is already running[/green] (PID {pid})")
+            return
+
         info = manager.status()
         if info.status == DaemonStatus.RUNNING:
             console.print(f"[green]Gateway is already running[/green] (PID {info.pid})")
@@ -683,13 +769,22 @@ def gateway_status():
         DaemonStatus.NOT_INSTALLED: "[dim]not installed[/dim]",
     }
 
+    instance = get_instance()
+    runtime_pid = _running_gateway_pid()
+
+    console.print(f"Instance:     {instance.runtime_name}")
+    console.print(f"Profile:      {instance.profile}")
+    console.print(f"Data root:    {tilde_path(instance.data_root)}")
     console.print(f"Status:       {status_styles[info.status]}")
     if info.pid:
         console.print(f"PID:          {info.pid}")
+    elif runtime_pid:
+        console.print(f"PID:          {runtime_pid} [dim](foreground)[/dim]")
     if info.service_file:
         console.print(f"Service file: {info.service_file}")
     if info.log_path:
         console.print(f"Logs:         {info.log_path}")
+    _print_pending_update()
 
 
 
@@ -767,20 +862,11 @@ def _signal_gateway_reload() -> None:
     """Try to signal the running gateway to reload its config."""
     import signal
 
-    pid_path = Path.home() / ".ragnarbot" / "gateway.pid"
-    if not pid_path.exists():
-        console.print("[dim]Gateway not running (no PID file). Restart to apply changes.[/dim]")
-        return
-
-    try:
-        pid = int(pid_path.read_text().strip())
-        import os
-        os.kill(pid, signal.SIGUSR1)
+    pid = signal_live_gateway(signal.SIGUSR1)
+    if pid is not None:
         console.print("[green]✓[/green] Signaled gateway to reload config.")
-    except ProcessLookupError:
-        console.print("[dim]Stale PID file. Restart gateway to apply changes.[/dim]")
-    except (ValueError, OSError) as e:
-        console.print(f"[dim]Could not signal gateway: {e}. Restart to apply changes.[/dim]")
+        return
+    console.print("[dim]Gateway not running or claim is stale. Restart to apply changes.[/dim]")
 
 
 # ============================================================================
@@ -830,19 +916,23 @@ def status():
     from ragnarbot.auth.credentials import get_credentials_path, load_credentials
     from ragnarbot.config.loader import get_config_path, load_config
 
+    instance = get_instance()
     config_path = get_config_path()
     creds_path = get_credentials_path()
     config = load_config()
     creds = load_credentials()
     workspace = config.workspace_path
 
-    console.print(f"{__logo__} ragnarbot Status\n")
+    console.print(f"{__logo__} {instance.runtime_name} Status\n")
+    console.print(f"Profile: {instance.profile}")
+    console.print(f"Data root: {tilde_path(instance.data_root)}")
 
     console.print(f"Config: {config_path} {'[green]✓[/green]' if config_path.exists() else '[red]✗[/red]'}")
     console.print(
         f"Credentials: {creds_path} {'[green]✓[/green]' if creds_path.exists() else '[red]✗[/red]'}"
     )
     console.print(f"Workspace: {workspace} {'[green]✓[/green]' if workspace.exists() else '[red]✗[/red]'}")
+    _print_pending_update()
 
     if config_path.exists():
         console.print(f"Model: {config.agents.defaults.model}")

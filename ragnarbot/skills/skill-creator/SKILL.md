@@ -276,7 +276,7 @@ Usage:
 Arguments:
 
 - `name` (required): Skill name in kebab-case (lowercase alphanumeric + hyphens, max 64 chars)
-- `--path` (optional): Parent directory for the skill. Defaults to `~/.ragnarbot/workspace/skills/`
+- `--path` (optional): Parent directory for the skill. Defaults to the active profile workspace's `skills/` directory (`~/.ragnarbot/workspace/skills/` for the default profile, `~/.ragnarbot-<profile>/workspace/skills/` for custom profiles)
 - `--resources` (optional): Comma-separated list of resource directories to create: `scripts`, `references`, `assets`
 
 Examples:

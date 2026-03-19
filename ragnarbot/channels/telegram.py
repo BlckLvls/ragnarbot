@@ -6,7 +6,7 @@ import re
 import telegram
 from loguru import logger
 from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
 from ragnarbot.auth.grants import PendingGrantStore
 from ragnarbot.bus.events import MediaAttachment, OutboundMessage
@@ -15,7 +15,6 @@ from ragnarbot.channels.base import BaseChannel
 from ragnarbot.config.schema import TelegramConfig
 from ragnarbot.media.manager import MediaManager
 from ragnarbot.providers.transcription import TranscriptionError, TranscriptionProvider
-
 
 BOT_COMMANDS = [
     ("new", "Start a new conversation"),
@@ -36,8 +35,10 @@ async def set_bot_commands(bot, chat_ids: list[int] | None = None) -> None:
     per-chat overrides for known users so the default scope is authoritative.
     """
     from telegram import (
-        BotCommand, BotCommandScopeAllGroupChats,
-        BotCommandScopeAllPrivateChats, BotCommandScopeChat,
+        BotCommand,
+        BotCommandScopeAllGroupChats,
+        BotCommandScopeAllPrivateChats,
+        BotCommandScopeChat,
     )
 
     target = [BotCommand(cmd, desc) for cmd, desc in BOT_COMMANDS]
@@ -90,60 +91,60 @@ def _markdown_to_telegram_html(text: str) -> str:
     """
     if not text:
         return ""
-    
+
     # 1. Extract and protect code blocks (preserve content from other processing)
     code_blocks: list[str] = []
     def save_code_block(m: re.Match) -> str:
         code_blocks.append(m.group(1))
         return f"\x00CB{len(code_blocks) - 1}\x00"
-    
+
     text = re.sub(r'```[\w]*\n?([\s\S]*?)```', save_code_block, text)
-    
+
     # 2. Extract and protect inline code
     inline_codes: list[str] = []
     def save_inline_code(m: re.Match) -> str:
         inline_codes.append(m.group(1))
         return f"\x00IC{len(inline_codes) - 1}\x00"
-    
+
     text = re.sub(r'`([^`]+)`', save_inline_code, text)
-    
+
     # 3. Headers # Title -> just the title text
     text = re.sub(r'^#{1,6}\s+(.+)$', r'\1', text, flags=re.MULTILINE)
-    
+
     # 4. Blockquotes > text -> just the text (before HTML escaping)
     text = re.sub(r'^>\s*(.*)$', r'\1', text, flags=re.MULTILINE)
-    
+
     # 5. Escape HTML special characters
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    
+
     # 6. Links [text](url) - must be before bold/italic to handle nested cases
     text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
-    
+
     # 7. Bold **text** or __text__
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
     text = re.sub(r'__(.+?)__', r'<b>\1</b>', text)
-    
+
     # 8. Italic _text_ (avoid matching inside words like some_var_name)
     text = re.sub(r'(?<![a-zA-Z0-9])_([^_]+)_(?![a-zA-Z0-9])', r'<i>\1</i>', text)
-    
+
     # 9. Strikethrough ~~text~~
     text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text)
-    
+
     # 10. Bullet lists - item -> • item
     text = re.sub(r'^[-*]\s+', '• ', text, flags=re.MULTILINE)
-    
+
     # 11. Restore inline code with HTML tags
     for i, code in enumerate(inline_codes):
         # Escape HTML in code content
         escaped = code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         text = text.replace(f"\x00IC{i}\x00", f"<code>{escaped}</code>")
-    
+
     # 12. Restore code blocks with HTML tags
     for i, code in enumerate(code_blocks):
         # Escape HTML in code content
         escaped = code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         text = text.replace(f"\x00CB{i}\x00", f"<pre><code>{escaped}</code></pre>")
-    
+
     return text
 
 
@@ -265,12 +266,12 @@ def _split_plain_text(text: str, max_length: int = TELEGRAM_MAX_LENGTH) -> list[
 class TelegramChannel(BaseChannel):
     """
     Telegram channel using long polling.
-    
+
     Simple and reliable - no webhook/public IP needed.
     """
-    
+
     name = "telegram"
-    
+
     def __init__(
         self,
         config: TelegramConfig,
@@ -289,7 +290,7 @@ class TelegramChannel(BaseChannel):
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
         self._typing_tasks: dict[int, asyncio.Task] = {}
         self._grants = PendingGrantStore()
-    
+
     async def start(self) -> None:
         """Start the Telegram bot with long polling."""
         if not self.bot_token:
@@ -304,16 +305,16 @@ class TelegramChannel(BaseChannel):
             .token(self.bot_token)
             .build()
         )
-        
+
         # Add message handler for text, photos, voice, documents
         self._app.add_handler(
             MessageHandler(
-                (filters.TEXT | filters.PHOTO | filters.VOICE | filters.AUDIO | filters.Document.ALL) 
-                & ~filters.COMMAND, 
+                (filters.TEXT | filters.PHOTO | filters.VOICE | filters.AUDIO | filters.Document.ALL)
+                & ~filters.COMMAND,
                 self._on_message
             )
         )
-        
+
         # Add command handlers
         from telegram.ext import CallbackQueryHandler, CommandHandler
         self._app.add_handler(CommandHandler("start", self._on_start))
@@ -327,13 +328,13 @@ class TelegramChannel(BaseChannel):
         self._app.add_handler(CallbackQueryHandler(
             self._on_callback_query, pattern="^(ctx_mode|trace_mode|steering_mode):",
         ))
-        
+
         logger.info("Starting Telegram bot (polling mode)...")
-        
+
         # Initialize and start polling
         await self._app.initialize()
         await self._app.start()
-        
+
         # Get bot info and set commands
         bot_info = await self._app.bot.get_me()
         logger.info(f"Telegram bot @{bot_info.username} connected")
@@ -346,7 +347,7 @@ class TelegramChannel(BaseChannel):
             except (ValueError, TypeError):
                 pass
         await set_bot_commands(self._app.bot, chat_ids=chat_ids or None)
-        
+
         # Register media download callback
         if self.media_manager:
             app = self._app
@@ -368,18 +369,18 @@ class TelegramChannel(BaseChannel):
         # Keep running until stopped
         while self._running:
             await asyncio.sleep(1)
-    
+
     async def stop(self) -> None:
         """Stop the Telegram bot."""
         self._running = False
-        
+
         if self._app:
             logger.info("Stopping Telegram bot...")
             await self._app.updater.stop()
             await self._app.stop()
             await self._app.shutdown()
             self._app = None
-    
+
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through Telegram."""
         if not self._app:
@@ -515,7 +516,7 @@ class TelegramChannel(BaseChannel):
                     )
             except Exception as e2:
                 logger.error(f"Error sending Telegram message: {e2}")
-    
+
     async def _typing_loop(self, chat_id: int) -> None:
         """Send typing action every 4s until cancelled."""
         try:
@@ -578,7 +579,7 @@ class TelegramChannel(BaseChannel):
             f"Hi {user.first_name}! I'm ragnarbot.\n\n"
             "Send me a message and I'll respond!"
         )
-    
+
     async def _on_new(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /new command — create a new chat session."""
         if not update.message or not update.effective_user:
@@ -958,7 +959,7 @@ class TelegramChannel(BaseChannel):
             attachments=attachments,
             metadata=metadata,
         )
-    
+
     async def _transcribe_voice(
         self, media_file: object, media_type: str,
     ) -> tuple[str, str | None]:
@@ -966,13 +967,14 @@ class TelegramChannel(BaseChannel):
 
         Returns (content_string, media_path_or_None).
         """
-        from pathlib import Path
 
         try:
             file = await self._app.bot.get_file(media_file.file_id)
             ext = self._get_extension(media_type, getattr(media_file, "mime_type", None))
 
-            media_dir = Path.home() / ".ragnarbot" / "media"
+            from ragnarbot.instance import ensure_instance_root
+
+            media_dir = ensure_instance_root().media_path
             media_dir.mkdir(parents=True, exist_ok=True)
             file_path = media_dir / f"{media_file.file_id[:16]}{ext}"
             await file.download_to_drive(str(file_path))
@@ -1004,6 +1006,6 @@ class TelegramChannel(BaseChannel):
             }
             if mime_type in ext_map:
                 return ext_map[mime_type]
-        
+
         type_map = {"image": ".jpg", "voice": ".ogg", "audio": ".mp3", "file": ""}
         return type_map.get(media_type, "")
