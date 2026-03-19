@@ -53,7 +53,7 @@ from ragnarbot.instance import (
 )
 from ragnarbot.media.manager import MediaManager
 from ragnarbot.providers.base import LLMProvider, LLMResponse
-from ragnarbot.providers.reasoning import SUPPORTED_REASONING_LEVELS, resolve_reasoning
+from ragnarbot.providers.reasoning import SUPPORTED_REASONING_LEVELS
 from ragnarbot.session.manager import SessionManager
 
 if TYPE_CHECKING:
@@ -1534,28 +1534,23 @@ class AgentLoop:
             },
         )
 
-    def _active_reasoning_model(self) -> str:
-        """Return the model currently used for responses."""
-        if self._fallback_state.fallback_mode and self._fallback_model:
-            return self._fallback_model
-        return self.model
-
     def _build_reasoning_message(self) -> str:
         """Render the reasoning-level control panel."""
-        model = self._active_reasoning_model()
-        resolution = resolve_reasoning(model, self.reasoning_level)
-        model_text = model.replace("openrouter/", "openrouter/")
+        selected = self.reasoning_level.replace("_", " ").title()
+        return f"🧠 <b>Reasoning</b>\n\nSelected: <b>{selected}</b>"
 
-        lines = [
-            "🧠 <b>Reasoning Level</b>",
-            "",
-            f"Stored: <b>{resolution.stored_level}</b>",
-            f"Effective: <b>{resolution.effective_level}</b>",
-            f"Model: <code>{model_text}</code>",
-        ]
-        if resolution.note:
-            lines.extend(["", f"Note: {resolution.note}"])
-        return "\n".join(lines)
+    def _build_reasoning_keyboard(self) -> list[list[dict[str, str]]]:
+        """Build the reasoning picker keyboard in a single vertical column."""
+        keyboard: list[list[dict[str, str]]] = []
+        for level in SUPPORTED_REASONING_LEVELS:
+            label = level.title()
+            if level == self.reasoning_level:
+                label = f"✓ {label}"
+            keyboard.append([{
+                "text": label,
+                "callback_data": f"reasoning_level:{level}",
+            }])
+        return keyboard
 
     def _handle_reasoning(self, msg: InboundMessage) -> OutboundMessage:
         """Show reasoning-level picker."""
@@ -1565,17 +1560,7 @@ class AgentLoop:
             content=self._build_reasoning_message(),
             metadata={
                 "raw_html": True,
-                "inline_keyboard": [
-                    [
-                        {"text": "off", "callback_data": "reasoning_level:off"},
-                        {"text": "low", "callback_data": "reasoning_level:low"},
-                        {"text": "medium", "callback_data": "reasoning_level:medium"},
-                    ],
-                    [
-                        {"text": "high", "callback_data": "reasoning_level:high"},
-                        {"text": "ultra", "callback_data": "reasoning_level:ultra"},
-                    ],
-                ],
+                "inline_keyboard": self._build_reasoning_keyboard(),
             },
         )
 
@@ -1598,17 +1583,7 @@ class AgentLoop:
             metadata={
                 "raw_html": True,
                 "edit_message_id": msg.metadata.get("callback_message_id"),
-                "inline_keyboard": [
-                    [
-                        {"text": "off", "callback_data": "reasoning_level:off"},
-                        {"text": "low", "callback_data": "reasoning_level:low"},
-                        {"text": "medium", "callback_data": "reasoning_level:medium"},
-                    ],
-                    [
-                        {"text": "high", "callback_data": "reasoning_level:high"},
-                        {"text": "ultra", "callback_data": "reasoning_level:ultra"},
-                    ],
-                ],
+                "inline_keyboard": self._build_reasoning_keyboard(),
             },
         )
 
