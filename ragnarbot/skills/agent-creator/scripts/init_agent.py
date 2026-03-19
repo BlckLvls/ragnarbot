@@ -37,6 +37,7 @@ AGENT_TEMPLATE = """\
 name: {name}
 description: TODO — describe what this agent does and when to spawn it.
 model: default
+reasoningLevel: inherit
 allowedTools: all
 ---
 

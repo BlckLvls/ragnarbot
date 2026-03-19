@@ -8,6 +8,7 @@ from litellm import acompletion
 from loguru import logger
 
 from ragnarbot.providers.base import DEFAULT_MAX_TOKENS, LLMProvider, LLMResponse, ToolCallRequest
+from ragnarbot.providers.reasoning import resolve_reasoning
 
 
 class LiteLLMProvider(LLMProvider):
@@ -20,7 +21,7 @@ class LiteLLMProvider(LLMProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        default_model: str = "anthropic/claude-opus-4-5",
+        default_model: str = "openai/gpt-5.4",
         oauth_token: str | None = None,
     ):
         super().__init__(api_key, oauth_token)
@@ -41,7 +42,7 @@ class LiteLLMProvider(LLMProvider):
 
         # Disable LiteLLM logging noise
         litellm.suppress_debug_info = True
-    
+
     async def chat(
         self,
         messages: list[dict[str, Any]],
@@ -49,21 +50,23 @@ class LiteLLMProvider(LLMProvider):
         model: str | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        reasoning_level: str | None = None,
     ) -> LLMResponse:
         """
         Send a chat completion request via LiteLLM.
-        
+
         Args:
             messages: List of message dicts with 'role' and 'content'.
             tools: Optional list of tool definitions in OpenAI format.
             model: Model identifier (e.g., 'anthropic/claude-sonnet-4-5').
             max_tokens: Maximum tokens in response.
             temperature: Sampling temperature.
-        
+
         Returns:
             LLMResponse with content and/or tool calls.
         """
         model = model or self.default_model
+        reasoning = resolve_reasoning(model, reasoning_level)
         max_tokens = max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
 
         is_openrouter = model.startswith("openrouter/")
@@ -83,6 +86,8 @@ class LiteLLMProvider(LLMProvider):
         }
         if temperature is not None:
             kwargs["temperature"] = temperature
+        if reasoning.reasoning_effort is not None:
+            kwargs["reasoning_effort"] = reasoning.reasoning_effort
 
         if tools:
             kwargs["tools"] = tools
@@ -97,8 +102,9 @@ class LiteLLMProvider(LLMProvider):
                 provider_config["only"] = model_info["providers"]
             kwargs["extra_body"] = {
                 "provider": provider_config,
-                "reasoning": {"enabled": True},
             }
+            if reasoning.openrouter_reasoning is not None:
+                kwargs["extra_body"]["reasoning"] = reasoning.openrouter_reasoning
 
         # Strip internal metadata keys (e.g. _image_path) from content blocks
         kwargs["messages"] = self._sanitize_messages(kwargs["messages"])
@@ -140,7 +146,7 @@ class LiteLLMProvider(LLMProvider):
                 content=f"Error calling LLM: {str(e)}",
                 finish_reason="error",
             )
-    
+
     @staticmethod
     def _sanitize_messages(messages: list[dict]) -> list[dict]:
         """Strip internal underscore-prefixed keys from content block dicts.
@@ -370,7 +376,7 @@ class LiteLLMProvider(LLMProvider):
         """Parse LiteLLM response into our standard format."""
         choice = response.choices[0]
         message = choice.message
-        
+
         tool_calls = []
         if hasattr(message, "tool_calls") and message.tool_calls:
             for tc in message.tool_calls:
@@ -382,13 +388,13 @@ class LiteLLMProvider(LLMProvider):
                         args = json.loads(args)
                     except json.JSONDecodeError:
                         args = self._recover_truncated_json(args)
-                
+
                 tool_calls.append(ToolCallRequest(
                     id=tc.id,
                     name=tc.function.name,
                     arguments=args,
                 ))
-        
+
         usage = {}
         if hasattr(response, "usage") and response.usage:
             usage = {
@@ -407,14 +413,14 @@ class LiteLLMProvider(LLMProvider):
                         details.get("cache_read_input_tokens", 0) or 0
                     )
                     usage["cached_tokens"] = details.get("cached_tokens", 0) or 0
-        
+
         return LLMResponse(
             content=message.content,
             tool_calls=tool_calls,
             finish_reason=choice.finish_reason or "stop",
             usage=usage,
         )
-    
+
     def get_default_model(self) -> str:
         """Get the default model."""
         return self.default_model

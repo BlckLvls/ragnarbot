@@ -5,6 +5,7 @@ description: >
   with key findings and citations. For when you need solid research fast
   without an exhaustive deep-dive.
 model: default
+reasoningLevel: low
 allowedTools: [file_read, file_write, file_edit, list_dir, exec, web_search, web_fetch, exec_bg, poll, output, kill, dismiss]
 allowedSkills: none
 ---

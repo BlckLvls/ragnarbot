@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 
 from ragnarbot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from ragnarbot.providers.reasoning import resolve_reasoning
 
 API_BASE = "https://chatgpt.com/backend-api/codex"
 RESPONSES_URL = f"{API_BASE}/responses"
@@ -38,6 +39,7 @@ class OpenAIChatGPTProvider(LLMProvider):
         model: str | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        reasoning_level: str | None = None,
     ) -> LLMResponse:
         from ragnarbot.auth.openai_oauth import get_access_token
 
@@ -55,7 +57,7 @@ class OpenAIChatGPTProvider(LLMProvider):
             )
 
         # Build the request in OpenAI Responses API format
-        request_body = self._build_request(messages, tools, model)
+        request_body = self._build_request(messages, tools, model, reasoning_level)
 
         headers = {
             "Authorization": f"Bearer {access_token}",
@@ -174,6 +176,7 @@ class OpenAIChatGPTProvider(LLMProvider):
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
         model: str,
+        reasoning_level: str | None,
     ) -> dict[str, Any]:
         """Build the Responses API request body.
 
@@ -182,6 +185,7 @@ class OpenAIChatGPTProvider(LLMProvider):
         """
         # Extract system instructions from messages
         instructions, input_items = self._convert_messages(messages)
+        reasoning = resolve_reasoning(model, reasoning_level)
 
         body: dict[str, Any] = {
             "model": model,
@@ -193,6 +197,8 @@ class OpenAIChatGPTProvider(LLMProvider):
 
         if tools:
             body["tools"] = self._convert_tools(tools)
+        if reasoning.openai_reasoning:
+            body["reasoning"] = reasoning.openai_reasoning
 
         return body
 

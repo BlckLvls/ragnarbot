@@ -28,6 +28,7 @@ def mock_agent():
     agent.stream_steps = True
     agent.debounce_seconds = 0.5
     agent.context_mode = "normal"
+    agent.reasoning_level = "medium"
     agent.max_context_tokens = 200_000
     agent.steering_enabled = True
     agent.cache_manager = MagicMock()
@@ -50,6 +51,7 @@ async def test_schema_action_returns_all_fields(config_tool):
     with patch(LOAD_CONFIG, return_value=Config()):
         result = await config_tool.execute(action="schema")
     assert "agents.defaults.stream_steps" in result
+    assert "agents.defaults.reasoning_level" in result
     assert "bool" in result
     assert "[hot]" in result
 
@@ -106,6 +108,22 @@ async def test_set_action_hot_reloads_steering_mode(config_tool, mock_agent):
     assert data["new_value"] is False
     assert data["status"] == "applied"
     assert mock_agent.steering_enabled is False
+
+
+@pytest.mark.asyncio
+async def test_set_action_hot_reloads_reasoning_level(config_tool, mock_agent):
+    with (
+        patch(LOAD_CONFIG, return_value=Config()),
+        patch(SAVE_CONFIG),
+    ):
+        result = await config_tool.execute(
+            action="set", path="agents.defaults.reasoning_level", value="ultra",
+        )
+
+    data = json.loads(result)
+    assert data["new_value"] == "ultra"
+    assert data["status"] == "applied"
+    assert mock_agent.reasoning_level == "ultra"
 
 
 @pytest.mark.asyncio

@@ -47,8 +47,14 @@ def test_get_provider_not_found():
 
 def test_get_models_returns_list():
     models = get_models("anthropic")
-    assert len(models) == 4
+    assert len(models) == 2
     assert models[0]["id"] == "anthropic/claude-opus-4-6"
+
+
+def test_anthropic_registry_drops_4_5_models():
+    model_ids = [m["id"] for m in get_models("anthropic")]
+    assert "anthropic/claude-sonnet-4-5" not in model_ids
+    assert "anthropic/claude-haiku-4-5" not in model_ids
 
 
 def test_openai_models_include_gpt_5_4_first():

@@ -46,6 +46,7 @@ class AgentTask:
     stop_event: asyncio.Event
     definition: "AgentDefinition | None" = None  # Stored for resume
     resolved_model: str = ""  # Stored for resume
+    resolved_reasoning_level: str | None = None  # Stored for resume
     result: str | None = None
     error: str | None = None
     created_at: str = ""
@@ -148,6 +149,10 @@ class SubagentManager:
         elif definition and definition.model != "default":
             resolved_model = definition.model
 
+        resolved_reasoning_level = None
+        if definition and definition.reasoning_level != "inherit":
+            resolved_reasoning_level = definition.reasoning_level
+
         origin = {"channel": origin_channel, "chat_id": origin_chat_id}
 
         agent_task = AgentTask(
@@ -160,6 +165,7 @@ class SubagentManager:
             stop_event=asyncio.Event(),
             definition=definition,
             resolved_model=resolved_model,
+            resolved_reasoning_level=resolved_reasoning_level,
             created_at=self._timestamp(),
             origin=origin,
         )
@@ -174,7 +180,14 @@ class SubagentManager:
 
         # Launch background task
         bg_task = asyncio.create_task(
-            self._run_agent(agent_task, definition, resolved_model, tools, deliver_tool)
+            self._run_agent(
+                agent_task,
+                definition,
+                resolved_model,
+                tools,
+                deliver_tool,
+                reasoning_level=resolved_reasoning_level,
+            )
         )
         self._async_tasks[task_id] = bg_task
         bg_task.add_done_callback(lambda _: self._async_tasks.pop(task_id, None))
@@ -195,6 +208,7 @@ class SubagentManager:
         model: str,
         tools: ToolRegistry,
         deliver_tool: DeliverResultTool,
+        reasoning_level: str | None = None,
         resume: bool = False,
     ) -> None:
         """Main agent execution loop."""
@@ -224,12 +238,15 @@ class SubagentManager:
                     return
 
                 # LLM call
-                response, used_fallback, _ = await self._chat_fn(
-                    None,
-                    messages=messages,
-                    tools=tools.get_definitions(),
-                    model=model,
-                )
+                chat_kwargs = {
+                    "messages": messages,
+                    "tools": tools.get_definitions(),
+                    "model": model,
+                }
+                if reasoning_level is not None:
+                    chat_kwargs["reasoning_level"] = reasoning_level
+
+                response, used_fallback, _ = await self._chat_fn(None, **chat_kwargs)
                 if used_fallback:
                     batch_used_fallback = True
 
@@ -271,10 +288,10 @@ class SubagentManager:
                         )
                         for tc in response.tool_calls:
                             err = (
-                                f"Error: response was cut off (max_tokens limit "
-                                f"reached) and this tool call was incomplete. "
-                                f"Your output must fit within the token limit. "
-                                f"Split large content into smaller calls."
+                                "Error: response was cut off (max_tokens limit "
+                                "reached) and this tool call was incomplete. "
+                                "Your output must fit within the token limit. "
+                                "Split large content into smaller calls."
                             )
                             tool_msg = {
                                 "role": "tool",
@@ -400,7 +417,9 @@ class SubagentManager:
         bg_task = asyncio.create_task(
             self._run_agent(
                 task, task.definition, task.resolved_model,
-                tools, deliver_tool, resume=True,
+                tools, deliver_tool,
+                reasoning_level=task.resolved_reasoning_level,
+                resume=True,
             )
         )
         self._async_tasks[task_id] = bg_task

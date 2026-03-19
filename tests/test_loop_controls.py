@@ -164,6 +164,49 @@ def test_telegram_commands_include_steering():
     assert ("steering", "Toggle in-loop steering") in BOT_COMMANDS
 
 
+def test_telegram_commands_include_reasoning():
+    """Telegram command list exposes the reasoning picker."""
+    assert ("reasoning", "Change reasoning level") in BOT_COMMANDS
+
+
+def test_reasoning_command_shows_picker(tmp_path):
+    """Reasoning command renders the inline button picker."""
+    agent = _make_agent(tmp_path)
+    response = agent._handle_reasoning(_make_msg(content="/reasoning", command="reasoning"))
+
+    assert "Reasoning" in response.content
+    assert "Selected: <b>Medium</b>" in response.content
+    assert response.metadata["inline_keyboard"][0][0]["callback_data"] == "reasoning_level:off"
+    assert response.metadata["inline_keyboard"][2][0]["text"] == "✓ Medium"
+    assert response.metadata["inline_keyboard"][4][0]["callback_data"] == "reasoning_level:ultra"
+    assert all(len(row) == 1 for row in response.metadata["inline_keyboard"])
+
+
+def test_set_reasoning_level_persists_and_edits_message(tmp_path):
+    """Callback updates the stored reasoning level and edits the source panel."""
+    agent = _make_agent(tmp_path)
+    config = MagicMock()
+    config.agents.defaults.reasoning_level = "medium"
+
+    with (
+        patch("ragnarbot.config.loader.load_config", return_value=config),
+        patch("ragnarbot.config.loader.save_config") as mock_save,
+    ):
+        response = agent._handle_set_reasoning_level(_make_msg(
+            content="/reasoning high",
+            command="set_reasoning_level",
+            reasoning_level="high",
+            callback_message_id=42,
+        ))
+
+    assert response is not None
+    assert agent.reasoning_level == "high"
+    assert response.metadata["edit_message_id"] == 42
+    assert "Selected: <b>High</b>" in response.content
+    assert response.metadata["inline_keyboard"][3][0]["text"] == "✓ High"
+    mock_save.assert_called_once_with(config)
+
+
 @pytest.mark.asyncio
 async def test_deliver_pending_update_notice_skips_wrong_chat(tmp_path):
     """Stored pending-update targets must not leak into another chat."""

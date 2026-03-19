@@ -52,6 +52,11 @@ def _create_provider(model: str, auth_method: str, creds):
             from ragnarbot.providers.openai_chatgpt_provider import OpenAIChatGPTProvider
             return OpenAIChatGPTProvider(default_model=model)
 
+    if provider_name == "anthropic":
+        api_key = provider_creds.api_key if provider_creds else None
+        from ragnarbot.providers.anthropic_provider import AnthropicProvider
+        return AnthropicProvider(api_key=api_key, default_model=model)
+
     api_key = provider_creds.api_key if provider_creds else None
     return LiteLLMProvider(api_key=api_key, default_model=model)
 
@@ -328,6 +333,7 @@ def gateway_main(
             debounce_seconds=config.agents.defaults.debounce_seconds,
             max_context_tokens=config.agents.defaults.max_context_tokens,
             context_mode=config.agents.defaults.context_mode,
+            reasoning_level=config.agents.defaults.reasoning_level,
             trace_mode=config.agents.defaults.trace_mode,
             steering_enabled=config.agents.defaults.steering_enabled,
             heartbeat_interval_m=config.heartbeat.interval_m,

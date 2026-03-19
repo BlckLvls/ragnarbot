@@ -19,16 +19,6 @@ PROVIDERS = [
                 "name": "Claude Sonnet 4.6",
                 "description": "Best speed/intelligence balance",
             },
-            {
-                "id": "anthropic/claude-sonnet-4-5",
-                "name": "Claude Sonnet 4.5",
-                "description": "Previous gen — still capable & affordable",
-            },
-            {
-                "id": "anthropic/claude-haiku-4-5",
-                "name": "Claude Haiku 4.5",
-                "description": "Fastest — near-frontier intelligence",
-            },
         ],
     },
     {

@@ -5,6 +5,7 @@ description: >
   systematically investigates every angle, and delivers polished reports with
   full citations, confidence assessments, and knowledge gaps.
 model: default
+reasoningLevel: high
 allowedTools: all
 allowedSkills: none
 ---
