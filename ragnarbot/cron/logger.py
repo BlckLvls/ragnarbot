@@ -5,11 +5,12 @@ import time
 from pathlib import Path
 
 from ragnarbot.cron.types import CronJob
+from ragnarbot.instance import ensure_instance_root
 
 
 def get_cron_logs_dir() -> Path:
     """Return (and create) the cron logs directory."""
-    logs_dir = Path.home() / ".ragnarbot" / "cron" / "logs"
+    logs_dir = ensure_instance_root().cron_logs_path
     logs_dir.mkdir(parents=True, exist_ok=True)
     return logs_dir
 

@@ -6,9 +6,15 @@ import re
 import sys
 from pathlib import Path
 
-DEFAULT_PATH = Path.home() / ".ragnarbot" / "workspace" / "skills"
+from ragnarbot.instance import get_instance
+
 VALID_RESOURCES = {"scripts", "references", "assets"}
 NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+
+
+def default_path() -> Path:
+    """Resolve the active profile's default skill directory."""
+    return get_instance().workspace_path / "skills"
 
 
 def validate_name(name: str) -> str:
@@ -66,10 +72,11 @@ def build_resources_section(resources: list[str]) -> str:
 
 
 def main() -> None:
+    default = default_path()
     parser = argparse.ArgumentParser(description="Initialize a new skill.")
     parser.add_argument("name", type=validate_name, help="Skill name (kebab-case)")
     parser.add_argument(
-        "--path", type=Path, default=DEFAULT_PATH, help=f"Parent directory (default: {DEFAULT_PATH})"
+        "--path", type=Path, default=default, help=f"Parent directory (default: {default})"
     )
     parser.add_argument(
         "--resources", type=parse_resources, default=[], help="Comma-separated: scripts,references,assets"

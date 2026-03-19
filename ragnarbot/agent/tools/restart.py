@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ragnarbot.agent.tools.base import Tool
+from ragnarbot.instance import ensure_instance_root
 
 if TYPE_CHECKING:
     from ragnarbot.agent.loop import AgentLoop
 
-RESTART_MARKER = Path.home() / ".ragnarbot" / ".restart_marker"
+
+def get_restart_marker_path():
+    return ensure_instance_root().restart_marker_path
 
 
 class RestartTool(Tool):
@@ -62,8 +64,9 @@ class RestartTool(Tool):
 
         # Write marker so the new process knows where to report back
         if self._channel and self._chat_id:
-            RESTART_MARKER.parent.mkdir(parents=True, exist_ok=True)
-            RESTART_MARKER.write_text(json.dumps({
+            marker_path = get_restart_marker_path()
+            marker_path.parent.mkdir(parents=True, exist_ok=True)
+            marker_path.write_text(json.dumps({
                 "channel": self._channel,
                 "chat_id": self._chat_id,
             }))

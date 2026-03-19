@@ -6,6 +6,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from ragnarbot.instance import ensure_instance_root
+
 
 class ProviderCredentials(BaseModel):
     """Credentials for a single LLM provider."""
@@ -44,7 +46,7 @@ class ChannelsCredentials(BaseModel):
 
 
 class Credentials(BaseModel):
-    """Root credentials model. Stored in ~/.ragnarbot/credentials.json with 0o600."""
+    """Root credentials model. Stored in the active profile root with 0o600."""
     providers: ProvidersCredentials = Field(default_factory=ProvidersCredentials)
     services: ServicesCredentials = Field(default_factory=ServicesCredentials)
     channels: ChannelsCredentials = Field(default_factory=ChannelsCredentials)
@@ -52,8 +54,8 @@ class Credentials(BaseModel):
 
 
 def get_credentials_path() -> Path:
-    """Get the default credentials file path."""
-    return Path.home() / ".ragnarbot" / "credentials.json"
+    """Get the active profile's credentials file path."""
+    return ensure_instance_root().credentials_path
 
 
 def load_credentials(creds_path: Path | None = None) -> Credentials:
