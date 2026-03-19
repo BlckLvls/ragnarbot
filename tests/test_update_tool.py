@@ -76,6 +76,7 @@ async def test_check_update_available(tool):
     assert result["current_version"] == "0.3.0"
     assert result["latest_version"] == "0.4.0"
     assert result["update_available"] is True
+    assert result["pending_update"] is None
 
 
 @pytest.mark.asyncio
@@ -176,17 +177,23 @@ async def test_changelog_same_version_shows_release(tool):
 @pytest.mark.asyncio
 async def test_update_runs_upgrade_and_restarts(tool, agent, tmp_path):
     marker_path = tmp_path / ".update_marker"
+    release = _make_release_response("0.4.0", "Release notes")
 
     with (
         patch("ragnarbot.agent.tools.update.ragnarbot") as mock_pkg,
-        patch("ragnarbot.agent.tools.update.UPDATE_MARKER", marker_path),
+        patch("ragnarbot.agent.tools.update.get_update_marker_path", return_value=marker_path),
+        patch("ragnarbot.agent.tools.update.clear_pending_update"),
+        patch("ragnarbot.agent.tools.update.instance_profiles_on_disk", return_value=[]),
         patch("httpx.AsyncClient") as mock_client_cls,
         patch("asyncio.create_subprocess_exec") as mock_exec,
     ):
         mock_pkg.__version__ = "0.3.0"
 
         client = AsyncMock()
-        client.get = AsyncMock(return_value=_make_tags_response(["v0.3.0", "v0.4.0"]))
+        client.get = AsyncMock(side_effect=[
+            _make_tags_response(["v0.3.0", "v0.4.0"]),
+            release,
+        ])
         mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=client)
         mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
 
@@ -205,22 +212,29 @@ async def test_update_runs_upgrade_and_restarts(tool, agent, tmp_path):
     marker_data = json.loads(marker_path.read_text())
     assert marker_data["old_version"] == "0.3.0"
     assert marker_data["new_version"] == "0.4.0"
+    assert result["notified_profiles"] == []
 
 
 @pytest.mark.asyncio
 async def test_update_pip_fallback(tool, agent, tmp_path):
     marker_path = tmp_path / ".update_marker"
+    release = _make_release_response("0.4.0", "Release notes")
 
     with (
         patch("ragnarbot.agent.tools.update.ragnarbot") as mock_pkg,
-        patch("ragnarbot.agent.tools.update.UPDATE_MARKER", marker_path),
+        patch("ragnarbot.agent.tools.update.get_update_marker_path", return_value=marker_path),
+        patch("ragnarbot.agent.tools.update.clear_pending_update"),
+        patch("ragnarbot.agent.tools.update.instance_profiles_on_disk", return_value=[]),
         patch("httpx.AsyncClient") as mock_client_cls,
         patch("asyncio.create_subprocess_exec") as mock_exec,
     ):
         mock_pkg.__version__ = "0.3.0"
 
         client = AsyncMock()
-        client.get = AsyncMock(return_value=_make_tags_response(["v0.3.0", "v0.4.0"]))
+        client.get = AsyncMock(side_effect=[
+            _make_tags_response(["v0.3.0", "v0.4.0"]),
+            release,
+        ])
         mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=client)
         mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
 
@@ -283,3 +297,97 @@ async def test_update_both_fail(tool, agent):
     assert "error" in result
     assert "Neither uv nor pip" in result["error"]
     agent.request_restart.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_marks_other_profiles_pending(tool, agent, tmp_path):
+    marker_path = tmp_path / ".update_marker"
+    vod_root = tmp_path / ".ragnarbot-vodichezka"
+    vod_root.mkdir()
+    release = _make_release_response("0.4.0", "## Changes\n- New stuff")
+
+    with (
+        patch("ragnarbot.agent.tools.update.ragnarbot") as mock_pkg,
+        patch("ragnarbot.agent.tools.update.get_update_marker_path", return_value=marker_path),
+        patch("ragnarbot.agent.tools.update.clear_pending_update"),
+        patch("ragnarbot.agent.tools.update.instance_profiles_on_disk", return_value=["default", "vodichezka"]),
+        patch("ragnarbot.agent.tools.update.resolve_active_profile", return_value="default"),
+        patch("ragnarbot.agent.tools.update.get_instance", return_value=MagicMock(data_root=vod_root)),
+        patch("ragnarbot.agent.tools.update.save_pending_update") as mock_save_pending,
+        patch("ragnarbot.agent.tools.update.last_active_chat", return_value=("telegram", "999")),
+        patch("ragnarbot.agent.tools.update.get_live_gateway_pid", return_value=4242),
+        patch("ragnarbot.agent.tools.update.signal_live_gateway") as mock_signal,
+        patch("httpx.AsyncClient") as mock_client_cls,
+        patch("asyncio.create_subprocess_exec") as mock_exec,
+    ):
+        mock_pkg.__version__ = "0.3.0"
+
+        client = AsyncMock()
+        client.get = AsyncMock(side_effect=[
+            _make_tags_response(["v0.3.0", "v0.4.0"]),
+            release,
+        ])
+        mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=client)
+        mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        proc = AsyncMock()
+        proc.returncode = 0
+        proc.communicate = AsyncMock(return_value=(b"ok", b""))
+        mock_exec.return_value = proc
+
+        result = json.loads(await tool.execute(action="update"))
+
+    assert result["notified_profiles"] == ["vodichezka"]
+    mock_save_pending.assert_called_once()
+    payload = mock_save_pending.call_args[0][0]
+    assert payload["new_version"] == "0.4.0"
+    assert payload["summary"] == "Changes"
+    assert payload["requires_restart"] is True
+    assert payload["target_channel"] == "telegram"
+    assert payload["target_chat_id"] == "999"
+    mock_signal.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_update_marks_offline_profiles_for_info_only_notice(tool, agent, tmp_path):
+    marker_path = tmp_path / ".update_marker"
+    vod_root = tmp_path / ".ragnarbot-vodichezka"
+    vod_root.mkdir()
+    release = _make_release_response("0.4.0", "## Changes\n- New stuff")
+
+    with (
+        patch("ragnarbot.agent.tools.update.ragnarbot") as mock_pkg,
+        patch("ragnarbot.agent.tools.update.get_update_marker_path", return_value=marker_path),
+        patch("ragnarbot.agent.tools.update.clear_pending_update"),
+        patch("ragnarbot.agent.tools.update.instance_profiles_on_disk", return_value=["default", "vodichezka"]),
+        patch("ragnarbot.agent.tools.update.resolve_active_profile", return_value="default"),
+        patch("ragnarbot.agent.tools.update.get_instance", return_value=MagicMock(data_root=vod_root)),
+        patch("ragnarbot.agent.tools.update.save_pending_update") as mock_save_pending,
+        patch("ragnarbot.agent.tools.update.last_active_chat", return_value=(None, None)),
+        patch("ragnarbot.agent.tools.update.get_live_gateway_pid", return_value=None),
+        patch("ragnarbot.agent.tools.update.signal_live_gateway") as mock_signal,
+        patch("httpx.AsyncClient") as mock_client_cls,
+        patch("asyncio.create_subprocess_exec") as mock_exec,
+    ):
+        mock_pkg.__version__ = "0.3.0"
+
+        client = AsyncMock()
+        client.get = AsyncMock(side_effect=[
+            _make_tags_response(["v0.3.0", "v0.4.0"]),
+            release,
+        ])
+        mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=client)
+        mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        proc = AsyncMock()
+        proc.returncode = 0
+        proc.communicate = AsyncMock(return_value=(b"ok", b""))
+        mock_exec.return_value = proc
+
+        result = json.loads(await tool.execute(action="update"))
+
+    assert result["notified_profiles"] == ["vodichezka"]
+    payload = mock_save_pending.call_args[0][0]
+    assert payload["requires_restart"] is False
+    assert "target_channel" not in payload
+    mock_signal.assert_not_called()
