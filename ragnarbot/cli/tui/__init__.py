@@ -6,6 +6,7 @@ from ragnarbot.cli.tui.components import QuitOnboardingError, clear_screen
 from ragnarbot.cli.tui.screens import (
     auth_method_screen,
     daemon_screen,
+    lightning_mode_screen,
     model_screen,
     provider_screen,
     summary_screen,
@@ -36,6 +37,7 @@ def _onboarding_loop(console: Console) -> None:
     auth_idx: int | None = None
     token: str | None = None
     model_idx: int | None = None
+    lightning_mode = False
     telegram_token: str | None = None
     voice_provider: str = "none"
     voice_api_key: str = ""
@@ -43,7 +45,7 @@ def _onboarding_loop(console: Console) -> None:
     web_search_key: str = ""
     enable_daemon: bool | None = None
 
-    step = 1  # 1=provider, 2=auth, 3=token, 4=model, 5=telegram, 6=voice, 7=web_search, 8=daemon, 9=summary
+    step = 1  # 1=provider, 2=auth, 3=token, 4=model, 5=lightning, 6=telegram, 7=voice, 8=web_search, 9=daemon, 10=summary
 
     while True:
         if step == 1:
@@ -94,37 +96,48 @@ def _onboarding_loop(console: Console) -> None:
             step = 5
 
         elif step == 5:
-            telegram_token = telegram_screen(console)
-            if telegram_token is None:
+            provider_id = PROVIDERS[provider_idx]["id"]
+            auth_method = "oauth" if auth_idx == 0 else "api_key"
+            model_id = get_models(provider_id)[model_idx]["id"]
+            lightning_idx = lightning_mode_screen(console, auth_method, model_id)
+            if lightning_idx is None:
                 step = 4
                 continue
+            lightning_mode = lightning_idx == 1
             step = 6
 
         elif step == 6:
-            result = voice_transcription_screen(console)
-            if result is None:
+            telegram_token = telegram_screen(console)
+            if telegram_token is None:
                 step = 5
                 continue
-            voice_provider, voice_api_key = result
             step = 7
 
         elif step == 7:
-            web_search_result = web_search_screen(console)
-            if web_search_result is None:
+            result = voice_transcription_screen(console)
+            if result is None:
                 step = 6
                 continue
-            search_engine, web_search_key = web_search_result
+            voice_provider, voice_api_key = result
             step = 8
 
         elif step == 8:
-            daemon_idx = daemon_screen(console)
-            if daemon_idx is None:
+            web_search_result = web_search_screen(console)
+            if web_search_result is None:
                 step = 7
                 continue
-            enable_daemon = daemon_idx == 0
+            search_engine, web_search_key = web_search_result
             step = 9
 
         elif step == 9:
+            daemon_idx = daemon_screen(console)
+            if daemon_idx is None:
+                step = 8
+                continue
+            enable_daemon = daemon_idx == 0
+            step = 10
+
+        elif step == 10:
             provider_id = PROVIDERS[provider_idx]["id"]
             provider = get_provider(provider_id)
             auth_method = "oauth" if auth_idx == 0 else "api_key"
@@ -137,13 +150,15 @@ def _onboarding_loop(console: Console) -> None:
                 provider["name"],
                 auth_method,
                 model["name"],
+                model["id"],
+                lightning_mode,
                 telegram_configured,
                 enable_daemon=enable_daemon,
                 voice_provider=voice_provider,
                 search_engine=search_engine,
             )
             if not ok:
-                step = 8
+                step = 9
                 continue
 
             # Save everything
@@ -153,6 +168,7 @@ def _onboarding_loop(console: Console) -> None:
                 auth_method=auth_method,
                 token=token,
                 model_id=model["id"],
+                lightning_mode=lightning_mode,
                 telegram_token=telegram_token if telegram_configured else "",
                 enable_daemon=enable_daemon,
                 voice_provider=voice_provider,
@@ -180,6 +196,7 @@ def _save_results(
     auth_method: str,
     token: str,
     model_id: str,
+    lightning_mode: bool,
     telegram_token: str,
     enable_daemon: bool = False,
     voice_provider: str = "none",
@@ -203,6 +220,7 @@ def _save_results(
     # Update config
     config.agents.defaults.model = model_id
     config.agents.defaults.auth_method = auth_method
+    config.agents.defaults.lightning_mode = lightning_mode
 
     # Update telegram
     if telegram_token:

@@ -419,7 +419,67 @@ async def test_subagent_inherits_parent_reasoning_level_and_keeps_its_model(tmp_
 
     call_kwargs = provider.chat.await_args.kwargs
     assert call_kwargs["reasoning_level"] == "ultra"
+    assert call_kwargs["lightning_mode"] is False
     assert call_kwargs["model"] == "openai/gpt-5-mini"
+
+
+@pytest.mark.asyncio
+async def test_subagent_inherits_parent_lightning_mode(tmp_path):
+    """Subagents should inherit the parent loop's Lightning Mode."""
+    from ragnarbot.agent.loop import AgentLoop
+    from ragnarbot.agent.subagent import AgentTask
+    from ragnarbot.agent.tools.deliver_result import DeliverResultTool
+    from ragnarbot.agent.tools.registry import ToolRegistry
+    from ragnarbot.config.schema import ExecToolConfig
+    from ragnarbot.providers.base import LLMResponse
+
+    provider = MagicMock()
+    provider.get_default_model.return_value = "openai/gpt-5.4"
+    provider.chat = AsyncMock(return_value=LLMResponse(content="done"))
+
+    bus = MagicMock()
+    bus.publish_outbound = AsyncMock()
+    bus.publish_inbound = AsyncMock()
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    loop = AgentLoop(
+        bus=bus,
+        provider=provider,
+        workspace=workspace,
+        model="openai/gpt-5.4",
+        lightning_mode=True,
+        exec_config=ExecToolConfig(),
+    )
+
+    task = AgentTask(
+        id="sub-lightning",
+        label="subagent lightning test",
+        agent_name=None,
+        task="do something",
+        status=AgentTaskStatus.running,
+        messages=[],
+        stop_event=asyncio.Event(),
+        created_at="",
+        origin={"channel": "cli", "chat_id": "direct"},
+    )
+
+    tools = ToolRegistry()
+    deliver_tool = DeliverResultTool()
+    tools.register(deliver_tool)
+
+    await loop.subagents._run_agent(
+        task,
+        definition=None,
+        model="openai/gpt-5.4",
+        tools=tools,
+        deliver_tool=deliver_tool,
+    )
+
+    call_kwargs = provider.chat.await_args.kwargs
+    assert call_kwargs["lightning_mode"] is True
+    assert call_kwargs["model"] == "openai/gpt-5.4"
 
 
 @pytest.mark.asyncio
@@ -1128,6 +1188,42 @@ async def test_process_heartbeat_inherits_global_reasoning_level(tmp_path):
     call_kwargs = provider.chat.await_args.kwargs
     assert call_kwargs["model"] == "openai/gpt-5.4"
     assert call_kwargs["reasoning_level"] == "high"
+    assert call_kwargs["lightning_mode"] is False
+
+
+@pytest.mark.asyncio
+async def test_process_heartbeat_inherits_global_lightning_mode(tmp_path):
+    """Heartbeat isolated runs inherit the loop's global Lightning Mode."""
+    from ragnarbot.agent.loop import AgentLoop
+    from ragnarbot.config.schema import ExecToolConfig
+    from ragnarbot.providers.base import LLMResponse
+
+    provider = MagicMock()
+    provider.get_default_model.return_value = "openai/gpt-5.4"
+    provider.chat = AsyncMock(return_value=LLMResponse(content="done"))
+
+    bus = MagicMock()
+    bus.publish_outbound = AsyncMock()
+    bus.publish_inbound = AsyncMock()
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    loop = AgentLoop(
+        bus=bus,
+        provider=provider,
+        workspace=workspace,
+        model="openai/gpt-5.4",
+        lightning_mode=True,
+        exec_config=ExecToolConfig(),
+    )
+    loop.last_active_chat = ("telegram", "123")
+
+    await loop.process_heartbeat()
+
+    call_kwargs = provider.chat.await_args.kwargs
+    assert call_kwargs["model"] == "openai/gpt-5.4"
+    assert call_kwargs["lightning_mode"] is True
 
 
 @pytest.mark.asyncio
@@ -1160,6 +1256,39 @@ async def test_compactor_inherits_global_reasoning_level(tmp_path):
     call_kwargs = provider.chat.await_args.kwargs
     assert call_kwargs["model"] == "openai/gpt-5.4"
     assert call_kwargs["reasoning_level"] == "medium"
+    assert call_kwargs["lightning_mode"] is False
+
+
+@pytest.mark.asyncio
+async def test_compactor_inherits_global_lightning_mode(tmp_path):
+    """Compactor calls should inherit the loop's global Lightning Mode."""
+    from ragnarbot.agent.loop import AgentLoop
+    from ragnarbot.config.schema import ExecToolConfig
+    from ragnarbot.providers.base import LLMResponse
+
+    provider = MagicMock()
+    provider.get_default_model.return_value = "openai/gpt-5.4"
+    provider.chat = AsyncMock(return_value=LLMResponse(content="summary"))
+
+    with patch("ragnarbot.agent.loop.SubagentManager"):
+        loop = AgentLoop(
+            bus=MagicMock(),
+            provider=provider,
+            workspace=tmp_path / "workspace",
+            model="openai/gpt-5.4",
+            lightning_mode=True,
+            exec_config=ExecToolConfig(),
+        )
+
+    await loop.compactor._chat_fn(
+        None,
+        messages=[{"role": "user", "content": "Summarize this"}],
+        tools=None,
+    )
+
+    call_kwargs = provider.chat.await_args.kwargs
+    assert call_kwargs["model"] == "openai/gpt-5.4"
+    assert call_kwargs["lightning_mode"] is True
 
 
 @pytest.mark.asyncio
@@ -1192,3 +1321,36 @@ async def test_memory_flush_inherits_global_reasoning_level(tmp_path):
     call_kwargs = provider.chat.await_args.kwargs
     assert call_kwargs["model"] == "openai/gpt-5.4"
     assert call_kwargs["reasoning_level"] == "medium"
+    assert call_kwargs["lightning_mode"] is False
+
+
+@pytest.mark.asyncio
+async def test_memory_flush_inherits_global_lightning_mode(tmp_path):
+    """Memory flush calls should inherit the loop's global Lightning Mode."""
+    from ragnarbot.agent.loop import AgentLoop
+    from ragnarbot.config.schema import ExecToolConfig
+    from ragnarbot.providers.base import LLMResponse
+
+    provider = MagicMock()
+    provider.get_default_model.return_value = "openai/gpt-5.4"
+    provider.chat = AsyncMock(return_value=LLMResponse(content="memory"))
+
+    with patch("ragnarbot.agent.loop.SubagentManager"):
+        loop = AgentLoop(
+            bus=MagicMock(),
+            provider=provider,
+            workspace=tmp_path / "workspace",
+            model="openai/gpt-5.4",
+            lightning_mode=True,
+            exec_config=ExecToolConfig(),
+        )
+
+    await loop.memory_flush._chat_fn(
+        None,
+        messages=[{"role": "user", "content": "Extract memory"}],
+        tools=None,
+    )
+
+    call_kwargs = provider.chat.await_args.kwargs
+    assert call_kwargs["model"] == "openai/gpt-5.4"
+    assert call_kwargs["lightning_mode"] is True

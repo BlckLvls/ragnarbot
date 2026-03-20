@@ -40,6 +40,7 @@ class OpenAIChatGPTProvider(LLMProvider):
         max_tokens: int | None = None,
         temperature: float | None = None,
         reasoning_level: str | None = None,
+        lightning_mode: bool | None = None,
     ) -> LLMResponse:
         from ragnarbot.auth.openai_oauth import get_access_token
 
@@ -57,7 +58,9 @@ class OpenAIChatGPTProvider(LLMProvider):
             )
 
         # Build the request in OpenAI Responses API format
-        request_body = self._build_request(messages, tools, model, reasoning_level)
+        request_body = self._build_request(
+            messages, tools, model, reasoning_level, lightning_mode,
+        )
 
         headers = {
             "Authorization": f"Bearer {access_token}",
@@ -177,12 +180,14 @@ class OpenAIChatGPTProvider(LLMProvider):
         tools: list[dict[str, Any]] | None,
         model: str,
         reasoning_level: str | None,
+        lightning_mode: bool | None = None,
     ) -> dict[str, Any]:
         """Build the Responses API request body.
 
         ChatGPT backend does not support max_output_tokens or temperature —
         only model, instructions, input, stream, store, and tools.
         """
+        _ = lightning_mode
         # Extract system instructions from messages
         instructions, input_items = self._convert_messages(messages)
         reasoning = resolve_reasoning(model, reasoning_level)

@@ -29,6 +29,13 @@ SKIP_WEB_SEARCH = [
     (Key.DOWN, ""),          # To Skip
     (Key.ENTER, ""),         # Select Skip
 ]
+SKIP_LIGHTNING = [
+    (Key.ENTER, ""),         # Keep Lightning Mode off
+]
+ENABLE_LIGHTNING = [
+    (Key.DOWN, ""),          # Switch from Off to On
+    (Key.ENTER, ""),         # Enable Lightning Mode
+]
 
 
 @pytest.fixture(autouse=True)
@@ -97,6 +104,7 @@ class TestOnboardingFlow:
             *[(Key.CHAR, c) for c in "sk-ant-test-key-123"],
             (Key.ENTER, ""),         # Confirm key
             (Key.ENTER, ""),         # Select first model (Opus)
+            *SKIP_LIGHTNING,
             (Key.ENTER, ""),         # Skip telegram (empty enter)
             (Key.DOWN, ""),          # Voice: past ElevenLabs
             (Key.DOWN, ""),          # Voice: to Skip
@@ -126,6 +134,7 @@ class TestOnboardingFlow:
             (Key.ENTER, ""),        # Confirm token
             (Key.DOWN, ""),         # Navigate to Sonnet
             (Key.ENTER, ""),        # Select Sonnet
+            *SKIP_LIGHTNING,
             (Key.ENTER, ""),        # Skip telegram
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
@@ -154,6 +163,7 @@ class TestOnboardingFlow:
             *[(Key.CHAR, c) for c in "sk-openai-key"],
             (Key.ENTER, ""),        # Confirm key
             (Key.ENTER, ""),        # Select first model (GPT-5.4)
+            *ENABLE_LIGHTNING,
             (Key.ENTER, ""),        # Skip telegram
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
@@ -168,6 +178,7 @@ class TestOnboardingFlow:
         config = mock_save_config.call_args[0][0]
         assert config.agents.defaults.model == "openai/gpt-5.4"
         assert config.agents.defaults.auth_method == "api_key"
+        assert config.agents.defaults.lightning_mode is True
 
         creds = mock_save_creds.call_args[0][0]
         assert creds.providers.openai.api_key == "sk-openai-key"
@@ -185,6 +196,7 @@ class TestOnboardingFlow:
             (Key.DOWN, ""),         # Past 3.1 Pro
             (Key.DOWN, ""),         # Navigate to Flash
             (Key.ENTER, ""),        # Select Flash
+            *SKIP_LIGHTNING,
             (Key.ENTER, ""),        # Skip telegram
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
@@ -213,6 +225,7 @@ class TestOnboardingFlow:
             *[(Key.CHAR, c) for c in "sk-key"],
             (Key.ENTER, ""),        # Confirm key
             (Key.ENTER, ""),        # Select first model
+            *SKIP_LIGHTNING,
             (Key.ENTER, ""),        # Skip telegram
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
@@ -226,6 +239,30 @@ class TestOnboardingFlow:
 
         config = mock_save_config.call_args[0][0]
         assert config.agents.defaults.auth_method == "api_key"
+
+    def test_unsupported_lightning_mode_still_persists(self, tmp_path):
+        """Unsupported providers can still save Lightning Mode as enabled."""
+        keys = [
+            (Key.ENTER, ""),        # Select Anthropic
+            (Key.DOWN, ""),         # Navigate to API Key
+            (Key.ENTER, ""),        # Select API Key
+            *[(Key.CHAR, c) for c in "sk-ant-test-key-123"],
+            (Key.ENTER, ""),        # Confirm key
+            (Key.ENTER, ""),        # Select first model
+            *ENABLE_LIGHTNING,
+            (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Voice: past ElevenLabs
+            (Key.DOWN, ""),         # Voice: to Skip
+            (Key.ENTER, ""),        # Select Skip
+            *SKIP_WEB_SEARCH,
+            (Key.DOWN, ""),         # Navigate to "No" (manual start)
+            (Key.ENTER, ""),        # Select manual start
+            (Key.ENTER, ""),        # Confirm summary
+        ]
+        mock_save_config, _ = self._run_with_keys(keys, tmp_path)
+
+        config = mock_save_config.call_args[0][0]
+        assert config.agents.defaults.lightning_mode is True
 
     def test_quit_from_provider_screen(self, tmp_path):
         """Q on first screen should exit cleanly."""
@@ -282,6 +319,7 @@ class TestTelegramValidation:
             *[(Key.CHAR, c) for c in "sk-key"],
             (Key.ENTER, ""),
             (Key.ENTER, ""),        # First model
+            *SKIP_LIGHTNING,
             # Telegram token
             *[(Key.CHAR, c) for c in "123456:ABC-DEF"],
             (Key.ENTER, ""),        # Submit token
@@ -354,6 +392,7 @@ class TestVoiceTranscriptionOnboarding:
             *[(Key.CHAR, c) for c in "sk-ant-key"],
             (Key.ENTER, ""),        # Confirm key
             (Key.ENTER, ""),        # Select first model
+            *SKIP_LIGHTNING,
             (Key.ENTER, ""),        # Skip telegram
             (Key.DOWN, ""),         # Voice: past ElevenLabs to Groq
             (Key.ENTER, ""),        # Select Groq
@@ -381,6 +420,7 @@ class TestVoiceTranscriptionOnboarding:
             *[(Key.CHAR, c) for c in "sk-ant-key"],
             (Key.ENTER, ""),        # Confirm key
             (Key.ENTER, ""),        # Select first model
+            *SKIP_LIGHTNING,
             (Key.ENTER, ""),        # Skip telegram
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
@@ -409,6 +449,7 @@ class TestVoiceTranscriptionOnboarding:
             *[(Key.CHAR, c) for c in "sk-ant-key"],
             (Key.ENTER, ""),        # Confirm key
             (Key.ENTER, ""),        # Select first model
+            *SKIP_LIGHTNING,
             (Key.ENTER, ""),        # Skip telegram
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
@@ -433,6 +474,7 @@ class TestVoiceTranscriptionOnboarding:
             *[(Key.CHAR, c) for c in "sk-ant-key"],
             (Key.ENTER, ""),        # Confirm key
             (Key.ENTER, ""),        # Select first model
+            *SKIP_LIGHTNING,
             (Key.ENTER, ""),        # Skip telegram
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip

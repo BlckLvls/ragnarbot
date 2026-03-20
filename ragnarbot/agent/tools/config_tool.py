@@ -323,6 +323,13 @@ class ConfigTool(Tool):
             agent.reasoning_level = str(value)
             return "Reasoning level updated."
 
+        if path == "agents.defaults.lightning_mode":
+            agent.lightning_mode = (
+                bool(value) if isinstance(value, bool)
+                else str(value).lower() in ("true", "1")
+            )
+            return "Lightning mode updated."
+
         if path == "agents.defaults.max_context_tokens":
             tokens = int(value)
             agent.max_context_tokens = tokens

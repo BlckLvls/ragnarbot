@@ -46,7 +46,9 @@ class GeminiCodeAssistProvider(LLMProvider):
         max_tokens: int | None = None,
         temperature: float | None = None,
         reasoning_level: str | None = None,
+        lightning_mode: bool | None = None,
     ) -> LLMResponse:
+        _ = lightning_mode
         from ragnarbot.auth.gemini_oauth import get_access_token
 
         model = model or self.default_model

@@ -11,6 +11,7 @@ from ragnarbot.config.schema import Config
 from ragnarbot.providers.anthropic_provider import AnthropicProvider
 from ragnarbot.providers.base import LLMResponse
 from ragnarbot.providers.gemini_provider import GeminiCodeAssistProvider
+from ragnarbot.providers.lightning import resolve_lightning
 from ragnarbot.providers.litellm_provider import LiteLLMProvider
 from ragnarbot.providers.openai_chatgpt_provider import OpenAIChatGPTProvider
 from ragnarbot.providers.reasoning import resolve_reasoning
@@ -42,6 +43,20 @@ def test_reasoning_config_roundtrip(tmp_path):
 
     loaded = load_config(config_path)
     assert loaded.agents.defaults.reasoning_level == "ultra"
+
+
+def test_lightning_config_roundtrip(tmp_path):
+    config = Config()
+    config.agents.defaults.lightning_mode = True
+
+    config_path = tmp_path / "config.json"
+    save_config(config, config_path)
+
+    raw = json.loads(config_path.read_text())
+    assert raw["agents"]["defaults"]["lightningMode"] is True
+
+    loaded = load_config(config_path)
+    assert loaded.agents.defaults.lightning_mode is True
 
 
 def test_resolve_reasoning_covers_expected_downgrades():
@@ -83,6 +98,25 @@ def test_resolve_reasoning_covers_expected_downgrades():
     assert anthropic_sonnet.anthropic_output_config == {"effort": "high"}
 
 
+def test_resolve_lightning_support_matrix():
+    supported = resolve_lightning("openai/gpt-5.4", "api_key", True)
+    assert supported.supported is True
+    assert supported.applies is True
+    assert supported.service_tier == "priority"
+
+    oauth = resolve_lightning("openai/gpt-5.4", "oauth", True)
+    assert oauth.supported is False
+    assert oauth.applies is False
+
+    mini = resolve_lightning("openai/gpt-5-mini", "api_key", True)
+    assert mini.supported is False
+    assert mini.applies is False
+
+    openrouter = resolve_lightning("openrouter/openai/gpt-5.4", "api_key", True)
+    assert openrouter.supported is False
+    assert openrouter.applies is False
+
+
 def test_create_provider_uses_native_anthropic_for_api_key():
     creds = MagicMock()
     creds.providers.anthropic.api_key = "sk-ant-test"
@@ -102,6 +136,21 @@ def test_openai_build_request_includes_reasoning():
     )
 
     assert body["reasoning"] == {"effort": "xhigh"}
+
+
+def test_openai_build_request_ignores_lightning_mode():
+    with patch("ragnarbot.auth.openai_oauth.get_account_id", return_value="acct_test"):
+        provider = OpenAIChatGPTProvider(default_model="openai/gpt-5.4")
+
+    body = provider._build_request(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=None,
+        model="gpt-5.4",
+        reasoning_level="medium",
+        lightning_mode=True,
+    )
+
+    assert "service_tier" not in body
 
 
 @pytest.mark.asyncio
@@ -171,6 +220,40 @@ async def test_litellm_passes_reasoning_effort():
         )
 
     assert mock_acompletion.await_args.kwargs["reasoning_effort"] == "xhigh"
+
+
+@pytest.mark.asyncio
+async def test_litellm_passes_priority_service_tier_for_supported_lightning():
+    provider = LiteLLMProvider(api_key="sk-openai", default_model="openai/gpt-5.4")
+    mock_acompletion = AsyncMock(return_value=_mock_litellm_response())
+
+    with (
+        patch("ragnarbot.providers.litellm_provider.acompletion", mock_acompletion),
+        patch("ragnarbot.config.providers.model_supports_vision", return_value=True),
+    ):
+        await provider.chat(
+            messages=[{"role": "user", "content": "hi"}],
+            lightning_mode=True,
+        )
+
+    assert mock_acompletion.await_args.kwargs["service_tier"] == "priority"
+
+
+@pytest.mark.asyncio
+async def test_litellm_skips_priority_service_tier_for_unsupported_lightning():
+    provider = LiteLLMProvider(api_key="sk-openai", default_model="openai/gpt-5.2")
+    mock_acompletion = AsyncMock(return_value=_mock_litellm_response())
+
+    with (
+        patch("ragnarbot.providers.litellm_provider.acompletion", mock_acompletion),
+        patch("ragnarbot.config.providers.model_supports_vision", return_value=True),
+    ):
+        await provider.chat(
+            messages=[{"role": "user", "content": "hi"}],
+            lightning_mode=True,
+        )
+
+    assert "service_tier" not in mock_acompletion.await_args.kwargs
 
 
 @pytest.mark.asyncio

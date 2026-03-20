@@ -23,6 +23,7 @@ from ragnarbot.instance import (
     signal_live_gateway,
     tilde_path,
 )
+from ragnarbot.providers.lightning import LIGHTNING_UNSUPPORTED_NOTE, resolve_lightning
 
 app = typer.Typer(
     name="ragnarbot",
@@ -334,6 +335,8 @@ def gateway_main(
             max_context_tokens=config.agents.defaults.max_context_tokens,
             context_mode=config.agents.defaults.context_mode,
             reasoning_level=config.agents.defaults.reasoning_level,
+            lightning_mode=config.agents.defaults.lightning_mode,
+            auth_method=config.agents.defaults.auth_method,
             trace_mode=config.agents.defaults.trace_mode,
             steering_enabled=config.agents.defaults.steering_enabled,
             heartbeat_interval_m=config.heartbeat.interval_m,
@@ -942,6 +945,17 @@ def status():
 
     if config_path.exists():
         console.print(f"Model: {config.agents.defaults.model}")
+        lightning_resolution = resolve_lightning(
+            config.agents.defaults.model,
+            config.agents.defaults.auth_method,
+            config.agents.defaults.lightning_mode,
+        )
+        lightning_status = "Enabled" if config.agents.defaults.lightning_mode else "Disabled"
+        if config.agents.defaults.lightning_mode and not lightning_resolution.supported:
+            lightning_status = f"{lightning_status} [yellow](no effect for current model/auth)[/yellow]"
+        console.print(f"Lightning: {lightning_status}")
+        if config.agents.defaults.lightning_mode and not lightning_resolution.supported:
+            console.print(f"[yellow]{LIGHTNING_UNSUPPORTED_NOTE}[/yellow]")
 
         auth_method = config.agents.defaults.auth_method
         provider_name = (

@@ -41,6 +41,7 @@ def select_menu(
     selected: int = 0,
     subtitle: str = "",
     back_label: str = "Back",
+    hint: str = "",
 ) -> int | None:
     """Arrow-key menu selection.
 
@@ -51,6 +52,7 @@ def select_menu(
         selected: Initially selected index
         subtitle: Optional subtitle
         back_label: Label for back hint
+        hint: Optional help text shown above the menu
 
     Returns:
         Selected index, or None if user pressed Esc (back)
@@ -62,6 +64,10 @@ def select_menu(
 
     while True:
         draw_header(console, title, subtitle)
+
+        if hint:
+            console.print(f"  [dim]{hint}[/dim]")
+            console.print()
 
         for i, (label, desc) in enumerate(options):
             if i == selected:

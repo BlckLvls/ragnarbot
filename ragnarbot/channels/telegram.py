@@ -21,6 +21,7 @@ BOT_COMMANDS = [
     ("context", "Show context usage"),
     ("context_mode", "Change context mode"),
     ("reasoning", "Change reasoning level"),
+    ("lightning", "Toggle Lightning Mode"),
     ("trace", "Toggle tool call tracing"),
     ("steering", "Toggle in-loop steering"),
     ("compact", "Compress conversation history"),
@@ -325,10 +326,12 @@ class TelegramChannel(BaseChannel):
         self._app.add_handler(CommandHandler("compact", self._on_compact))
         self._app.add_handler(CommandHandler("context_mode", self._on_context_mode))
         self._app.add_handler(CommandHandler("reasoning", self._on_reasoning))
+        self._app.add_handler(CommandHandler("lightning", self._on_lightning))
         self._app.add_handler(CommandHandler("trace", self._on_trace))
         self._app.add_handler(CommandHandler("steering", self._on_steering))
         self._app.add_handler(CallbackQueryHandler(
-            self._on_callback_query, pattern="^(ctx_mode|reasoning_level|trace_mode|steering_mode):",
+            self._on_callback_query,
+            pattern="^(ctx_mode|reasoning_level|lightning_mode|trace_mode|steering_mode):",
         ))
 
         logger.info("Starting Telegram bot (polling mode)...")
@@ -754,6 +757,30 @@ class TelegramChannel(BaseChannel):
             },
         )
 
+    async def _on_lightning(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /lightning command — show Lightning Mode toggle."""
+        if not update.message or not update.effective_user:
+            return
+        user = update.effective_user
+        chat_id = update.message.chat_id
+        sender_id = str(user.id)
+        if user.username:
+            sender_id = f"{sender_id}|{user.username}"
+        self._chat_ids[sender_id] = chat_id
+        await self._handle_message(
+            sender_id=sender_id,
+            chat_id=str(chat_id),
+            content="/lightning",
+            metadata={
+                "command": "lightning",
+                "message_id": update.message.message_id,
+                "user_id": user.id,
+                "username": user.username,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+            },
+        )
+
     async def _on_steering(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /steering command — show steering mode toggle."""
         if not update.message or not update.effective_user:
@@ -824,6 +851,23 @@ class TelegramChannel(BaseChannel):
                 metadata={
                     "command": "set_reasoning_level",
                     "reasoning_level": value,
+                    "callback_message_id": query.message.message_id if query.message else None,
+                    "user_id": user.id,
+                    "username": user.username,
+                    "first_name": user.first_name,
+                    "last_name": user.last_name,
+                },
+            )
+
+        elif query.data.startswith("lightning_mode:"):
+            value = query.data.split(":", 1)[1]
+            await self._handle_message(
+                sender_id=sender_id,
+                chat_id=str(chat_id),
+                content=f"/lightning {value}",
+                metadata={
+                    "command": "set_lightning_mode",
+                    "lightning_mode": value,
                     "callback_message_id": query.message.message_id if query.message else None,
                     "user_id": user.id,
                     "username": user.username,

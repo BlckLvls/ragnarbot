@@ -55,6 +55,7 @@ class LLMProvider(ABC):
         max_tokens: int | None = None,
         temperature: float | None = None,
         reasoning_level: str | None = None,
+        lightning_mode: bool | None = None,
     ) -> LLMResponse:
         """
         Send a chat completion request.
@@ -66,6 +67,7 @@ class LLMProvider(ABC):
             max_tokens: Maximum tokens in response (defaults to DEFAULT_MAX_TOKENS).
             temperature: Sampling temperature (omitted if None — uses API default).
             reasoning_level: Unified reasoning level (off/low/medium/high/ultra).
+            lightning_mode: Whether OpenAI Lightning Mode is enabled for this request.
 
         Returns:
             LLMResponse with content and/or tool calls.
