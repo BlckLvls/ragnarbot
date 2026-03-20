@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 
 from ragnarbot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from ragnarbot.providers.lightning import resolve_lightning
 from ragnarbot.providers.reasoning import resolve_reasoning
 
 API_BASE = "https://chatgpt.com/backend-api/codex"
@@ -187,10 +188,10 @@ class OpenAIChatGPTProvider(LLMProvider):
         ChatGPT backend does not support max_output_tokens or temperature —
         only model, instructions, input, stream, store, and tools.
         """
-        _ = lightning_mode
         # Extract system instructions from messages
         instructions, input_items = self._convert_messages(messages)
         reasoning = resolve_reasoning(model, reasoning_level)
+        lightning = resolve_lightning(model, "oauth", lightning_mode)
 
         body: dict[str, Any] = {
             "model": model,
@@ -204,6 +205,8 @@ class OpenAIChatGPTProvider(LLMProvider):
             body["tools"] = self._convert_tools(tools)
         if reasoning.openai_reasoning:
             body["reasoning"] = reasoning.openai_reasoning
+        if lightning.service_tier is not None:
+            body["service_tier"] = lightning.service_tier
 
         return body
 

@@ -228,6 +228,20 @@ def test_lightning_command_shows_toggle(tmp_path):
     assert response.metadata["inline_keyboard"][0][0]["text"] == "Enable"
 
 
+def test_lightning_command_treats_openai_oauth_as_supported(tmp_path):
+    """OpenAI OAuth should render Lightning Mode without the no-effect note."""
+    agent = _make_agent(tmp_path)
+    agent.model = "openai/gpt-5.4"
+    agent.auth_method = "oauth"
+    agent.lightning_mode = True
+
+    response = agent._handle_lightning(_make_msg(content="/lightning", command="lightning"))
+
+    assert "Current: Enabled" in response.content
+    assert "Currently has no effect" not in response.content
+    assert response.metadata["inline_keyboard"][0][0]["text"] == "Disable"
+
+
 def test_lightning_command_shows_no_effect_note_when_unsupported(tmp_path):
     """Unsupported setups still show the panel with a no-effect note."""
     agent = _make_agent(tmp_path)

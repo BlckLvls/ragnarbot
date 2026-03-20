@@ -7,12 +7,14 @@ from dataclasses import dataclass
 LIGHTNING_SUPPORTED_MODELS = frozenset({
     "openai/gpt-5.4",
 })
+LIGHTNING_SUPPORTED_AUTH_METHODS = frozenset({
+    "api_key",
+    "oauth",
+})
 
-LIGHTNING_WORKS_NOTE = "Works only with supported OpenAI API models."
+LIGHTNING_WORKS_NOTE = "Works only with supported OpenAI models."
 LIGHTNING_COST_NOTE = "Uses OpenAI Priority processing and doubles token pricing (2x vs standard)."
-LIGHTNING_UNSUPPORTED_NOTE = (
-    "Currently has no effect for this model/auth setup. OpenAI OAuth and OpenRouter are not supported."
-)
+LIGHTNING_UNSUPPORTED_NOTE = "Currently has no effect for this model/auth setup."
 
 
 @dataclass(frozen=True)
@@ -35,7 +37,10 @@ def resolve_lightning(
     """Resolve Lightning Mode support for a given model/auth pair."""
     normalized_model = _normalize_model_id(model)
     enabled = bool(lightning_mode)
-    supported = auth_method == "api_key" and normalized_model in LIGHTNING_SUPPORTED_MODELS
+    supported = (
+        auth_method in LIGHTNING_SUPPORTED_AUTH_METHODS
+        and normalized_model in LIGHTNING_SUPPORTED_MODELS
+    )
 
     return LightningResolution(
         model=normalized_model,
