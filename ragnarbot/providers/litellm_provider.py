@@ -8,6 +8,7 @@ from litellm import acompletion
 from loguru import logger
 
 from ragnarbot.providers.base import DEFAULT_MAX_TOKENS, LLMProvider, LLMResponse, ToolCallRequest
+from ragnarbot.providers.lightning import resolve_lightning
 from ragnarbot.providers.reasoning import resolve_reasoning
 
 
@@ -51,6 +52,7 @@ class LiteLLMProvider(LLMProvider):
         max_tokens: int | None = None,
         temperature: float | None = None,
         reasoning_level: str | None = None,
+        lightning_mode: bool | None = None,
     ) -> LLMResponse:
         """
         Send a chat completion request via LiteLLM.
@@ -67,6 +69,7 @@ class LiteLLMProvider(LLMProvider):
         """
         model = model or self.default_model
         reasoning = resolve_reasoning(model, reasoning_level)
+        lightning = resolve_lightning(model, "api_key", lightning_mode)
         max_tokens = max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
 
         is_openrouter = model.startswith("openrouter/")
@@ -88,6 +91,8 @@ class LiteLLMProvider(LLMProvider):
             kwargs["temperature"] = temperature
         if reasoning.reasoning_effort is not None:
             kwargs["reasoning_effort"] = reasoning.reasoning_effort
+        if lightning.service_tier is not None:
+            kwargs["service_tier"] = lightning.service_tier
 
         if tools:
             kwargs["tools"] = tools

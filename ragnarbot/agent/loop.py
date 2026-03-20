@@ -53,6 +53,12 @@ from ragnarbot.instance import (
 )
 from ragnarbot.media.manager import MediaManager
 from ragnarbot.providers.base import LLMProvider, LLMResponse
+from ragnarbot.providers.lightning import (
+    LIGHTNING_COST_NOTE,
+    LIGHTNING_UNSUPPORTED_NOTE,
+    LIGHTNING_WORKS_NOTE,
+    resolve_lightning,
+)
 from ragnarbot.providers.reasoning import SUPPORTED_REASONING_LEVELS
 from ragnarbot.session.manager import SessionManager
 
@@ -98,10 +104,15 @@ class AgentLoop:
 
     COMPACT_MIN_MESSAGES = 60
     READ_ONLY_COMMANDS = frozenset({
-        "context_info", "context_mode", "reasoning", "stop", "trace",
+        "context_info", "context_mode", "lightning", "reasoning", "stop", "trace",
     })
     IMMEDIATE_COMMANDS = READ_ONLY_COMMANDS | frozenset({
-        "set_context_mode", "set_reasoning_level", "set_trace_mode", "steering", "set_steering_mode",
+        "set_context_mode",
+        "set_lightning_mode",
+        "set_reasoning_level",
+        "set_trace_mode",
+        "steering",
+        "set_steering_mode",
     })
 
     def __init__(
@@ -120,6 +131,8 @@ class AgentLoop:
         max_context_tokens: int = 200_000,
         context_mode: str = "normal",
         reasoning_level: str = "medium",
+        lightning_mode: bool = False,
+        auth_method: str = "api_key",
         heartbeat_interval_m: int = 30,
         fallback_model: str | None = None,
         fallback_config: "FallbackConfig | None" = None,
@@ -143,6 +156,8 @@ class AgentLoop:
         self.max_context_tokens = max_context_tokens
         self.context_mode = context_mode
         self.reasoning_level = reasoning_level
+        self.lightning_mode = lightning_mode
+        self.auth_method = auth_method
         self.trace_mode = trace_mode
         self.steering_enabled = steering_enabled
         self.cache_manager = CacheManager(max_context_tokens=max_context_tokens)
@@ -482,6 +497,7 @@ class AgentLoop:
         response = None
         primary_error = None
         chat_kwargs.setdefault("reasoning_level", self.reasoning_level)
+        chat_kwargs.setdefault("lightning_mode", self.lightning_mode)
         chat_kwargs.setdefault("model", self.model)
 
         if use_primary:
@@ -1371,6 +1387,10 @@ class AgentLoop:
             return self._handle_reasoning(msg)
         if command == "set_reasoning_level":
             return self._handle_set_reasoning_level(msg)
+        if command == "lightning":
+            return self._handle_lightning(msg)
+        if command == "set_lightning_mode":
+            return self._handle_set_lightning_mode(msg)
         if command == "trace":
             return self._handle_trace(msg)
         if command == "set_trace_mode":
@@ -1531,6 +1551,68 @@ class AgentLoop:
             metadata={
                 "raw_html": True,
                 "edit_message_id": msg.metadata.get("callback_message_id"),
+            },
+        )
+
+    def _get_lightning_resolution(self):
+        """Resolve Lightning Mode for the current runtime model/auth pair."""
+        return resolve_lightning(self.model, self.auth_method, self.lightning_mode)
+
+    def _build_lightning_message(self) -> str:
+        """Render the Lightning Mode toggle panel."""
+        resolution = self._get_lightning_resolution()
+        status = "Enabled" if self.lightning_mode else "Disabled"
+        lines = [
+            "⚡ <b>Lightning Mode</b>",
+            "",
+            f"Current: {status}",
+            "",
+            LIGHTNING_WORKS_NOTE,
+            LIGHTNING_COST_NOTE,
+        ]
+        if not resolution.supported:
+            lines.extend(["", LIGHTNING_UNSUPPORTED_NOTE])
+        return "\n".join(lines)
+
+    def _build_lightning_keyboard(self) -> list[list[dict[str, str]]]:
+        """Build the Lightning Mode toggle keyboard."""
+        enabled = self.lightning_mode
+        toggle = "off" if enabled else "on"
+        btn_text = "Disable" if enabled else "Enable"
+        return [[{"text": btn_text, "callback_data": f"lightning_mode:{toggle}"}]]
+
+    def _handle_lightning(self, msg: InboundMessage) -> OutboundMessage:
+        """Show Lightning Mode with a single enable/disable button."""
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=self._build_lightning_message(),
+            metadata={
+                "raw_html": True,
+                "inline_keyboard": self._build_lightning_keyboard(),
+            },
+        )
+
+    def _handle_set_lightning_mode(self, msg: InboundMessage) -> OutboundMessage | None:
+        """Toggle Lightning Mode (from callback query)."""
+        value = msg.metadata.get("lightning_mode")
+        if value not in ("on", "off"):
+            return None
+
+        self.lightning_mode = value == "on"
+        from ragnarbot.config.loader import load_config, save_config
+        config = load_config()
+        config.agents.defaults.lightning_mode = self.lightning_mode
+        save_config(config)
+
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=self._build_lightning_message(),
+            metadata={
+                "raw_html": True,
+                "edit_message_id": msg.metadata.get("callback_message_id"),
+                "inline_keyboard": self._build_lightning_keyboard(),
             },
         )
 

@@ -47,6 +47,13 @@ class AgentDefaults(BaseModel):
         pattern="^(off|low|medium|high|ultra)$",
         json_schema_extra={"reload": "hot", "label": "Unified reasoning level"},
     )
+    lightning_mode: bool = Field(
+        default=False,
+        json_schema_extra={
+            "reload": "hot",
+            "label": "Enable Lightning Mode (supported OpenAI API models only; doubles token pricing)",
+        },
+    )
     max_context_tokens: int = Field(
         default=200_000,
         json_schema_extra={"reload": "hot", "label": "Maximum context window tokens"},

@@ -65,7 +65,9 @@ class AnthropicProvider(LLMProvider):
         max_tokens: int | None = None,
         temperature: float | None = None,
         reasoning_level: str | None = None,
+        lightning_mode: bool | None = None,
     ) -> LLMResponse:
+        _ = lightning_mode
         model = model or self.default_model
         reasoning = resolve_reasoning(model, reasoning_level)
         max_tokens = max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS

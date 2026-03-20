@@ -5,6 +5,12 @@ from rich.console import Console
 
 from ragnarbot.cli.tui.components import info_screen, select_menu, text_input
 from ragnarbot.config.providers import PROVIDERS, get_models, get_provider
+from ragnarbot.providers.lightning import (
+    LIGHTNING_COST_NOTE,
+    LIGHTNING_UNSUPPORTED_NOTE,
+    LIGHTNING_WORKS_NOTE,
+    resolve_lightning,
+)
 
 
 def provider_screen(console: Console) -> int | None:
@@ -14,7 +20,7 @@ def provider_screen(console: Console) -> int | None:
         console,
         "Choose your LLM provider",
         options,
-        subtitle="Step 1 of 8",
+        subtitle="Step 1 of 9",
         back_label="Quit",
     )
 
@@ -35,7 +41,7 @@ def auth_method_screen(console: Console, provider_id: str) -> int | None:
         console,
         "Choose authentication method",
         options,
-        subtitle=f"Step 2 of 8 — {get_provider(provider_id)['name']}",
+        subtitle=f"Step 2 of 9 — {get_provider(provider_id)['name']}",
     )
 
 
@@ -58,7 +64,7 @@ def token_input_screen(
         prompt,
         hint=hint,
         secret=False,
-        subtitle=f"Step 3 of 8 — {provider['name']}",
+        subtitle=f"Step 3 of 9 — {provider['name']}",
     )
 
 
@@ -71,7 +77,35 @@ def model_screen(console: Console, provider_id: str) -> int | None:
         console,
         "Choose your default model",
         options,
-        subtitle=f"Step 4 of 8 — {provider['name']}",
+        subtitle=f"Step 4 of 9 — {provider['name']}",
+    )
+
+
+def lightning_mode_screen(
+    console: Console,
+    auth_method: str,
+    model_id: str,
+) -> int | None:
+    """Select Lightning Mode preference. Returns 0=off, 1=on, or None."""
+    resolution = resolve_lightning(model_id, auth_method, lightning_mode=True)
+    on_desc = (
+        "Uses Priority processing when supported"
+        if resolution.supported
+        else "Saved, but currently has no effect for this setup"
+    )
+    options = [
+        ("Off", "Use standard processing"),
+        ("On", on_desc),
+    ]
+    notes = [LIGHTNING_WORKS_NOTE, LIGHTNING_COST_NOTE]
+    if not resolution.supported:
+        notes.append(LIGHTNING_UNSUPPORTED_NOTE)
+    return select_menu(
+        console,
+        "Lightning Mode",
+        options,
+        subtitle="Step 5 of 9",
+        hint="\n".join(notes),
     )
 
 
@@ -89,7 +123,7 @@ def telegram_screen(console: Console) -> str | None:
             "  Press Enter with empty input to skip"
         ),
         allow_empty=True,
-        subtitle="Step 5 of 8 — Optional",
+        subtitle="Step 6 of 9 — Optional",
     )
 
     if token is None or token == "":
@@ -120,7 +154,7 @@ def _validate_telegram_token(console: Console, token: str) -> str | None:
                     f"Name: [bold]{bot_name}[/bold]",
                     f"Username: @{bot_username}",
                 ],
-                subtitle="Step 5 of 8",
+                subtitle="Step 6 of 9",
             )
             return token
         else:
@@ -132,9 +166,9 @@ def _validate_telegram_token(console: Console, token: str) -> str | None:
                     "",
                     f"Error: {data.get('description', 'Unknown error')}",
                     "",
-                    "Press Enter to try again, or Esc to skip.",
-                ],
-                subtitle="Step 5 of 8",
+                "Press Enter to try again, or Esc to skip.",
+            ],
+                subtitle="Step 6 of 9",
             )
             return None
     except httpx.RequestError as e:
@@ -148,7 +182,7 @@ def _validate_telegram_token(console: Console, token: str) -> str | None:
                 "",
                 "Press Enter to try again, or Esc to skip.",
             ],
-            subtitle="Step 5 of 8",
+            subtitle="Step 6 of 9",
         )
         return None
 
@@ -164,7 +198,7 @@ def voice_transcription_screen(console: Console) -> tuple[str, str] | None:
         console,
         "Voice transcription provider",
         voice_providers,
-        subtitle="Step 6 of 8 — Optional",
+        subtitle="Step 7 of 9 — Optional",
     )
     if idx is None:
         return None
@@ -180,7 +214,7 @@ def voice_transcription_screen(console: Console) -> tuple[str, str] | None:
         "API key",
         hint="Paste your API key and press Enter",
         secret=False,
-        subtitle=f"Step 6 of 8 — {provider_label}",
+        subtitle=f"Step 7 of 9 — {provider_label}",
     )
     if api_key is None:
         return None
@@ -202,7 +236,7 @@ def web_search_screen(console: Console) -> tuple[str, str] | None:
         console,
         "Web search engine",
         engines,
-        subtitle="Step 7 of 8 — Optional",
+        subtitle="Step 8 of 9 — Optional",
     )
     if idx is None:
         return None
@@ -222,7 +256,7 @@ def web_search_screen(console: Console) -> tuple[str, str] | None:
             "  Press Enter with empty input to skip"
         ),
         allow_empty=True,
-        subtitle="Step 7 of 8 — Brave Search",
+        subtitle="Step 8 of 9 — Brave Search",
     )
     if api_key is None:
         return None
@@ -245,7 +279,7 @@ def daemon_screen(console: Console) -> int | None:
                 "You can run the gateway manually with:",
                 "  [cyan]ragnarbot gateway[/cyan]",
             ],
-            subtitle="Step 7 of 8",
+            subtitle="Step 9 of 9",
         )
         return 1  # "no" — continue without daemon
 
@@ -258,7 +292,7 @@ def daemon_screen(console: Console) -> int | None:
         console,
         "Enable auto-start?",
         options,
-        subtitle="Step 7 of 8",
+        subtitle="Step 9 of 9",
     )
 
 
@@ -267,6 +301,8 @@ def summary_screen(
     provider_name: str,
     auth_method: str,
     model_name: str,
+    model_id: str,
+    lightning_mode: bool,
     telegram_configured: bool,
     enable_daemon: bool = False,
     voice_provider: str = "none",
@@ -275,17 +311,26 @@ def summary_screen(
     """Show summary of configured values. Returns True on Enter."""
     voice_label = {"groq": "Groq", "elevenlabs": "ElevenLabs", "none": "Skipped"}
     search_label = {"brave": "Brave Search", "duckduckgo": "DuckDuckGo", "none": "Skipped"}
+    lightning_resolution = resolve_lightning(model_id, auth_method, lightning_mode)
     lines = [
         "[bold]Configuration summary:[/bold]",
         "",
         f"  Provider:       [cyan]{provider_name}[/cyan]",
         f"  Auth:           [cyan]{auth_method}[/cyan]",
         f"  Model:          [cyan]{model_name}[/cyan]",
+        f"  Lightning:      [cyan]{'Enabled' if lightning_mode else 'Disabled'}[/cyan]",
         f"  Telegram:       [cyan]{'Enabled' if telegram_configured else 'Skipped'}[/cyan]",
         f"  Transcription:  [cyan]{voice_label.get(voice_provider, voice_provider)}[/cyan]",
         f"  Web search:     [cyan]{search_label.get(search_engine, search_engine)}[/cyan]",
         f"  Auto-start:     [cyan]{'Enabled' if enable_daemon else 'Manual'}[/cyan]",
+    ]
+    if lightning_mode and not lightning_resolution.supported:
+        lines.extend([
+            "",
+            f"  [yellow]{LIGHTNING_UNSUPPORTED_NOTE}[/yellow]",
+        ])
+    lines.extend([
         "",
         "[green]Press Enter to save and finish.[/green]",
-    ]
+    ])
     return info_screen(console, "Setup complete", lines, subtitle="Review")
