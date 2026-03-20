@@ -169,6 +169,11 @@ def test_telegram_commands_include_reasoning():
     assert ("reasoning", "Change reasoning level") in BOT_COMMANDS
 
 
+def test_telegram_commands_include_lightning():
+    """Telegram command list exposes Lightning Mode."""
+    assert ("lightning", "Toggle Lightning Mode") in BOT_COMMANDS
+
+
 def test_reasoning_command_shows_picker(tmp_path):
     """Reasoning command renders the inline button picker."""
     agent = _make_agent(tmp_path)
@@ -204,6 +209,63 @@ def test_set_reasoning_level_persists_and_edits_message(tmp_path):
     assert response.metadata["edit_message_id"] == 42
     assert "Selected: <b>High</b>" in response.content
     assert response.metadata["inline_keyboard"][3][0]["text"] == "✓ High"
+    mock_save.assert_called_once_with(config)
+
+
+def test_lightning_command_shows_toggle(tmp_path):
+    """Lightning command renders the enable/disable panel."""
+    agent = _make_agent(tmp_path)
+    agent.model = "openai/gpt-5.4"
+    agent.auth_method = "api_key"
+    agent.lightning_mode = False
+
+    response = agent._handle_lightning(_make_msg(content="/lightning", command="lightning"))
+
+    assert "Lightning Mode" in response.content
+    assert "Current: Disabled" in response.content
+    assert "Priority processing" in response.content
+    assert response.metadata["inline_keyboard"][0][0]["callback_data"] == "lightning_mode:on"
+    assert response.metadata["inline_keyboard"][0][0]["text"] == "Enable"
+
+
+def test_lightning_command_shows_no_effect_note_when_unsupported(tmp_path):
+    """Unsupported setups still show the panel with a no-effect note."""
+    agent = _make_agent(tmp_path)
+    agent.model = "anthropic/claude-opus-4-6"
+    agent.auth_method = "api_key"
+    agent.lightning_mode = True
+
+    response = agent._handle_lightning(_make_msg(content="/lightning", command="lightning"))
+
+    assert "Current: Enabled" in response.content
+    assert "Currently has no effect" in response.content
+    assert response.metadata["inline_keyboard"][0][0]["text"] == "Disable"
+
+
+def test_set_lightning_mode_persists_and_edits_message(tmp_path):
+    """Callback updates Lightning Mode and edits the source panel."""
+    agent = _make_agent(tmp_path)
+    agent.model = "openai/gpt-5.4"
+    agent.auth_method = "api_key"
+    config = MagicMock()
+    config.agents.defaults.lightning_mode = False
+
+    with (
+        patch("ragnarbot.config.loader.load_config", return_value=config),
+        patch("ragnarbot.config.loader.save_config") as mock_save,
+    ):
+        response = agent._handle_set_lightning_mode(_make_msg(
+            content="/lightning on",
+            command="set_lightning_mode",
+            lightning_mode="on",
+            callback_message_id=42,
+        ))
+
+    assert response is not None
+    assert agent.lightning_mode is True
+    assert response.metadata["edit_message_id"] == 42
+    assert "Current: Enabled" in response.content
+    assert response.metadata["inline_keyboard"][0][0]["text"] == "Disable"
     mock_save.assert_called_once_with(config)
 
 

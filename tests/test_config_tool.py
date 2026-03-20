@@ -29,6 +29,7 @@ def mock_agent():
     agent.debounce_seconds = 0.5
     agent.context_mode = "normal"
     agent.reasoning_level = "medium"
+    agent.lightning_mode = False
     agent.max_context_tokens = 200_000
     agent.steering_enabled = True
     agent.cache_manager = MagicMock()
@@ -52,6 +53,7 @@ async def test_schema_action_returns_all_fields(config_tool):
         result = await config_tool.execute(action="schema")
     assert "agents.defaults.stream_steps" in result
     assert "agents.defaults.reasoning_level" in result
+    assert "agents.defaults.lightning_mode" in result
     assert "bool" in result
     assert "[hot]" in result
 
@@ -124,6 +126,22 @@ async def test_set_action_hot_reloads_reasoning_level(config_tool, mock_agent):
     assert data["new_value"] == "ultra"
     assert data["status"] == "applied"
     assert mock_agent.reasoning_level == "ultra"
+
+
+@pytest.mark.asyncio
+async def test_set_action_hot_reloads_lightning_mode(config_tool, mock_agent):
+    with (
+        patch(LOAD_CONFIG, return_value=Config()),
+        patch(SAVE_CONFIG),
+    ):
+        result = await config_tool.execute(
+            action="set", path="agents.defaults.lightning_mode", value="true",
+        )
+
+    data = json.loads(result)
+    assert data["new_value"] is True
+    assert data["status"] == "applied"
+    assert mock_agent.lightning_mode is True
 
 
 @pytest.mark.asyncio

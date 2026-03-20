@@ -134,6 +134,13 @@ def test_get_field_meta_pattern():
     assert "eco" in meta["pattern"]
 
 
+def test_get_field_meta_lightning_mode():
+    meta = get_field_meta(Config, "agents.defaults.lightning_mode")
+    assert meta["reload"] == "hot"
+    assert meta["type"] == "bool"
+    assert "Lightning Mode" in meta["label"]
+
+
 def test_get_field_meta_invalid_path():
     with pytest.raises(ValueError, match="Unknown field"):
         get_field_meta(Config, "nonexistent.path")

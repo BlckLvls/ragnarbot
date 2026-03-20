@@ -146,8 +146,10 @@ class TestProcessBatchContext:
         # Track messages sent to LLM
         captured_messages = []
 
-        async def mock_chat(messages, tools, model):
+        async def mock_chat(messages, tools, model, **kwargs):
             captured_messages.extend(messages)
+            assert kwargs["reasoning_level"] == "medium"
+            assert kwargs["lightning_mode"] is False
             resp = MagicMock()
             resp.has_tool_calls = False
             resp.content = "batch response"
@@ -186,8 +188,10 @@ class TestProcessBatchContext:
 
         captured_messages = []
 
-        async def mock_chat(messages, tools, model):
+        async def mock_chat(messages, tools, model, **kwargs):
             captured_messages.extend(messages)
+            assert kwargs["reasoning_level"] == "medium"
+            assert kwargs["lightning_mode"] is False
             resp = MagicMock()
             resp.has_tool_calls = False
             resp.content = "ok"
@@ -238,7 +242,9 @@ class TestProcessBatchContext:
         mock_session.metadata = {}
         agent.sessions.get_or_create.return_value = mock_session
 
-        async def mock_chat(messages, tools, model):
+        async def mock_chat(messages, tools, model, **kwargs):
+            assert kwargs["reasoning_level"] == "medium"
+            assert kwargs["lightning_mode"] is False
             resp = MagicMock()
             resp.has_tool_calls = False
             resp.content = "reply"
@@ -269,7 +275,9 @@ class TestProcessBatchContext:
         mock_session.metadata = {}
         agent.sessions.get_or_create.return_value = mock_session
 
-        async def mock_chat(messages, tools, model):
+        async def mock_chat(messages, tools, model, **kwargs):
+            assert kwargs["reasoning_level"] == "medium"
+            assert kwargs["lightning_mode"] is False
             resp = MagicMock()
             resp.has_tool_calls = False
             resp.content = "reply"
