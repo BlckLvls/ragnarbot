@@ -2,7 +2,7 @@
 
 ## fast-researcher
 
-Quick, focused research briefs. Targets 8-15 high-quality sources, delivers a concise actionable brief (500-1500 words) with key findings, citations, and honest gap assessment. No browser — uses `web_search` and `web_fetch` only.
+Fast, focused research briefs. Resolves the few questions that matter with a small high-quality source set, includes a visible `Research Frame`, runs a quick verification pass plus one counter-check, and delivers a concise actionable brief. No browser - uses `web_search` and `web_fetch` only.
 
 **Use when:**
 - The user needs a quick answer backed by sources — "what's the deal with X?"
@@ -13,7 +13,7 @@ Quick, focused research briefs. Targets 8-15 high-quality sources, delivers a co
 
 ## deep-researcher
 
-Exhaustive, multi-source research reports. Builds a formal research plan, systematically investigates every angle (50-100+ sources), cross-references findings, and delivers polished markdown reports with full citations, confidence assessments, and knowledge gaps. Has browser access for JS-rendered pages.
+Deep, decision-grade research. Maintains a living plan file, investigates the topic across material workstreams, runs explicit challenge and verification passes, and delivers a polished markdown report with faithful citations, confidence judgments, and knowledge gaps. Has browser access for JS-rendered pages.
 
 **Use when:**
 - The user explicitly asks for deep/thorough/comprehensive research

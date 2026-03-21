@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from ragnarbot.agent.agents_loader import AgentDefinition, AgentsLoader
+from ragnarbot.agent.prompt_overlays import OPENAI_STYLE_ADDENDUM
 from ragnarbot.agent.subagent import (
     SAFE_TOOL_NAMES,
     AgentTaskStatus,
@@ -717,6 +718,60 @@ class TestSubagentSkillsInjection:
         mgr._build_system_prompt(task, defn)
         ctx.skills.build_skills_summary.assert_called_once_with(only=None)
 
+    def test_named_agent_prompt_includes_openai_behavior_addendum(self, tmp_path):
+        """Named agent prompts get the OpenAI style addendum for OpenAI-family models."""
+        from ragnarbot.agent.subagent import AgentTask, AgentTaskStatus
+
+        ctx = MagicMock()
+        mgr = self._make_manager(tmp_path, context_builder=ctx)
+        defn = AgentDefinition(
+            name="researcher",
+            description="test",
+            model="default",
+            allowed_tools=["web_search"],
+            allowed_skills="none",
+            body="Do the work.",
+            path="/fake/path",
+        )
+        task = AgentTask(
+            id="t4", label="test", agent_name="researcher", task="go",
+            status=AgentTaskStatus.running, messages=[],
+            stop_event=asyncio.Event(), created_at="",
+            origin={"channel": "cli", "chat_id": "direct"},
+            resolved_model="openai/gpt-5.4",
+        )
+
+        prompt = mgr._build_system_prompt(task, defn)
+
+        assert OPENAI_STYLE_ADDENDUM in prompt
+
+    def test_named_agent_prompt_omits_openai_behavior_addendum_for_other_models(self, tmp_path):
+        """Named agent prompts skip the OpenAI style addendum for non-OpenAI models."""
+        from ragnarbot.agent.subagent import AgentTask, AgentTaskStatus
+
+        ctx = MagicMock()
+        mgr = self._make_manager(tmp_path, context_builder=ctx)
+        defn = AgentDefinition(
+            name="researcher",
+            description="test",
+            model="default",
+            allowed_tools=["web_search"],
+            allowed_skills="none",
+            body="Do the work.",
+            path="/fake/path",
+        )
+        task = AgentTask(
+            id="t5", label="test", agent_name="researcher", task="go",
+            status=AgentTaskStatus.running, messages=[],
+            stop_event=asyncio.Event(), created_at="",
+            origin={"channel": "cli", "chat_id": "direct"},
+            resolved_model="anthropic/claude-sonnet-4-5",
+        )
+
+        prompt = mgr._build_system_prompt(task, defn)
+
+        assert OPENAI_STYLE_ADDENDUM not in prompt
+
 
 # ---------------------------------------------------------------------------
 # file_read auto-added for skill access
@@ -973,7 +1028,9 @@ class TestCronIsolatedAgentProfile:
             },
         }
 
-        messages = loop._build_cron_agent_messages(defn, "Research AI news", session_metadata)
+        messages = loop._build_cron_agent_messages(
+            defn, "Research AI news", session_metadata, "test/model",
+        )
 
         assert len(messages) == 2
         assert messages[0]["role"] == "system"
@@ -1020,12 +1077,47 @@ class TestCronIsolatedAgentProfile:
             },
         }
 
-        messages = loop._build_cron_agent_messages(defn, "Do work", session_metadata)
+        messages = loop._build_cron_agent_messages(
+            defn, "Do work", session_metadata, "test/model",
+        )
         system_prompt = messages[0]["content"]
 
         assert "Available Skills" in system_prompt
         assert "my-skill" in system_prompt
         loop.context.skills.build_skills_summary.assert_called_once_with(only=["my-skill"])
+
+    @pytest.mark.asyncio
+    async def test_process_cron_isolated_agent_profile_uses_openai_overlay_from_inherited_model(
+        self, tmp_path,
+    ):
+        """Named cron agents with model=default inherit the loop OpenAI overlay."""
+        from ragnarbot.providers.base import LLMResponse
+
+        builtin = tmp_path / "builtin"
+        d = builtin / "researcher"
+        d.mkdir(parents=True)
+        (d / "AGENT.md").write_text(
+            "---\nname: researcher\ndescription: Research\nmodel: default\n---\nDo work.",
+            encoding="utf-8",
+        )
+        loader = AgentsLoader(tmp_path / "workspace", builtin_agents_dir=builtin)
+        loop = self._make_agent_loop(tmp_path, agents_loader=loader)
+        loop.model = "openai/gpt-5.4"
+        loop.provider.chat = AsyncMock(return_value=LLMResponse(content="done"))
+
+        result = await loop.process_cron_isolated(
+            job_name="job",
+            message="Do work",
+            schedule_desc="every 1h",
+            channel="telegram",
+            chat_id="123",
+            agent_name="researcher",
+        )
+
+        assert result == "done"
+        call_kwargs = loop.provider.chat.await_args.kwargs
+        assert call_kwargs["model"] == "openai/gpt-5.4"
+        assert OPENAI_STYLE_ADDENDUM in call_kwargs["messages"][0]["content"]
 
     def test_build_cron_agent_tool_registry_filters_tools(self, tmp_path):
         """Agent with restricted tools gets only those tools + deliver_result."""
@@ -1150,6 +1242,7 @@ class TestCronIsolatedAgentProfile:
         call_kwargs = loop.provider.chat.await_args.kwargs
         assert call_kwargs["model"] == "openai/gpt-5-mini"
         assert call_kwargs["reasoning_level"] == "low"
+        assert OPENAI_STYLE_ADDENDUM in call_kwargs["messages"][0]["content"]
 
 
 @pytest.mark.asyncio

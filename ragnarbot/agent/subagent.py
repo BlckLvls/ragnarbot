@@ -11,6 +11,7 @@ from typing import Any
 from loguru import logger
 
 from ragnarbot.agent.agents_loader import AgentDefinition, AgentsLoader
+from ragnarbot.agent.prompt_overlays import get_model_behavior_addendum
 from ragnarbot.agent.tools.deliver_result import DeliverResultTool
 from ragnarbot.agent.tools.registry import ToolRegistry
 from ragnarbot.bus.events import InboundMessage
@@ -471,6 +472,8 @@ class SubagentManager:
         self, task: AgentTask, definition: AgentDefinition | None,
     ) -> str:
         """Build the system prompt for a sub-agent."""
+        model_behavior_addendum = get_model_behavior_addendum(task.resolved_model)
+
         # Load SUBAGENT.md preamble
         preamble = ""
         preamble_path = BUILTIN_DIR / "SUBAGENT.md"
@@ -492,6 +495,9 @@ class SubagentManager:
         if definition:
             # Named agent: preamble + AGENT.md body + optional skills
             parts = [preamble, "---", definition.body]
+
+            if model_behavior_addendum:
+                parts.append("---\n\n" + model_behavior_addendum)
 
             if definition.allowed_skills != "none" and self.context_builder:
                 only = (

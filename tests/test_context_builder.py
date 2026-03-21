@@ -6,6 +6,11 @@ import pytest
 
 from ragnarbot.agent.context import BUILTIN_DIR, ContextBuilder
 from ragnarbot.agent.memory import MemoryStore
+from ragnarbot.agent.prompt_overlays import (
+    OPENAI_STYLE_ADDENDUM,
+    get_model_behavior_addendum,
+    is_openai_family_model,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -49,6 +54,18 @@ class TestLoadBuiltinFiles:
         result = cb._load_builtin_files()
         # {skill-name} should be literal after escaping
         assert "{skill-name}" in result
+
+
+class TestPromptOverlays:
+    def test_identifies_openai_family_models(self):
+        assert is_openai_family_model("openai/gpt-5.4") is True
+        assert is_openai_family_model("gpt-5.4") is True
+        assert is_openai_family_model("openrouter/openai/gpt-5.4") is True
+        assert is_openai_family_model("anthropic/claude-sonnet-4-5") is False
+
+    def test_returns_addendum_only_for_openai_family_models(self):
+        assert get_model_behavior_addendum("openai/gpt-5.4") == OPENAI_STYLE_ADDENDUM
+        assert get_model_behavior_addendum("anthropic/claude-sonnet-4-5") == ""
 
 
 class TestLoadBuiltinTelegram:
@@ -158,3 +175,19 @@ class TestBuildSystemPrompt:
         assert "~/.ragnarbot-vodichezka/browser-profile/" in prompt
         assert "~/.ragnarbot/browser-profile/" not in prompt
         assert "~/.ragnarbot/workspace" not in prompt
+
+    def test_includes_openai_behavior_addendum_for_openai_models(self, tmp_path):
+        cb = ContextBuilder(tmp_path / "workspace")
+        cb.model = "openai/gpt-5.4"
+
+        prompt = cb.build_system_prompt()
+
+        assert OPENAI_STYLE_ADDENDUM in prompt
+
+    def test_omits_openai_behavior_addendum_for_non_openai_models(self, tmp_path):
+        cb = ContextBuilder(tmp_path / "workspace")
+        cb.model = "anthropic/claude-sonnet-4-5"
+
+        prompt = cb.build_system_prompt()
+
+        assert OPENAI_STYLE_ADDENDUM not in prompt

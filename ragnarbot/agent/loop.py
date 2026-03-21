@@ -15,6 +15,7 @@ from ragnarbot.agent.compactor import Compactor
 from ragnarbot.agent.context import ContextBuilder
 from ragnarbot.agent.fallback import FallbackState
 from ragnarbot.agent.memory_flush import MemoryFlushManager, MemorySegment
+from ragnarbot.agent.prompt_overlays import get_model_behavior_addendum
 from ragnarbot.agent.subagent import SubagentManager
 from ragnarbot.agent.tools.agent_tools import AgentTool
 from ragnarbot.agent.tools.background import (
@@ -2690,6 +2691,7 @@ class AgentLoop:
         definition: "AgentDefinition",
         message: str,
         session_metadata: dict,
+        resolved_model: str,
     ) -> list[dict]:
         """Build messages for a cron job running with an agent profile.
 
@@ -2704,6 +2706,9 @@ class AgentLoop:
 
         # Build combined system prompt: cron rules + agent instructions
         parts = [cron_rules, "---", f"# Agent Instructions\n\n{definition.body}"]
+        model_behavior_addendum = get_model_behavior_addendum(resolved_model)
+        if model_behavior_addendum:
+            parts.append("---\n\n" + model_behavior_addendum)
 
         # Inject skills summary if the agent has allowed_skills
         if definition.allowed_skills != "none":
@@ -2774,8 +2779,9 @@ class AgentLoop:
 
         if definition:
             # Build a combined prompt: CRON_ISOLATED.md rules + AGENT.md body
+            resolved_model = definition.model if definition.model != "default" else self.model
             messages = self._build_cron_agent_messages(
-                definition, message, session_metadata,
+                definition, message, session_metadata, resolved_model,
             )
         else:
             messages = self.context.build_messages(
