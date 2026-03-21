@@ -1,6 +1,7 @@
 """Base LLM provider interface."""
 
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -16,11 +17,39 @@ class ToolCallRequest:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+ToolRunner = Callable[[ToolCallRequest], Awaitable[Any]]
+ToolCallHandler = Callable[[ToolCallRequest], Awaitable[None]]
+TextDeltaHandler = Callable[[str], Awaitable[None]]
+SteeringMessageProvider = Callable[[], Awaitable[list[dict[str, Any]]]]
+
+
+@dataclass
+class ExecutedToolCall:
+    """A tool call that was executed inside the provider transport."""
+
+    id: str
+    name: str
+    arguments: dict[str, Any]
+    result: Any
+    metadata: dict[str, Any] = field(default_factory=dict)
+    assistant_content: str | None = None
+
+
+@dataclass
+class ConsumedSteeringMessage:
+    """A live steering message consumed inside a provider-managed turn."""
+
+    after_executed_tool_calls: int
+    user_message: dict[str, Any]
+
+
 @dataclass
 class LLMResponse:
     """Response from an LLM provider."""
     content: str | None
     tool_calls: list[ToolCallRequest] = field(default_factory=list)
+    executed_tool_calls: list[ExecutedToolCall] = field(default_factory=list)
+    consumed_steering_messages: list[ConsumedSteeringMessage] = field(default_factory=list)
     finish_reason: str = "stop"
     usage: dict[str, int] = field(default_factory=dict)
 
@@ -56,6 +85,11 @@ class LLMProvider(ABC):
         temperature: float | None = None,
         reasoning_level: str | None = None,
         lightning_mode: bool | None = None,
+        session_key: str | None = None,
+        tool_runner: ToolRunner | None = None,
+        tool_call_handler: ToolCallHandler | None = None,
+        text_delta_handler: TextDeltaHandler | None = None,
+        steering_message_provider: SteeringMessageProvider | None = None,
     ) -> LLMResponse:
         """
         Send a chat completion request.
@@ -68,6 +102,14 @@ class LLMProvider(ABC):
             temperature: Sampling temperature (omitted if None — uses API default).
             reasoning_level: Unified reasoning level (off/low/medium/high/ultra).
             lightning_mode: Whether OpenAI Lightning Mode is enabled for this request.
+            session_key: Stable conversation identifier for stateful transports.
+            tool_runner: Optional host-side tool executor for transports that
+                invoke tool calls interactively.
+            tool_call_handler: Optional callback for transports that want to
+                surface tool calls before the turn completes.
+            text_delta_handler: Optional callback for incremental text deltas.
+            steering_message_provider: Optional callback for transports that
+                can inject same-session steering messages into an in-flight turn.
 
         Returns:
             LLMResponse with content and/or tool calls.
@@ -78,3 +120,7 @@ class LLMProvider(ABC):
     def get_default_model(self) -> str:
         """Get the default model for this provider."""
         pass
+
+    async def aclose(self) -> None:
+        """Release any provider-managed resources."""
+        return None

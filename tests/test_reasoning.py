@@ -105,8 +105,9 @@ def test_resolve_lightning_support_matrix():
     assert supported.service_tier == "priority"
 
     oauth = resolve_lightning("openai/gpt-5.4", "oauth", True)
-    assert oauth.supported is False
-    assert oauth.applies is False
+    assert oauth.supported is True
+    assert oauth.applies is True
+    assert oauth.service_tier == "priority"
 
     mini = resolve_lightning("openai/gpt-5-mini", "api_key", True)
     assert mini.supported is False
@@ -138,7 +139,7 @@ def test_openai_build_request_includes_reasoning():
     assert body["reasoning"] == {"effort": "xhigh"}
 
 
-def test_openai_build_request_ignores_lightning_mode():
+def test_openai_build_request_skips_priority_service_tier_for_raw_oauth_lightning():
     with patch("ragnarbot.auth.openai_oauth.get_account_id", return_value="acct_test"):
         provider = OpenAIChatGPTProvider(default_model="openai/gpt-5.4")
 
@@ -146,6 +147,21 @@ def test_openai_build_request_ignores_lightning_mode():
         messages=[{"role": "user", "content": "hi"}],
         tools=None,
         model="gpt-5.4",
+        reasoning_level="medium",
+        lightning_mode=True,
+    )
+
+    assert "service_tier" not in body
+
+
+def test_openai_build_request_skips_priority_service_tier_for_unsupported_lightning():
+    with patch("ragnarbot.auth.openai_oauth.get_account_id", return_value="acct_test"):
+        provider = OpenAIChatGPTProvider(default_model="openai/gpt-5-mini")
+
+    body = provider._build_request(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=None,
+        model="gpt-5-mini",
         reasoning_level="medium",
         lightning_mode=True,
     )

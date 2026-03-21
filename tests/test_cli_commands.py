@@ -113,3 +113,38 @@ def test_status_shows_lightning_no_effect_note(tmp_path):
     rendered = "\n".join(str(call.args[0]) for call in console.print.call_args_list if call.args)
     assert "Lightning: Enabled" in rendered
     assert "no effect for current model/auth" in rendered
+
+
+def test_status_omits_lightning_no_effect_note_for_openai_oauth(tmp_path):
+    console = MagicMock()
+    config = Config()
+    config.agents.defaults.model = "openai/gpt-5.4"
+    config.agents.defaults.auth_method = "oauth"
+    config.agents.defaults.lightning_mode = True
+
+    config_path = tmp_path / "config.json"
+    creds_path = tmp_path / "creds.json"
+    workspace = tmp_path / "workspace"
+    config_path.write_text("{}", encoding="utf-8")
+    creds_path.write_text("{}", encoding="utf-8")
+    workspace.mkdir()
+
+    instance = MagicMock()
+    instance.runtime_name = "ragnarbot"
+    instance.profile = "default"
+    instance.data_root = Path(tmp_path)
+
+    with (
+        patch.object(commands, "console", console),
+        patch.object(commands, "get_instance", return_value=instance),
+        patch("ragnarbot.config.loader.get_config_path", return_value=config_path),
+        patch("ragnarbot.auth.credentials.get_credentials_path", return_value=creds_path),
+        patch("ragnarbot.config.loader.load_config", return_value=config),
+        patch("ragnarbot.auth.credentials.load_credentials", return_value=Credentials()),
+        patch("ragnarbot.auth.openai_oauth.is_authenticated", return_value=True),
+    ):
+        commands.status()
+
+    rendered = "\n".join(str(call.args[0]) for call in console.print.call_args_list if call.args)
+    assert "Lightning: Enabled" in rendered
+    assert "no effect for current model/auth" not in rendered

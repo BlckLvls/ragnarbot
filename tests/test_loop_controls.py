@@ -116,6 +116,20 @@ async def test_queue_steering_message_respects_global_toggle(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_finish_run_state_requeues_unconsumed_steering(tmp_path):
+    """Late steering should go back onto the bus as the next normal turn."""
+    agent = _make_agent(tmp_path)
+    state = agent._start_run_state("telegram:123")
+    steering_msg = _make_msg(content="too late", message_id="2")
+    state.pending_steering.append(steering_msg)
+
+    await agent._finish_run_state("telegram:123")
+
+    agent.bus.publish_inbound.assert_awaited_once_with(steering_msg)
+    assert agent._run_state is None
+
+
+@pytest.mark.asyncio
 async def test_request_stop_cancels_active_tool_task(tmp_path):
     """Stop immediately cancels the current foreground tool task."""
     agent = _make_agent(tmp_path)
@@ -223,9 +237,24 @@ def test_lightning_command_shows_toggle(tmp_path):
 
     assert "Lightning Mode" in response.content
     assert "Current: Disabled" in response.content
-    assert "Priority processing" in response.content
+    assert "doubles usage" in response.content
+    assert "Fast/Priority" not in response.content
     assert response.metadata["inline_keyboard"][0][0]["callback_data"] == "lightning_mode:on"
     assert response.metadata["inline_keyboard"][0][0]["text"] == "Enable"
+
+
+def test_lightning_command_treats_openai_oauth_as_supported(tmp_path):
+    """OpenAI OAuth should render Lightning Mode without the no-effect note."""
+    agent = _make_agent(tmp_path)
+    agent.model = "openai/gpt-5.4"
+    agent.auth_method = "oauth"
+    agent.lightning_mode = True
+
+    response = agent._handle_lightning(_make_msg(content="/lightning", command="lightning"))
+
+    assert "Current: Enabled" in response.content
+    assert "Currently has no effect" not in response.content
+    assert response.metadata["inline_keyboard"][0][0]["text"] == "Disable"
 
 
 def test_lightning_command_shows_no_effect_note_when_unsupported(tmp_path):

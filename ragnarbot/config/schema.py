@@ -51,7 +51,7 @@ class AgentDefaults(BaseModel):
         default=False,
         json_schema_extra={
             "reload": "hot",
-            "label": "Enable Lightning Mode (supported OpenAI API models only; doubles token pricing)",
+            "label": "Enable Lightning Mode (supported OpenAI models only; doubles token pricing)",
         },
     )
     max_context_tokens: int = Field(
