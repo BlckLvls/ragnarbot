@@ -13,7 +13,7 @@ LIGHTNING_SUPPORTED_AUTH_METHODS = frozenset({
 })
 
 LIGHTNING_WORKS_NOTE = "Works only with supported OpenAI models."
-LIGHTNING_COST_NOTE = "Uses OpenAI Priority processing and doubles token pricing (2x vs standard)."
+LIGHTNING_COST_NOTE = "Can speed up responses and doubles usage (2x vs standard)."
 LIGHTNING_UNSUPPORTED_NOTE = "Currently has no effect for this model/auth setup."
 
 

@@ -89,7 +89,7 @@ def lightning_mode_screen(
     """Select Lightning Mode preference. Returns 0=off, 1=on, or None."""
     resolution = resolve_lightning(model_id, auth_method, lightning_mode=True)
     on_desc = (
-        "Uses Priority processing when supported"
+        "Can speed up responses when supported"
         if resolution.supported
         else "Saved, but currently has no effect for this setup"
     )

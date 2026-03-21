@@ -237,7 +237,8 @@ def test_lightning_command_shows_toggle(tmp_path):
 
     assert "Lightning Mode" in response.content
     assert "Current: Disabled" in response.content
-    assert "Priority processing" in response.content
+    assert "doubles usage" in response.content
+    assert "Fast/Priority" not in response.content
     assert response.metadata["inline_keyboard"][0][0]["callback_data"] == "lightning_mode:on"
     assert response.metadata["inline_keyboard"][0][0]["text"] == "Enable"
 
