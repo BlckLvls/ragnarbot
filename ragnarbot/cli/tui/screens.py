@@ -11,6 +11,10 @@ from ragnarbot.providers.lightning import (
     LIGHTNING_WORKS_NOTE,
     resolve_lightning,
 )
+from ragnarbot.providers.openai_chatgpt_provider import (
+    CODEX_CLI_REQUIRED_NOTE,
+    is_codex_cli_available,
+)
 
 
 def provider_screen(console: Console) -> int | None:
@@ -88,11 +92,14 @@ def lightning_mode_screen(
 ) -> int | None:
     """Select Lightning Mode preference. Returns 0=off, 1=on, or None."""
     resolution = resolve_lightning(model_id, auth_method, lightning_mode=True)
+    needs_codex_cli = auth_method == "oauth" and resolution.supported and not is_codex_cli_available()
     on_desc = (
         "Can speed up responses when supported"
         if resolution.supported
         else "Saved, but currently has no effect for this setup"
     )
+    if needs_codex_cli:
+        on_desc = "Requires Codex CLI installed locally"
     options = [
         ("Off", "Use standard processing"),
         ("On", on_desc),
@@ -100,6 +107,8 @@ def lightning_mode_screen(
     notes = [LIGHTNING_WORKS_NOTE, LIGHTNING_COST_NOTE]
     if not resolution.supported:
         notes.append(LIGHTNING_UNSUPPORTED_NOTE)
+    elif needs_codex_cli:
+        notes.append(CODEX_CLI_REQUIRED_NOTE)
     return select_menu(
         console,
         "Lightning Mode",
@@ -312,6 +321,7 @@ def summary_screen(
     voice_label = {"groq": "Groq", "elevenlabs": "ElevenLabs", "none": "Skipped"}
     search_label = {"brave": "Brave Search", "duckduckgo": "DuckDuckGo", "none": "Skipped"}
     lightning_resolution = resolve_lightning(model_id, auth_method, lightning_mode)
+    needs_codex_cli = auth_method == "oauth" and lightning_resolution.supported and not is_codex_cli_available()
     lines = [
         "[bold]Configuration summary:[/bold]",
         "",
@@ -328,6 +338,11 @@ def summary_screen(
         lines.extend([
             "",
             f"  [yellow]{LIGHTNING_UNSUPPORTED_NOTE}[/yellow]",
+        ])
+    if lightning_mode and needs_codex_cli:
+        lines.extend([
+            "",
+            f"  [yellow]{CODEX_CLI_REQUIRED_NOTE}[/yellow]",
         ])
     lines.extend([
         "",

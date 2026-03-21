@@ -28,6 +28,10 @@ BOT_COMMANDS = [
     ("stop", "Stop agent response"),
 ]
 
+CALLBACK_QUERY_PATTERN = (
+    r"^(ctx_mode|reasoning_level|lightning_mode|trace_mode|steering_mode):|^install_codex_cli$"
+)
+
 
 async def set_bot_commands(bot, chat_ids: list[int] | None = None) -> None:
     """Ensure bot command menu is up to date across all relevant scopes.
@@ -148,6 +152,11 @@ def _markdown_to_telegram_html(text: str) -> str:
         text = text.replace(f"\x00CB{i}\x00", f"<pre><code>{escaped}</code></pre>")
 
     return text
+
+
+def _is_message_not_modified_error(exc: Exception) -> bool:
+    """Return whether Telegram rejected an edit because nothing changed."""
+    return "message is not modified" in str(exc).lower()
 
 
 TELEGRAM_MAX_LENGTH = 4096
@@ -331,7 +340,7 @@ class TelegramChannel(BaseChannel):
         self._app.add_handler(CommandHandler("steering", self._on_steering))
         self._app.add_handler(CallbackQueryHandler(
             self._on_callback_query,
-            pattern="^(ctx_mode|reasoning_level|lightning_mode|trace_mode|steering_mode):",
+            pattern=CALLBACK_QUERY_PATTERN,
         ))
 
         logger.info("Starting Telegram bot (polling mode)...")
@@ -511,15 +520,32 @@ class TelegramChannel(BaseChannel):
                         reply_markup=reply_markup if is_last else None,
                     )
         except Exception as e:
-            # Fallback to plain text if HTML parsing fails
-            logger.warning(f"HTML parse failed, falling back to plain text: {e}")
+            if edit_id and _is_message_not_modified_error(e):
+                logger.debug(f"Telegram edit skipped because message was unchanged: {e}")
+                return
+
+            logger.warning(f"Telegram HTML send failed, falling back to plain text: {e}")
             try:
-                for chunk in _split_plain_text(msg.content):
-                    await self._app.bot.send_message(
+                if edit_id:
+                    plain_content = msg.content
+                    if len(plain_content) > TELEGRAM_MAX_LENGTH:
+                        plain_content = plain_content[:TELEGRAM_MAX_LENGTH - 3] + "..."
+                    await self._app.bot.edit_message_text(
                         chat_id=chat_id,
-                        text=chunk,
+                        message_id=edit_id,
+                        text=plain_content,
+                        reply_markup=reply_markup,
                     )
+                else:
+                    for chunk in _split_plain_text(msg.content):
+                        await self._app.bot.send_message(
+                            chat_id=chat_id,
+                            text=chunk,
+                        )
             except Exception as e2:
+                if edit_id and _is_message_not_modified_error(e2):
+                    logger.debug(f"Telegram plain-text edit skipped because message was unchanged: {e2}")
+                    return
                 logger.error(f"Error sending Telegram message: {e2}")
 
     async def _typing_loop(self, chat_id: int) -> None:
@@ -868,6 +894,20 @@ class TelegramChannel(BaseChannel):
                 metadata={
                     "command": "set_lightning_mode",
                     "lightning_mode": value,
+                    "callback_message_id": query.message.message_id if query.message else None,
+                    "user_id": user.id,
+                    "username": user.username,
+                    "first_name": user.first_name,
+                    "last_name": user.last_name,
+                },
+            )
+        elif query.data == "install_codex_cli":
+            await self._handle_message(
+                sender_id=sender_id,
+                chat_id=str(chat_id),
+                content="/lightning install_codex_cli",
+                metadata={
+                    "command": "install_codex_cli",
                     "callback_message_id": query.message.message_id if query.message else None,
                     "user_id": user.id,
                     "username": user.username,

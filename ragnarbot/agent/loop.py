@@ -117,6 +117,7 @@ class AgentLoop:
         "context_info", "context_mode", "lightning", "reasoning", "stop", "trace",
     })
     IMMEDIATE_COMMANDS = READ_ONLY_COMMANDS | frozenset({
+        "install_codex_cli",
         "set_context_mode",
         "set_lightning_mode",
         "set_reasoning_level",
@@ -1578,6 +1579,8 @@ class AgentLoop:
             return self._handle_lightning(msg)
         if command == "set_lightning_mode":
             return self._handle_set_lightning_mode(msg)
+        if command == "install_codex_cli":
+            return await self._handle_install_codex_cli(msg)
         if command == "trace":
             return self._handle_trace(msg)
         if command == "set_trace_mode":
@@ -1745,6 +1748,16 @@ class AgentLoop:
         """Resolve Lightning Mode for the current runtime model/auth pair."""
         return resolve_lightning(self.model, self.auth_method, self.lightning_mode)
 
+    def _needs_codex_cli_for_lightning(self) -> bool:
+        """Return whether the current runtime needs Codex CLI for OAuth Lightning."""
+        if self.auth_method != "oauth":
+            return False
+        resolution = resolve_lightning(self.model, self.auth_method, True)
+        if not resolution.supported:
+            return False
+        from ragnarbot.providers.openai_chatgpt_provider import is_codex_cli_available
+        return not is_codex_cli_available()
+
     def _build_lightning_message(self) -> str:
         """Render the Lightning Mode toggle panel."""
         resolution = self._get_lightning_resolution()
@@ -1759,6 +1772,9 @@ class AgentLoop:
         ]
         if not resolution.supported:
             lines.extend(["", LIGHTNING_UNSUPPORTED_NOTE])
+        elif self._needs_codex_cli_for_lightning():
+            from ragnarbot.providers.openai_chatgpt_provider import CODEX_CLI_REQUIRED_NOTE
+            lines.extend(["", CODEX_CLI_REQUIRED_NOTE])
         return "\n".join(lines)
 
     def _build_lightning_keyboard(self) -> list[list[dict[str, str]]]:
@@ -1766,7 +1782,14 @@ class AgentLoop:
         enabled = self.lightning_mode
         toggle = "off" if enabled else "on"
         btn_text = "Disable" if enabled else "Enable"
-        return [[{"text": btn_text, "callback_data": f"lightning_mode:{toggle}"}]]
+        keyboard = [[{"text": btn_text, "callback_data": f"lightning_mode:{toggle}"}]]
+        if self._needs_codex_cli_for_lightning():
+            from ragnarbot.providers.openai_chatgpt_provider import CODEX_CLI_INSTALL_BUTTON_TEXT
+            keyboard.append([{
+                "text": CODEX_CLI_INSTALL_BUTTON_TEXT,
+                "callback_data": "install_codex_cli",
+            }])
+        return keyboard
 
     def _handle_lightning(self, msg: InboundMessage) -> OutboundMessage:
         """Show Lightning Mode with a single enable/disable button."""
@@ -1786,6 +1809,18 @@ class AgentLoop:
         if value not in ("on", "off"):
             return None
 
+        if value == "on" and self._needs_codex_cli_for_lightning():
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=self._build_lightning_message(),
+                metadata={
+                    "raw_html": True,
+                    "edit_message_id": msg.metadata.get("callback_message_id"),
+                    "inline_keyboard": self._build_lightning_keyboard(),
+                },
+            )
+
         self.lightning_mode = value == "on"
         from ragnarbot.config.loader import load_config, save_config
         config = load_config()
@@ -1796,6 +1831,27 @@ class AgentLoop:
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=self._build_lightning_message(),
+            metadata={
+                "raw_html": True,
+                "edit_message_id": msg.metadata.get("callback_message_id"),
+                "inline_keyboard": self._build_lightning_keyboard(),
+            },
+        )
+
+    async def _handle_install_codex_cli(self, msg: InboundMessage) -> OutboundMessage:
+        """Install Codex CLI for OpenAI OAuth Lightning when requested from the UI."""
+        from ragnarbot.providers.openai_chatgpt_provider import install_codex_cli
+
+        ok, detail = await install_codex_cli()
+        prefix = "✅ Codex CLI installed." if ok else "⚠️ Failed to install Codex CLI."
+        content = f"{prefix}\n\n{self._build_lightning_message()}"
+        if detail:
+            content = f"{prefix}\n{detail}\n\n{self._build_lightning_message()}"
+
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=content,
             metadata={
                 "raw_html": True,
                 "edit_message_id": msg.metadata.get("callback_message_id"),

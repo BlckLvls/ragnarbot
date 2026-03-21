@@ -250,11 +250,28 @@ def test_lightning_command_treats_openai_oauth_as_supported(tmp_path):
     agent.auth_method = "oauth"
     agent.lightning_mode = True
 
-    response = agent._handle_lightning(_make_msg(content="/lightning", command="lightning"))
+    with patch("ragnarbot.providers.openai_chatgpt_provider.is_codex_cli_available", return_value=True):
+        response = agent._handle_lightning(_make_msg(content="/lightning", command="lightning"))
 
     assert "Current: Enabled" in response.content
     assert "Currently has no effect" not in response.content
     assert response.metadata["inline_keyboard"][0][0]["text"] == "Disable"
+
+
+def test_lightning_command_shows_codex_install_note_when_oauth_cli_missing(tmp_path):
+    """OpenAI OAuth Lightning should prompt to install Codex CLI when unavailable."""
+    agent = _make_agent(tmp_path)
+    agent.model = "openai/gpt-5.4"
+    agent.auth_method = "oauth"
+    agent.lightning_mode = False
+
+    with patch("ragnarbot.providers.openai_chatgpt_provider.is_codex_cli_available", return_value=False):
+        response = agent._handle_lightning(_make_msg(content="/lightning", command="lightning"))
+
+    assert "OpenAI OAuth Lightning requires Codex CLI installed locally." in response.content
+    assert response.metadata["inline_keyboard"][0][0]["text"] == "Enable"
+    assert response.metadata["inline_keyboard"][1][0]["callback_data"] == "install_codex_cli"
+    assert response.metadata["inline_keyboard"][1][0]["text"] == "Install Codex CLI"
 
 
 def test_lightning_command_shows_no_effect_note_when_unsupported(tmp_path):
@@ -296,6 +313,60 @@ def test_set_lightning_mode_persists_and_edits_message(tmp_path):
     assert "Current: Enabled" in response.content
     assert response.metadata["inline_keyboard"][0][0]["text"] == "Disable"
     mock_save.assert_called_once_with(config)
+
+
+def test_set_lightning_mode_requires_codex_cli_for_openai_oauth(tmp_path):
+    """Enabling OAuth Lightning without Codex CLI should not persist the toggle."""
+    agent = _make_agent(tmp_path)
+    agent.model = "openai/gpt-5.4"
+    agent.auth_method = "oauth"
+    agent.lightning_mode = False
+    config = MagicMock()
+    config.agents.defaults.lightning_mode = False
+
+    with (
+        patch("ragnarbot.providers.openai_chatgpt_provider.is_codex_cli_available", return_value=False),
+        patch("ragnarbot.config.loader.load_config", return_value=config),
+        patch("ragnarbot.config.loader.save_config") as mock_save,
+    ):
+        response = agent._handle_set_lightning_mode(_make_msg(
+            content="/lightning on",
+            command="set_lightning_mode",
+            lightning_mode="on",
+            callback_message_id=42,
+        ))
+
+    assert response is not None
+    assert agent.lightning_mode is False
+    assert response.metadata["edit_message_id"] == 42
+    assert "OpenAI OAuth Lightning requires Codex CLI installed locally." in response.content
+    assert response.metadata["inline_keyboard"][1][0]["callback_data"] == "install_codex_cli"
+    mock_save.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_install_codex_cli_callback_edits_lightning_panel(tmp_path):
+    """Install callback should update the same Lightning panel in place."""
+    agent = _make_agent(tmp_path)
+    agent.model = "openai/gpt-5.4"
+    agent.auth_method = "oauth"
+    agent.lightning_mode = False
+
+    with (
+        patch("ragnarbot.providers.openai_chatgpt_provider.install_codex_cli", AsyncMock(return_value=(True, "brew install --cask codex"))),
+        patch("ragnarbot.providers.openai_chatgpt_provider.is_codex_cli_available", return_value=True),
+    ):
+        response = await agent._handle_install_codex_cli(_make_msg(
+            content="/lightning install_codex_cli",
+            command="install_codex_cli",
+            callback_message_id=42,
+        ))
+
+    assert response.metadata["edit_message_id"] == 42
+    assert "✅ Codex CLI installed." in response.content
+    assert "Current: Disabled" in response.content
+    assert "requires Codex CLI" not in response.content
+    assert len(response.metadata["inline_keyboard"]) == 1
 
 
 @pytest.mark.asyncio
