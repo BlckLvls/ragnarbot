@@ -183,6 +183,45 @@ class TestOnboardingFlow:
         creds = mock_save_creds.call_args[0][0]
         assert creds.providers.openai.api_key == "sk-openai-key"
 
+    def test_openai_oauth_lightning_requires_codex_cli(self, tmp_path):
+        """OpenAI OAuth Lightning should stay off until Codex CLI is available."""
+        keys = [
+            (Key.DOWN, ""),         # Navigate to OpenAI
+            (Key.ENTER, ""),        # Select OpenAI
+            (Key.ENTER, ""),        # Select OAuth
+            (Key.ENTER, ""),        # Select first model (GPT-5.4)
+            *ENABLE_LIGHTNING,
+            (Key.ENTER, ""),        # Acknowledge Codex CLI required
+        ]
+        set_key_reader(make_key_sequence(keys))
+        con = make_console()
+
+        p = _patches(tmp_path)
+        with (
+            p["load_config"],
+            p["save_config"] as mock_save_config,
+            p["get_config_path"],
+            p["load_credentials"],
+            p["save_credentials"] as mock_save_creds,
+            p["get_credentials_path"],
+            p["get_workspace_path"],
+            p["create_templates"],
+            patch("ragnarbot.auth.openai_oauth.authenticate", return_value=True),
+            patch("ragnarbot.cli.tui.is_codex_cli_available", return_value=False),
+            patch("ragnarbot.cli.tui.telegram_screen", return_value=""),
+            patch("ragnarbot.cli.tui.voice_transcription_screen", return_value=("none", "")),
+            patch("ragnarbot.cli.tui.web_search_screen", return_value=("none", "")),
+            patch("ragnarbot.cli.tui.daemon_screen", return_value=1),
+            patch("ragnarbot.cli.tui.summary_screen", return_value=True),
+        ):
+            run_onboarding(con)
+
+        config = mock_save_config.call_args[0][0]
+        assert config.agents.defaults.model == "openai/gpt-5.4"
+        assert config.agents.defaults.auth_method == "oauth"
+        assert config.agents.defaults.lightning_mode is False
+        assert mock_save_creds.called
+
     def test_gemini_flow(self, tmp_path):
         """Gemini flow with API Key auth and Flash model selected."""
         keys = [

@@ -2,7 +2,7 @@
 
 from rich.console import Console
 
-from ragnarbot.cli.tui.components import QuitOnboardingError, clear_screen
+from ragnarbot.cli.tui.components import QuitOnboardingError, clear_screen, info_screen
 from ragnarbot.cli.tui.screens import (
     auth_method_screen,
     daemon_screen,
@@ -16,6 +16,11 @@ from ragnarbot.cli.tui.screens import (
     web_search_screen,
 )
 from ragnarbot.config.providers import PROVIDERS, get_models, get_provider, supports_oauth
+from ragnarbot.providers.lightning import resolve_lightning
+from ragnarbot.providers.openai_chatgpt_provider import (
+    CODEX_CLI_REQUIRED_NOTE,
+    is_codex_cli_available,
+)
 
 
 def run_onboarding(console: Console) -> None:
@@ -103,7 +108,31 @@ def _onboarding_loop(console: Console) -> None:
             if lightning_idx is None:
                 step = 4
                 continue
-            lightning_mode = lightning_idx == 1
+            requested_lightning = lightning_idx == 1
+            resolution = resolve_lightning(model_id, auth_method, requested_lightning)
+            needs_codex_cli = (
+                requested_lightning
+                and auth_method == "oauth"
+                and resolution.supported
+                and not is_codex_cli_available()
+            )
+            if needs_codex_cli:
+                ok = info_screen(
+                    console,
+                    "Codex CLI required",
+                    [
+                        CODEX_CLI_REQUIRED_NOTE,
+                        "",
+                        "Lightning will stay off until Codex CLI is installed locally.",
+                        "You can install it later from the /lightning panel in Telegram.",
+                    ],
+                    subtitle="OpenAI OAuth",
+                )
+                if not ok:
+                    continue
+                lightning_mode = False
+            else:
+                lightning_mode = requested_lightning
             step = 6
 
         elif step == 6:
