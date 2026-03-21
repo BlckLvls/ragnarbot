@@ -211,7 +211,6 @@ def _save_results(
         save_credentials,
     )
     from ragnarbot.config.loader import get_config_path, load_config, save_config
-    from ragnarbot.utils.helpers import get_workspace_path
 
     # Load existing or create new
     config = load_config()
@@ -259,7 +258,7 @@ def _save_results(
     save_credentials(creds)
 
     # Ensure workspace exists
-    workspace = get_workspace_path()
+    workspace = config.workspace_path
 
     # Create workspace templates if needed
     from ragnarbot.cli.commands import _create_workspace_templates

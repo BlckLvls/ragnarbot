@@ -5,17 +5,24 @@ import mimetypes
 from pathlib import Path
 from typing import Any
 
+from ragnarbot.agent.pathing import resolve_path_in_workspace
 from ragnarbot.agent.tools.base import Tool
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5 MB (Anthropic API limit for base64 images)
 
 
+def _resolve_path(path: str, workspace: Path | None = None) -> Path:
+    """Resolve a user path, anchoring relative paths to the active workspace."""
+    return resolve_path_in_workspace(path, workspace)
+
+
 class ReadFileTool(Tool):
     """Tool to read file contents."""
 
-    def __init__(self, model: str | None = None):
+    def __init__(self, model: str | None = None, workspace: Path | None = None):
         self._model = model
+        self._workspace = workspace
 
     @property
     def name(self) -> str:
@@ -44,7 +51,7 @@ class ReadFileTool(Tool):
 
     async def execute(self, path: str, **kwargs: Any) -> str | list[dict[str, Any]]:
         try:
-            file_path = Path(path).expanduser().resolve()
+            file_path = _resolve_path(path, self._workspace)
             if not file_path.exists():
                 return f"Error: File not found: {path}"
             if not file_path.is_file():
@@ -100,15 +107,18 @@ class ReadFileTool(Tool):
 
 class WriteFileTool(Tool):
     """Tool to write content to a file."""
-    
+
+    def __init__(self, workspace: Path | None = None):
+        self._workspace = workspace
+
     @property
     def name(self) -> str:
         return "write_file"
-    
+
     @property
     def description(self) -> str:
         return "Write content to a file at the given path. Creates parent directories if needed."
-    
+
     @property
     def parameters(self) -> dict[str, Any]:
         return {
@@ -125,10 +135,10 @@ class WriteFileTool(Tool):
             },
             "required": ["path", "content"]
         }
-    
+
     async def execute(self, path: str, content: str, **kwargs: Any) -> str:
         try:
-            file_path = Path(path).expanduser()
+            file_path = _resolve_path(path, self._workspace)
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content, encoding="utf-8")
             return f"Successfully wrote {len(content)} bytes to {path}"
@@ -140,15 +150,18 @@ class WriteFileTool(Tool):
 
 class EditFileTool(Tool):
     """Tool to edit a file by replacing text."""
-    
+
+    def __init__(self, workspace: Path | None = None):
+        self._workspace = workspace
+
     @property
     def name(self) -> str:
         return "edit_file"
-    
+
     @property
     def description(self) -> str:
         return "Edit a file by replacing old_text with new_text. The old_text must exist exactly in the file."
-    
+
     @property
     def parameters(self) -> dict[str, Any]:
         return {
@@ -169,26 +182,26 @@ class EditFileTool(Tool):
             },
             "required": ["path", "old_text", "new_text"]
         }
-    
+
     async def execute(self, path: str, old_text: str, new_text: str, **kwargs: Any) -> str:
         try:
-            file_path = Path(path).expanduser()
+            file_path = _resolve_path(path, self._workspace)
             if not file_path.exists():
                 return f"Error: File not found: {path}"
-            
+
             content = file_path.read_text(encoding="utf-8")
-            
+
             if old_text not in content:
-                return f"Error: old_text not found in file. Make sure it matches exactly."
-            
+                return "Error: old_text not found in file. Make sure it matches exactly."
+
             # Count occurrences
             count = content.count(old_text)
             if count > 1:
                 return f"Warning: old_text appears {count} times. Please provide more context to make it unique."
-            
+
             new_content = content.replace(old_text, new_text, 1)
             file_path.write_text(new_content, encoding="utf-8")
-            
+
             return f"Successfully edited {path}"
         except PermissionError:
             return f"Error: Permission denied: {path}"
@@ -198,15 +211,18 @@ class EditFileTool(Tool):
 
 class ListDirTool(Tool):
     """Tool to list directory contents."""
-    
+
+    def __init__(self, workspace: Path | None = None):
+        self._workspace = workspace
+
     @property
     def name(self) -> str:
         return "list_dir"
-    
+
     @property
     def description(self) -> str:
         return "List the contents of a directory."
-    
+
     @property
     def parameters(self) -> dict[str, Any]:
         return {
@@ -219,23 +235,23 @@ class ListDirTool(Tool):
             },
             "required": ["path"]
         }
-    
+
     async def execute(self, path: str, **kwargs: Any) -> str:
         try:
-            dir_path = Path(path).expanduser()
+            dir_path = _resolve_path(path, self._workspace)
             if not dir_path.exists():
                 return f"Error: Directory not found: {path}"
             if not dir_path.is_dir():
                 return f"Error: Not a directory: {path}"
-            
+
             items = []
             for item in sorted(dir_path.iterdir()):
                 prefix = "📁 " if item.is_dir() else "📄 "
                 items.append(f"{prefix}{item.name}")
-            
+
             if not items:
                 return f"Directory {path} is empty"
-            
+
             return "\n".join(items)
         except PermissionError:
             return f"Error: Permission denied: {path}"

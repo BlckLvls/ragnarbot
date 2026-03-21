@@ -6,7 +6,14 @@ from pathlib import Path
 import pytest
 
 from ragnarbot.agent.cache import CacheManager
-from ragnarbot.agent.tools.filesystem import IMAGE_EXTENSIONS, MAX_IMAGE_SIZE, ReadFileTool
+from ragnarbot.agent.tools.filesystem import (
+    IMAGE_EXTENSIONS,
+    MAX_IMAGE_SIZE,
+    EditFileTool,
+    ListDirTool,
+    ReadFileTool,
+    WriteFileTool,
+)
 from ragnarbot.session.manager import Session
 
 # -- Helpers ------------------------------------------------------------------
@@ -101,6 +108,61 @@ class TestReadFileToolImages:
 
         assert isinstance(result, str)
         assert "not found" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_read_relative_path_resolves_from_workspace(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        txt = workspace / "docs" / "readme.txt"
+        txt.parent.mkdir(parents=True)
+        txt.write_text("hello workspace")
+
+        tool = ReadFileTool(workspace=workspace)
+        result = await tool.execute(path="docs/readme.txt")
+
+        assert result == "hello workspace"
+
+
+class TestFilesystemToolsWorkspaceResolution:
+    @pytest.mark.asyncio
+    async def test_write_relative_path_resolves_from_workspace(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        tool = WriteFileTool(workspace=workspace)
+        result = await tool.execute(path="research/brief.md", content="brief")
+
+        assert "Successfully wrote" in result
+        assert (workspace / "research" / "brief.md").read_text() == "brief"
+
+    @pytest.mark.asyncio
+    async def test_edit_relative_path_resolves_from_workspace(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        target = workspace / "notes.txt"
+        target.write_text("hello world")
+
+        tool = EditFileTool(workspace=workspace)
+        result = await tool.execute(
+            path="notes.txt", old_text="hello", new_text="hi",
+        )
+
+        assert "Successfully edited" in result
+        assert target.read_text() == "hi world"
+
+    @pytest.mark.asyncio
+    async def test_list_dir_relative_path_resolves_from_workspace(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        docs = workspace / "docs"
+        docs.mkdir(parents=True)
+        (docs / "a.txt").write_text("a")
+        (docs / "b.txt").write_text("b")
+
+        tool = ListDirTool(workspace=workspace)
+        result = await tool.execute(path="docs")
+
+        assert "📄 a.txt" in result
+        assert "📄 b.txt" in result
 
 
 # -- Session persistence tests ------------------------------------------------

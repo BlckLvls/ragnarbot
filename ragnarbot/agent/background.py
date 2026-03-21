@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
+from ragnarbot.agent.pathing import resolve_working_dir
 from ragnarbot.bus.events import InboundMessage
 
 if TYPE_CHECKING:
@@ -110,12 +111,12 @@ class BackgroundProcessManager:
     def __init__(
         self,
         bus: "MessageBus",
-        workspace: Path,
+        workspace: Path | str,
         exec_config: "ExecToolConfig | None" = None,
     ):
         from ragnarbot.config.schema import ExecToolConfig
         self.bus = bus
-        self.workspace = workspace
+        self.workspace = Path(workspace).expanduser().resolve()
         self.exec_config = exec_config or ExecToolConfig()
         self._jobs: dict[str, BgJob] = {}
 
@@ -132,10 +133,10 @@ class BackgroundProcessManager:
         if running >= MAX_CONCURRENT:
             return f"Error: Too many concurrent background jobs ({MAX_CONCURRENT} limit)"
 
-        cwd = working_dir or str(self.workspace)
+        cwd = resolve_working_dir(working_dir, self.workspace)
         if self.exec_config.safety_guard:
             guard_error = _guard_command(
-                command, cwd,
+                command, str(cwd),
                 restrict_to_workspace=self.exec_config.restrict_to_workspace,
             )
             if guard_error:
@@ -149,7 +150,7 @@ class BackgroundProcessManager:
             job_id=job_id,
             label=display_label,
             command=command,
-            working_dir=cwd,
+            working_dir=str(cwd),
             status=JobState.running,
             started_at=time.time(),
             origin=origin,

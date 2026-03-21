@@ -1,17 +1,17 @@
 """Shell execution tool."""
 
 import asyncio
-import os
 import re
 from pathlib import Path
 from typing import Any
 
+from ragnarbot.agent.pathing import resolve_working_dir
 from ragnarbot.agent.tools.base import Tool
 
 
 class ExecTool(Tool):
     """Tool to execute shell commands."""
-    
+
     def __init__(
         self,
         timeout: int = 60,
@@ -36,15 +36,15 @@ class ExecTool(Tool):
         ]
         self.allow_patterns = allow_patterns or []
         self.restrict_to_workspace = restrict_to_workspace
-    
+
     @property
     def name(self) -> str:
         return "exec"
-    
+
     @property
     def description(self) -> str:
         return "Execute a shell command and return its output. Use with caution."
-    
+
     @property
     def parameters(self) -> dict[str, Any]:
         return {
@@ -61,11 +61,11 @@ class ExecTool(Tool):
             },
             "required": ["command"]
         }
-    
+
     async def execute(self, command: str, working_dir: str | None = None, **kwargs: Any) -> str:
-        cwd = working_dir or self.working_dir or os.getcwd()
+        cwd = resolve_working_dir(working_dir, self.working_dir)
         if self.safety_guard:
-            guard_error = self._guard_command(command, cwd)
+            guard_error = self._guard_command(command, str(cwd))
             if guard_error:
                 return guard_error
         process = None
@@ -74,9 +74,9 @@ class ExecTool(Tool):
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
+                cwd=str(cwd),
             )
-            
+
             try:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(),
@@ -96,29 +96,29 @@ class ExecTool(Tool):
             except asyncio.TimeoutError:
                 process.kill()
                 return f"Error: Command timed out after {self.timeout} seconds"
-            
+
             output_parts = []
-            
+
             if stdout:
                 output_parts.append(stdout.decode("utf-8", errors="replace"))
-            
+
             if stderr:
                 stderr_text = stderr.decode("utf-8", errors="replace")
                 if stderr_text.strip():
                     output_parts.append(f"STDERR:\n{stderr_text}")
-            
+
             if process.returncode != 0:
                 output_parts.append(f"\nExit code: {process.returncode}")
-            
+
             result = "\n".join(output_parts) if output_parts else "(no output)"
-            
+
             # Truncate very long output
             max_len = 10000
             if len(result) > max_len:
                 result = result[:max_len] + f"\n... (truncated, {len(result) - max_len} more chars)"
-            
+
             return result
-            
+
         except asyncio.CancelledError:
             raise
         except Exception as e:

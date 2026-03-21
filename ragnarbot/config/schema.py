@@ -5,7 +5,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
-from ragnarbot.instance import workspace_config_value
+from ragnarbot.instance import resolve_workspace_path, workspace_config_value
 
 
 class TelegramConfig(BaseModel):
@@ -229,7 +229,7 @@ class Config(BaseSettings):
     @property
     def workspace_path(self) -> Path:
         """Get expanded workspace path."""
-        return Path(self.agents.defaults.workspace).expanduser()
+        return resolve_workspace_path(self.agents.defaults.workspace)
 
     class Config:
         env_prefix = "RAGNARBOT_"
