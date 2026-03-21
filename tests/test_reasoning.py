@@ -139,7 +139,7 @@ def test_openai_build_request_includes_reasoning():
     assert body["reasoning"] == {"effort": "xhigh"}
 
 
-def test_openai_build_request_includes_priority_service_tier_for_supported_lightning():
+def test_openai_build_request_skips_priority_service_tier_for_raw_oauth_lightning():
     with patch("ragnarbot.auth.openai_oauth.get_account_id", return_value="acct_test"):
         provider = OpenAIChatGPTProvider(default_model="openai/gpt-5.4")
 
@@ -151,7 +151,7 @@ def test_openai_build_request_includes_priority_service_tier_for_supported_light
         lightning_mode=True,
     )
 
-    assert body["service_tier"] == "priority"
+    assert "service_tier" not in body
 
 
 def test_openai_build_request_skips_priority_service_tier_for_unsupported_lightning():

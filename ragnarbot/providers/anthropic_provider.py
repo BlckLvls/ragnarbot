@@ -66,7 +66,19 @@ class AnthropicProvider(LLMProvider):
         temperature: float | None = None,
         reasoning_level: str | None = None,
         lightning_mode: bool | None = None,
+        session_key: str | None = None,
+        tool_runner=None,
+        tool_call_handler=None,
+        text_delta_handler=None,
+        steering_message_provider=None,
     ) -> LLMResponse:
+        _ = (
+            session_key,
+            tool_runner,
+            tool_call_handler,
+            text_delta_handler,
+            steering_message_provider,
+        )
         _ = lightning_mode
         model = model or self.default_model
         reasoning = resolve_reasoning(model, reasoning_level)
