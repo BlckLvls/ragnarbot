@@ -267,6 +267,8 @@ This is the right choice for:
 - Reporting results
 - Any direct back-and-forth
 
+{model_behavior_addendum}
+
 ### Agents (`agent_spawn`, `agent_progress`, `agent_list`, `agent_message`, `agent_stop`)
 
 Agents are background workers you can delegate tasks to. They run autonomously and report results when done.

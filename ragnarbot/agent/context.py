@@ -8,6 +8,7 @@ from typing import Any
 
 from ragnarbot.agent.agents_loader import AgentsLoader
 from ragnarbot.agent.memory import MemoryStore
+from ragnarbot.agent.prompt_overlays import get_model_behavior_addendum
 from ragnarbot.agent.skills import SkillsLoader
 from ragnarbot.instance import get_instance, runtime_name, tilde_path
 
@@ -145,6 +146,7 @@ Use `agent_spawn` to start a task with a specific agent type, or omit the agent 
         workspace_path = str(self.workspace.expanduser().resolve())
         timezone = f"{tz_name} (UTC{utc_offset[:3]}:{utc_offset[3:]})"
         instance = get_instance()
+        model_behavior_addendum = get_model_behavior_addendum(self.model)
 
         parts = []
         for filename in self.BUILTIN_FILES:
@@ -157,6 +159,7 @@ Use `agent_spawn` to start a task with a specific agent type, or omit the agent 
                     heartbeat_interval_m=self.heartbeat_interval_m,
                     instance_name=instance.runtime_name,
                     data_root=tilde_path(instance.data_root),
+                    model_behavior_addendum=model_behavior_addendum,
                 )
                 parts.append(content)
         return "\n\n---\n\n".join(parts) if parts else ""
