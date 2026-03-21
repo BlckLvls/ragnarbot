@@ -308,6 +308,44 @@ class TestOnboardingFlow:
             run_onboarding(con)
             assert not mock_save.called
 
+    def test_onboarding_uses_effective_config_workspace_for_templates(self, tmp_path):
+        keys = [
+            (Key.ENTER, ""),        # Select Anthropic
+            (Key.DOWN, ""),         # Navigate to API Key
+            (Key.ENTER, ""),        # Select API Key
+            *[(Key.CHAR, c) for c in "sk-ant-test-key-123"],
+            (Key.ENTER, ""),        # Confirm key
+            (Key.ENTER, ""),        # Select first model
+            *SKIP_LIGHTNING,
+            (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Voice: past ElevenLabs
+            (Key.DOWN, ""),         # Voice: to Skip
+            (Key.ENTER, ""),        # Select Skip
+            *SKIP_WEB_SEARCH,
+            (Key.DOWN, ""),         # Navigate to "No" (manual start)
+            (Key.ENTER, ""),        # Select manual start
+            (Key.ENTER, ""),        # Confirm summary
+        ]
+        set_key_reader(make_key_sequence(keys))
+        con = make_console()
+
+        p = _patches(tmp_path)
+        config = Config()
+        config.agents.defaults.workspace = str(tmp_path / "custom-workspace")
+        with (
+            patch("ragnarbot.config.loader.load_config", return_value=config),
+            p["save_config"],
+            p["get_config_path"],
+            p["load_credentials"],
+            p["save_credentials"],
+            p["get_credentials_path"],
+            p["get_workspace_path"],
+            p["create_templates"] as mock_create_templates,
+        ):
+            run_onboarding(con)
+
+        mock_create_templates.assert_called_once_with((tmp_path / "custom-workspace").resolve())
+
 
 class TestTelegramValidation:
     def test_telegram_valid_token(self, tmp_path):

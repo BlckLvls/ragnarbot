@@ -236,10 +236,10 @@ class AgentLoop:
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
         # File tools
-        self.tools.register(ReadFileTool(model=self.model))
-        self.tools.register(WriteFileTool())
-        self.tools.register(EditFileTool())
-        self.tools.register(ListDirTool())
+        self.tools.register(ReadFileTool(model=self.model, workspace=self.workspace))
+        self.tools.register(WriteFileTool(workspace=self.workspace))
+        self.tools.register(EditFileTool(workspace=self.workspace))
+        self.tools.register(ListDirTool(workspace=self.workspace))
 
         # Shell tool
         self.tools.register(ExecTool(
@@ -2566,10 +2566,10 @@ class AgentLoop:
         reg = ToolRegistry()
 
         # File tools
-        reg.register(ReadFileTool(model=self.model))
-        reg.register(WriteFileTool())
-        reg.register(EditFileTool())
-        reg.register(ListDirTool())
+        reg.register(ReadFileTool(model=self.model, workspace=self.workspace))
+        reg.register(WriteFileTool(workspace=self.workspace))
+        reg.register(EditFileTool(workspace=self.workspace))
+        reg.register(ListDirTool(workspace=self.workspace))
 
         # Shell
         reg.register(ExecTool(

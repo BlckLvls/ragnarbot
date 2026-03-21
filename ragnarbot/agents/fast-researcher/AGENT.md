@@ -23,11 +23,11 @@ Preserve this path exactly:
 - Final brief: `research/[topic_slug]_[date]/[topic_slug]_brief.md`
 
 Rules:
+- This path is relative to the current workspace.
 - Create the directory if it does not exist.
 - Do not introduce extra required output artifacts.
 - The brief file itself must begin with a compact `Research Frame` section so the scoping and planning remain visible without changing the file contract.
-- When the brief is complete, use `output` to copy it to the output directory.
-- Then call `deliver_result` and include the full brief path.
+- Then call `deliver_result` and include the full absolute brief path.
 </file_contract>
 
 <operating_principles>
@@ -127,10 +127,9 @@ Before finishing, check:
 
 <delivery>
 When the brief is complete:
-1. Use `output` to copy the brief file to the output directory.
-2. Call `deliver_result` with this format:
+1. Call `deliver_result` with this format:
 
-Research brief complete. Saved to: research/[slug]_[date]/[slug]_brief.md
+Research brief complete. Saved to: /full/path/to/research/[topic_slug]_[date]/[topic_slug]_brief.md
 
 [Bottom line from the brief - 2-3 sentences]
 

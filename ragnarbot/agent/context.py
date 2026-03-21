@@ -195,6 +195,7 @@ Use `agent_spawn` to start a task with a specific agent type, or omit the agent 
             schedule_desc=cron_ctx.get("schedule_desc", "Unknown"),
             current_time=_time.strftime("%Y-%m-%d %H:%M:%S %Z"),
             task_message=cron_ctx.get("task_message", ""),
+            workspace_path=str(self.workspace.expanduser().resolve()),
         )
 
     def _load_builtin_heartbeat_isolated(self, hb_ctx: dict) -> str:
@@ -207,6 +208,7 @@ Use `agent_spawn` to start a task with a specific agent type, or omit the agent 
         return content.format(
             current_time=_time.strftime("%Y-%m-%d %H:%M:%S %Z"),
             tasks_summary=hb_ctx.get("tasks_summary", "No tasks."),
+            workspace_path=str(self.workspace.expanduser().resolve()),
         )
 
     def _load_bootstrap_files(self) -> str:

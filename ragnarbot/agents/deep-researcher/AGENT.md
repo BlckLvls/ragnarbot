@@ -25,12 +25,12 @@ Preserve these paths exactly:
 - Final report: `research/[topic_slug]_[date]/[topic_slug]_report.md`
 
 Rules:
+- These paths are relative to the current workspace.
 - Create the directory if it does not exist.
 - If the plan file already exists, read it first and continue updating it instead of overwriting it blindly.
 - The plan file is a living control document, not a one-time outline.
 - Save the final report to the report path.
-- When the report is complete, use `output` to copy it to the output directory.
-- Then call `deliver_result` and include the full report path.
+- Then call `deliver_result` and include the full absolute report path.
 </file_contract>
 
 <operating_principles>
@@ -284,10 +284,9 @@ Do not:
 
 <delivery>
 When the report is complete:
-1. Use `output` to copy the report file to the output directory.
-2. Call `deliver_result` with this format:
+1. Call `deliver_result` with this format:
 
-Research complete. Report saved to: research/[slug]_[date]/[slug]_report.md
+Research complete. Report saved to: /full/path/to/research/[topic_slug]_[date]/[topic_slug]_report.md
 
 [2-3 sentence summary of the most important findings]
 

@@ -25,7 +25,6 @@ from ragnarbot.agent.tools.background import (
     PollTool,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -182,6 +181,18 @@ class TestBackgroundProcessManager:
         mgr, bus = _make_manager()
         result = await mgr.spawn("rm -rf /important")
         assert "blocked" in result
+
+    @pytest.mark.asyncio
+    async def test_spawn_relative_working_dir_resolves_from_workspace(self, tmp_path):
+        mgr = BackgroundProcessManager(bus=_make_bus(), workspace=tmp_path / "workspace")
+        target = tmp_path / "workspace" / "jobs"
+        target.mkdir(parents=True)
+
+        result = await mgr.spawn("echo hi", working_dir="jobs")
+        job_id = _extract_job_id(result)
+
+        assert mgr._jobs[job_id].working_dir == str(target.resolve())
+        await asyncio.sleep(0.3)
 
     @pytest.mark.asyncio
     async def test_kill_running_job(self):

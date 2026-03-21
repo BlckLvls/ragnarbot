@@ -1,5 +1,8 @@
 """Tests for ExecTool safety guard."""
 
+import shlex
+import sys
+
 import pytest
 
 from ragnarbot.agent.tools.shell import ExecTool
@@ -119,3 +122,17 @@ class TestSafetyGuardToggle:
         tool = ExecTool(safety_guard=True)
         result = await tool.execute("rm -rf /")
         assert "blocked" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_relative_working_dir_resolves_from_workspace(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        target = workspace / "docs"
+        target.mkdir(parents=True)
+
+        tool = ExecTool(working_dir=str(workspace))
+        result = await tool.execute(
+            f"{shlex.quote(sys.executable)} -c 'import os; print(os.getcwd())'",
+            working_dir="docs",
+        )
+
+        assert str(target.resolve()) in result

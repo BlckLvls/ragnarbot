@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from ragnarbot.config.schema import Config
 from ragnarbot.instance import (
     GatewayClaimError,
     acquire_gateway_claim,
@@ -45,6 +46,17 @@ def test_custom_profile_root(tmp_path):
         assert info.runtime_name == "ragnarbot-vodichezka"
         assert info.data_root == tmp_path / ".ragnarbot-vodichezka"
         assert workspace_config_value("vodichezka") == "~/.ragnarbot-vodichezka/workspace"
+
+
+def test_relative_workspace_config_resolves_under_profile_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("RAGNARBOT_PROFILE", "vodichezka")
+    monkeypatch.setattr("ragnarbot.instance.Path.home", lambda: tmp_path)
+
+    config = Config.model_validate({"agents": {"defaults": {"workspace": "custom/workspace"}}})
+
+    assert config.workspace_path == (
+        tmp_path / ".ragnarbot-vodichezka" / "custom" / "workspace"
+    ).resolve()
 
 
 def test_env_profile_used_when_explicit_missing(monkeypatch):

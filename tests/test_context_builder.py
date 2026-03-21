@@ -93,6 +93,30 @@ class TestLoadBuiltinTelegram:
         assert "N/A" in result
 
 
+class TestIsolatedBuiltins:
+    def test_cron_isolated_includes_workspace_path(self, tmp_path):
+        cb = ContextBuilder(tmp_path / "workspace")
+
+        result = cb._load_builtin_cron_isolated({
+            "job_name": "job",
+            "schedule_desc": "every 1h",
+            "task_message": "Do work",
+        })
+
+        assert f"**Workspace:** {cb.workspace.expanduser().resolve()}" in result
+        assert "absolute path under the workspace above" in result
+
+    def test_heartbeat_isolated_includes_workspace_path(self, tmp_path):
+        cb = ContextBuilder(tmp_path / "workspace")
+
+        result = cb._load_builtin_heartbeat_isolated({
+            "tasks_summary": "Task A",
+        })
+
+        assert f"**Workspace:** {cb.workspace.expanduser().resolve()}" in result
+        assert "If you mention a file, include its absolute path" in result
+
+
 class TestBootstrapFiles:
     def test_user_files_have_path_header(self, tmp_path):
         cb = ContextBuilder(tmp_path / "workspace")

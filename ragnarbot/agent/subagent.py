@@ -568,13 +568,13 @@ class SubagentManager:
 
         # File tools
         if "file_read" in allowed:
-            reg.register(ReadFileTool(model=self.model))
+            reg.register(ReadFileTool(model=self.model, workspace=self.workspace))
         if "file_write" in allowed:
-            reg.register(WriteFileTool())
+            reg.register(WriteFileTool(workspace=self.workspace))
         if "file_edit" in allowed:
-            reg.register(EditFileTool())
+            reg.register(EditFileTool(workspace=self.workspace))
         if "list_dir" in allowed:
-            reg.register(ListDirTool())
+            reg.register(ListDirTool(workspace=self.workspace))
 
         # Shell
         if "exec" in allowed:

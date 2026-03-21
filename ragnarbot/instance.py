@@ -107,6 +107,21 @@ def workspace_config_value(profile: str | None = None) -> str:
     return f"~/{ROOT_PREFIX}{resolved}/workspace"
 
 
+def resolve_workspace_path(
+    workspace: str | Path | None = None,
+    profile: str | None = None,
+) -> Path:
+    """Resolve a configured workspace path for the active profile."""
+    info = get_instance(profile)
+    if workspace is None:
+        return info.workspace_path.resolve()
+
+    resolved = Path(workspace).expanduser()
+    if not resolved.is_absolute():
+        resolved = info.data_root / resolved
+    return resolved.resolve()
+
+
 def get_instance(profile: str | None = None) -> InstanceInfo:
     """Build the full instance descriptor for a profile."""
     resolved = resolve_active_profile(profile)

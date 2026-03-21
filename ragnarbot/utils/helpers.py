@@ -3,7 +3,7 @@
 from datetime import datetime
 from pathlib import Path
 
-from ragnarbot.instance import ensure_instance_root, get_instance
+from ragnarbot.instance import ensure_instance_root, get_instance, resolve_workspace_path
 
 
 def ensure_dir(path: Path) -> Path:
@@ -27,11 +27,7 @@ def get_workspace_path(workspace: str | None = None) -> Path:
     Returns:
         Expanded and ensured workspace path.
     """
-    if workspace:
-        path = Path(workspace).expanduser()
-    else:
-        path = get_instance().workspace_path
-    return ensure_dir(path)
+    return ensure_dir(resolve_workspace_path(workspace))
 
 
 def get_sessions_path() -> Path:
