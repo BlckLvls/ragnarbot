@@ -110,6 +110,24 @@ class TestAgentsLoader:
         assert (BUILTIN_AGENTS_DIR / "deep-researcher" / "AGENT.md").exists()
         assert (BUILTIN_AGENTS_DIR / "fast-researcher" / "AGENT.md").exists()
 
+    def test_builtin_researchers_use_absolute_paths_in_delivery_examples(self):
+        """Researcher delivery examples should instruct absolute paths, not relative ones."""
+        from ragnarbot.agent.agents_loader import BUILTIN_AGENTS_DIR
+
+        deep_text = (BUILTIN_AGENTS_DIR / "deep-researcher" / "AGENT.md").read_text(
+            encoding="utf-8",
+        )
+        fast_text = (BUILTIN_AGENTS_DIR / "fast-researcher" / "AGENT.md").read_text(
+            encoding="utf-8",
+        )
+
+        assert "/full/path/to/research/[topic_slug]_[date]/[topic_slug]_report.md" in deep_text
+        assert "/full/path/to/research/[topic_slug]_[date]/[topic_slug]_brief.md" in fast_text
+        assert "relative to the current workspace" in deep_text
+        assert "relative to the current workspace" in fast_text
+        assert "Use `output` to copy" not in deep_text
+        assert "Use `output` to copy" not in fast_text
+
 
 
 # ---------------------------------------------------------------------------
@@ -1041,6 +1059,8 @@ class TestCronIsolatedAgentProfile:
         # Should contain cron rules
         assert "deliver_result" in system_prompt
         assert "NOT an interactive conversation" in system_prompt
+        assert f"**Workspace:** {loop.workspace.expanduser().resolve()}" in system_prompt
+        assert "absolute path under the workspace above" in system_prompt
         # Should contain agent instructions
         assert "research specialist" in system_prompt
 

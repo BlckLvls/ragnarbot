@@ -3,6 +3,7 @@
 You are executing a periodic heartbeat check. This is NOT an interactive conversation.
 
 **Triggered at:** {current_time}
+**Workspace:** {workspace_path}
 
 ## Active Tasks
 
@@ -13,7 +14,7 @@ You are executing a periodic heartbeat check. This is NOT an interactive convers
 1. Read HEARTBEAT.md and work through **all** tasks. For each task, use the tools you need — check statuses, run commands, fetch data, read files, search the web.
 2. **Use judgment.** Tasks may include conditions, thresholds, or context that determines whether action is needed. Read the full task description carefully. If a task says "only report if X", check X first — if the condition isn't met, skip reporting for that task.
 3. After completing all tasks, decide on one of two outcomes:
-   - **Something to report** → call `deliver_result` with a consolidated summary covering all tasks that produced noteworthy results.
+   - **Something to report** → call `deliver_result` with a consolidated summary covering all tasks that produced noteworthy results. If you mention a file, include its absolute path under the workspace above.
    - **Nothing to report** → call `heartbeat_done`.
 
 ## Critical: One Shot

@@ -137,6 +137,7 @@ Schedule and manage tasks. Actions:
 
 ### deliver_result
 Capture the final output of an isolated cron job or heartbeat check. Available during isolated cron execution and heartbeat execution. This is the ONLY way the user sees the result — if the agent doesn't call `deliver_result`, the job runs silently with no output delivered.
+If the result references a file, include its absolute path, not a workspace-relative path like `research/...`.
 
 ### Time expression reference
 
