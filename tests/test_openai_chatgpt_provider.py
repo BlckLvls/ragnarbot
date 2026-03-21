@@ -6,14 +6,18 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+import ragnarbot.providers.openai_chatgpt_provider as openai_chatgpt_provider
 from ragnarbot.providers.base import LLMResponse
 from ragnarbot.providers.openai_chatgpt_provider import (
     CODEX_APP_SERVER_STREAM_LIMIT,
+    CODEX_CLI_MANUAL_INSTALL,
     OpenAIChatGPTProvider,
     _clean_codex_stderr,
     _CodexAppServerProcess,
     _image_url_to_text,
     _JSONRPCError,
+    get_codex_cli_install_command,
+    install_codex_cli,
 )
 
 
@@ -82,6 +86,38 @@ def test_content_to_text_truncates_very_long_remote_image_urls():
     assert len(marker) < 140
 
 
+def test_find_codex_cli_bin_uses_common_install_locations_when_path_is_stale():
+    with (
+        patch("shutil.which", side_effect=[None, None, None]),
+        patch(
+            "ragnarbot.providers.openai_chatgpt_provider._is_executable_file",
+            side_effect=lambda path: path == "/opt/homebrew/bin/codex",
+        ),
+    ):
+        assert (
+            openai_chatgpt_provider.find_codex_cli_bin() == "/opt/homebrew/bin/codex"
+        )
+
+
+def test_find_codex_cli_bin_checks_npm_global_prefix_when_needed():
+    def fake_run(command):
+        if command[0] == "/usr/bin/npm":
+            return "/Users/test/.npm-global"
+        return None
+
+    with (
+        patch("shutil.which", side_effect=[None, None, "/usr/bin/npm"]),
+        patch("ragnarbot.providers.openai_chatgpt_provider._run_probe_command", side_effect=fake_run),
+        patch(
+            "ragnarbot.providers.openai_chatgpt_provider._is_executable_file",
+            side_effect=lambda path: path == "/Users/test/.npm-global/bin/codex",
+        ),
+    ):
+        assert (
+            openai_chatgpt_provider.find_codex_cli_bin() == "/Users/test/.npm-global/bin/codex"
+        )
+
+
 @pytest.mark.asyncio
 async def test_codex_app_server_start_uses_large_stream_limit(tmp_path):
     class FakeStdin:
@@ -124,6 +160,7 @@ async def test_provider_routes_to_codex_fast_only_for_gpt_5_4_lightning():
 
     with (
         patch("ragnarbot.auth.openai_oauth.get_access_token", return_value="token"),
+        patch("ragnarbot.providers.openai_chatgpt_provider.is_codex_cli_available", return_value=True),
         patch.object(provider, "_chat_raw", raw),
         patch.object(provider, "_chat_codex_fast", fast),
     ):
@@ -138,6 +175,117 @@ async def test_provider_routes_to_codex_fast_only_for_gpt_5_4_lightning():
     assert response.content == "fast"
     fast.assert_awaited_once()
     raw.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_provider_keeps_raw_path_when_codex_cli_missing():
+    with patch("ragnarbot.auth.openai_oauth.get_account_id", return_value="acct_test"):
+        provider = OpenAIChatGPTProvider()
+
+    raw = AsyncMock(return_value=LLMResponse(content="raw"))
+    fast = AsyncMock(return_value=LLMResponse(content="fast"))
+
+    with (
+        patch("ragnarbot.auth.openai_oauth.get_access_token", return_value="token"),
+        patch("ragnarbot.providers.openai_chatgpt_provider.is_codex_cli_available", return_value=False),
+        patch.object(provider, "_chat_raw", raw),
+        patch.object(provider, "_chat_codex_fast", fast),
+    ):
+        response = await provider.chat(
+            messages=[{"role": "user", "content": "hi"}],
+            model="openai/gpt-5.4",
+            lightning_mode=True,
+            session_key="telegram:123",
+            tool_runner=AsyncMock(return_value="ok"),
+        )
+
+    assert response.content == "raw"
+    raw.assert_awaited_once()
+    fast.assert_not_awaited()
+
+
+def test_get_codex_cli_install_command_prefers_brew_on_macos():
+    with (
+        patch("ragnarbot.providers.openai_chatgpt_provider.sys.platform", "darwin"),
+        patch("shutil.which", side_effect=["/opt/homebrew/bin/brew", "/opt/homebrew/bin/npm"]),
+    ):
+        command = get_codex_cli_install_command()
+
+    assert command == (
+        ["/opt/homebrew/bin/brew", "install", "--cask", "codex"],
+        "brew install --cask codex",
+    )
+
+
+def test_get_codex_cli_install_command_falls_back_to_npm():
+    with (
+        patch("ragnarbot.providers.openai_chatgpt_provider.sys.platform", "linux"),
+        patch("shutil.which", side_effect=[None, "/usr/bin/npm"]),
+    ):
+        command = get_codex_cli_install_command()
+
+    assert command == (
+        ["/usr/bin/npm", "install", "-g", "@openai/codex"],
+        CODEX_CLI_MANUAL_INSTALL,
+    )
+
+
+@pytest.mark.asyncio
+async def test_install_codex_cli_reports_manual_step_when_no_installer():
+    with (
+        patch("ragnarbot.providers.openai_chatgpt_provider.is_codex_cli_available", return_value=False),
+        patch("ragnarbot.providers.openai_chatgpt_provider.get_codex_cli_install_command", return_value=None),
+    ):
+        ok, detail = await install_codex_cli()
+
+    assert ok is False
+    assert CODEX_CLI_MANUAL_INSTALL in detail
+
+
+@pytest.mark.asyncio
+async def test_install_codex_cli_runs_detected_installer():
+    class FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return (b"installed", b"")
+
+    with (
+        patch("ragnarbot.providers.openai_chatgpt_provider.is_codex_cli_available", side_effect=[False, True]),
+        patch(
+            "ragnarbot.providers.openai_chatgpt_provider.get_codex_cli_install_command",
+            return_value=(["/usr/bin/npm", "install", "-g", "@openai/codex"], CODEX_CLI_MANUAL_INSTALL),
+        ),
+        patch("asyncio.create_subprocess_exec", AsyncMock(return_value=FakeProc())) as spawn,
+    ):
+        ok, detail = await install_codex_cli()
+
+    assert ok is True
+    assert detail == CODEX_CLI_MANUAL_INSTALL
+    spawn.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_install_codex_cli_reports_path_issue_after_successful_install():
+    class FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return (b"installed", b"")
+
+    with (
+        patch("ragnarbot.providers.openai_chatgpt_provider.is_codex_cli_available", side_effect=[False, False]),
+        patch(
+            "ragnarbot.providers.openai_chatgpt_provider.get_codex_cli_install_command",
+            return_value=(["/usr/bin/npm", "install", "-g", "@openai/codex"], CODEX_CLI_MANUAL_INSTALL),
+        ),
+        patch("asyncio.create_subprocess_exec", AsyncMock(return_value=FakeProc())),
+    ):
+        ok, detail = await install_codex_cli()
+
+    assert ok is False
+    assert "still not on PATH" in detail
+    assert CODEX_CLI_MANUAL_INSTALL in detail
 
 
 @pytest.mark.asyncio

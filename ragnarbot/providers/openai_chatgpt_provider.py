@@ -7,6 +7,8 @@ import contextlib
 import json
 import os
 import shutil
+import subprocess
+import sys
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +39,14 @@ CODEX_FAST_RETRY_DELAY_SECONDS = 0.75
 CODEX_FAST_INITIAL_EVENT_TIMEOUT_SECONDS = 30.0
 CODEX_FAST_EVENT_POLL_INTERVAL_SECONDS = 0.25
 CODEX_FAST_THREAD_REGISTRY = "thread_registry.json"
+CODEX_CLI_REQUIRED_NOTE = "OpenAI OAuth Lightning requires Codex CLI installed locally."
+CODEX_CLI_INSTALL_BUTTON_TEXT = "Install Codex CLI"
+CODEX_CLI_MANUAL_INSTALL = "npm install -g @openai/codex"
+_DEFAULT_CODEX_CLI_PATHS = (
+    "/opt/homebrew/bin/codex",
+    "/usr/local/bin/codex",
+    "/home/linuxbrew/.linuxbrew/bin/codex",
+)
 
 
 @dataclass
@@ -79,7 +89,7 @@ class _CodexAppServerProcess:
 
     async def start(self) -> None:
         """Launch the app-server and perform initialize/initialized handshake."""
-        codex_bin = shutil.which("codex")
+        codex_bin = find_codex_cli_bin()
         if not codex_bin:
             raise FileNotFoundError("`codex` CLI is not installed or not on PATH.")
 
@@ -778,7 +788,7 @@ class OpenAIChatGPTProvider(LLMProvider):
         tool_runner: ToolRunner | None,
     ) -> bool:
         resolution = resolve_lightning(model, "oauth", lightning_mode)
-        return bool(resolution.applies and session_key and tool_runner)
+        return bool(resolution.applies and session_key and tool_runner and is_codex_cli_available())
 
     async def _prepare_codex_thread(
         self,
@@ -1182,6 +1192,120 @@ def _strip_provider_prefix(model: str) -> str:
     if model.startswith("openai/"):
         return model[len("openai/"):]
     return model
+
+
+def _is_executable_file(path: str | Path | None) -> bool:
+    """Return whether a path exists and is executable."""
+    if not path:
+        return False
+    try:
+        return Path(path).is_file() and os.access(path, os.X_OK)
+    except OSError:
+        return False
+
+
+def _run_probe_command(command: list[str]) -> str | None:
+    """Run a short-lived probe command and return trimmed stdout on success."""
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    output = result.stdout.strip()
+    return output or None
+
+
+def _iter_additional_codex_cli_candidates() -> list[str]:
+    """Return likely Codex CLI locations outside the current PATH."""
+    candidates: list[str] = []
+    candidates.extend(_DEFAULT_CODEX_CLI_PATHS)
+
+    brew = shutil.which("brew")
+    if brew:
+        brew_prefix = _run_probe_command([brew, "--prefix"])
+        if brew_prefix:
+            candidates.append(str(Path(brew_prefix) / "bin" / "codex"))
+
+    npm = shutil.which("npm")
+    if npm:
+        npm_prefix = _run_probe_command([npm, "prefix", "-g"])
+        if npm_prefix:
+            candidates.append(str(Path(npm_prefix) / "bin" / "codex"))
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        unique.append(candidate)
+    return unique
+
+
+def find_codex_cli_bin() -> str | None:
+    """Locate the Codex CLI binary on PATH."""
+    direct = shutil.which("codex")
+    if direct:
+        return direct
+
+    for candidate in _iter_additional_codex_cli_candidates():
+        if _is_executable_file(candidate):
+            return candidate
+    return None
+
+
+def is_codex_cli_available() -> bool:
+    """Return whether Codex CLI is currently available on PATH."""
+    return find_codex_cli_bin() is not None
+
+
+def get_codex_cli_install_command() -> tuple[list[str], str] | None:
+    """Return the best-effort install command for the current machine."""
+    brew = shutil.which("brew")
+    npm = shutil.which("npm")
+
+    if sys.platform == "darwin" and brew:
+        return ([brew, "install", "--cask", "codex"], "brew install --cask codex")
+    if npm:
+        return ([npm, "install", "-g", "@openai/codex"], CODEX_CLI_MANUAL_INSTALL)
+    if brew:
+        return ([brew, "install", "--cask", "codex"], "brew install --cask codex")
+    return None
+
+
+async def install_codex_cli() -> tuple[bool, str]:
+    """Install Codex CLI using an available local package manager."""
+    if is_codex_cli_available():
+        return True, "Codex CLI is already installed."
+
+    install = get_codex_cli_install_command()
+    if install is None:
+        return False, f"No supported installer found. Run manually: {CODEX_CLI_MANUAL_INSTALL}"
+
+    command, display = install
+    proc = await asyncio.create_subprocess_exec(
+        *command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode == 0:
+        if is_codex_cli_available():
+            return True, display
+        return (
+            False,
+            "Installation finished, but `codex` is still not on PATH for this running bot. "
+            f"Restart the gateway after fixing PATH, or run manually: {display}"
+        )
+
+    output = (stderr or stdout or b"").decode("utf-8", errors="replace").strip()
+    tail = output.splitlines()[-1] if output else "installer exited with a non-zero status"
+    return False, f"Run manually: {display}\n{tail}"
 
 
 def _clean_codex_stderr(text: str) -> str:
