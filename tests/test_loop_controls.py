@@ -116,6 +116,20 @@ async def test_queue_steering_message_respects_global_toggle(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_finish_run_state_requeues_unconsumed_steering(tmp_path):
+    """Late steering should go back onto the bus as the next normal turn."""
+    agent = _make_agent(tmp_path)
+    state = agent._start_run_state("telegram:123")
+    steering_msg = _make_msg(content="too late", message_id="2")
+    state.pending_steering.append(steering_msg)
+
+    await agent._finish_run_state("telegram:123")
+
+    agent.bus.publish_inbound.assert_awaited_once_with(steering_msg)
+    assert agent._run_state is None
+
+
+@pytest.mark.asyncio
 async def test_request_stop_cancels_active_tool_task(tmp_path):
     """Stop immediately cancels the current foreground tool task."""
     agent = _make_agent(tmp_path)

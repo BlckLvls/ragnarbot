@@ -52,7 +52,16 @@ from ragnarbot.instance import (
     record_last_active_chat,
 )
 from ragnarbot.media.manager import MediaManager
-from ragnarbot.providers.base import LLMProvider, LLMResponse
+from ragnarbot.providers.base import (
+    ConsumedSteeringMessage,
+    ExecutedToolCall,
+    LLMProvider,
+    LLMResponse,
+    SteeringMessageProvider,
+    TextDeltaHandler,
+    ToolCallHandler,
+    ToolCallRequest,
+)
 from ragnarbot.providers.lightning import (
     LIGHTNING_COST_NOTE,
     LIGHTNING_UNSUPPORTED_NOTE,
@@ -418,14 +427,14 @@ class AgentLoop:
         return True
 
     async def _chat_or_stop(
-        self, session_key: str, provider: LLMProvider | None = None, **chat_kwargs,
+        self, run_session_key: str, provider: LLMProvider | None = None, **chat_kwargs,
     ):
         """Race provider.chat() against the stop event.
 
         Returns the LLM response, or None if stopped mid-call.
         """
         provider = provider or self.provider
-        event = self._stop_events.get(session_key)
+        event = self._stop_events.get(run_session_key)
         chat_task = asyncio.create_task(provider.chat(**chat_kwargs))
 
         if not event:
@@ -493,12 +502,18 @@ class AgentLoop:
         probe_interval = (
             self._fallback_config.recovery_probe_interval if self._fallback_config else 60
         )
-        use_primary = not state.fallback_mode or state.should_probe_primary(probe_interval)
+        use_primary = (
+            not has_fallback
+            or not state.fallback_mode
+            or state.should_probe_primary(probe_interval)
+        )
         response = None
         primary_error = None
         chat_kwargs.setdefault("reasoning_level", self.reasoning_level)
         chat_kwargs.setdefault("lightning_mode", self.lightning_mode)
         chat_kwargs.setdefault("model", self.model)
+        if session_key is not None:
+            chat_kwargs.setdefault("session_key", session_key)
 
         if use_primary:
             if state.fallback_mode:
@@ -804,6 +819,153 @@ class AgentLoop:
                 self._finalize_active_browser_call(state)
             if state.active_tool_task is tool_task:
                 state.active_tool_task = None
+
+    def _make_provider_tool_runner(self, session_key: str):
+        """Build a host-side tool runner for provider-managed tool transports."""
+
+        async def _run(tool_call: ToolCallRequest):
+            return await self._execute_tool_with_tracking(
+                session_key,
+                tool_call.name,
+                tool_call.arguments,
+            )
+
+        return _run
+
+    def _make_provider_tool_call_handler(
+        self,
+        channel: str,
+        chat_id: str,
+    ) -> ToolCallHandler | None:
+        """Build a live trace handler for provider-managed tool calls."""
+        if not self.trace_mode:
+            return None
+
+        async def _handle(tool_call: ToolCallRequest) -> None:
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=channel,
+                chat_id=chat_id,
+                content=self._format_trace(tool_call.name, tool_call.arguments),
+                metadata={"intermediate": True, "raw_html": True},
+            ))
+
+        return _handle
+
+    def _make_provider_text_delta_handler(
+        self,
+        channel: str,
+        chat_id: str,
+    ) -> TextDeltaHandler | None:
+        """Build an intermediate-text handler for provider-managed turns."""
+        if not self.stream_steps:
+            return None
+
+        async def _handle(content: str) -> None:
+            if not content:
+                return
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=channel,
+                chat_id=chat_id,
+                content=content,
+                metadata={"intermediate": True},
+            ))
+
+        return _handle
+
+    def _make_provider_steering_message_provider(
+        self,
+        session_key: str,
+        session,
+    ) -> SteeringMessageProvider:
+        """Build a live steering source for provider-managed transports."""
+
+        async def _provide() -> list[dict[str, Any]]:
+            state = self._get_run_state(session_key)
+            if state is None or not state.pending_steering:
+                return []
+
+            user_messages: list[dict[str, Any]] = []
+            injected = 0
+            while state.pending_steering:
+                steering_msg = state.pending_steering.popleft()
+                prepared = await self._prepare_inbound_message(
+                    session,
+                    steering_msg,
+                    include_timestamp=True,
+                    steering=True,
+                )
+                user_messages.append(
+                    self.context.build_user_message(
+                        content=prepared["prefixed_content"],
+                        media=prepared["media"],
+                        media_refs=prepared["media_refs"] or None,
+                        session_key=session.key,
+                    )
+                )
+                state.injected_steering.append(prepared)
+                injected += 1
+
+            logger.info(
+                f"Injected {injected} live steering message(s) into provider-managed run {session_key}"
+            )
+            return user_messages
+
+        return _provide
+
+    async def _replay_executed_tool_calls(
+        self,
+        messages: list[dict[str, Any]],
+        executed_tool_calls: list[ExecutedToolCall],
+        consumed_steering_messages: list[ConsumedSteeringMessage] | None = None,
+        *,
+        channel: str,
+        chat_id: str,
+    ) -> list[dict[str, Any]]:
+        """Persist provider-executed tool calls into the chat transcript."""
+        grouped_steering: dict[int, list[dict[str, Any]]] = {}
+        for steering_message in consumed_steering_messages or []:
+            grouped_steering.setdefault(
+                steering_message.after_executed_tool_calls,
+                [],
+            ).append(steering_message.user_message)
+
+        for user_message in grouped_steering.get(0, []):
+            messages.append(user_message)
+
+        executed_count = 0
+        for tool_call in executed_tool_calls:
+            tool_call_dict = {
+                "id": tool_call.id,
+                "type": "function",
+                "function": {
+                    "name": tool_call.name,
+                    "arguments": json.dumps(tool_call.arguments),
+                },
+            }
+            if tool_call.metadata:
+                tool_call_dict["metadata"] = tool_call.metadata
+            messages = self.context.add_assistant_message(
+                messages,
+                tool_call.assistant_content,
+                [tool_call_dict],
+            )
+            if self.trace_mode and not tool_call.metadata.get("trace_emitted"):
+                await self.bus.publish_outbound(OutboundMessage(
+                    channel=channel,
+                    chat_id=chat_id,
+                    content=self._format_trace(tool_call.name, tool_call.arguments),
+                    metadata={"intermediate": True, "raw_html": True},
+                ))
+            messages = self.context.add_tool_result(
+                messages,
+                tool_call.id,
+                tool_call.name,
+                tool_call.result,
+            )
+            executed_count += 1
+            for user_message in grouped_steering.get(executed_count, []):
+                messages.append(user_message)
+        return messages
 
     async def _cleanup_stopped_run(self, session_key: str) -> None:
         """Cleanup foreground resources after a stop request."""
@@ -1203,6 +1365,19 @@ class AgentLoop:
                     notify_chat_id=msg.chat_id,
                     messages=api_messages,
                     tools=tools_defs,
+                    tool_runner=self._make_provider_tool_runner(session_key),
+                    tool_call_handler=self._make_provider_tool_call_handler(
+                        msg.channel,
+                        msg.chat_id,
+                    ),
+                    text_delta_handler=self._make_provider_text_delta_handler(
+                        msg.channel,
+                        msg.chat_id,
+                    ),
+                    steering_message_provider=self._make_provider_steering_message_provider(
+                        session_key,
+                        session,
+                    ),
                 )
 
                 # LLM call cancelled by stop
@@ -1233,6 +1408,17 @@ class AgentLoop:
                 if self._is_stopped(session_key):
                     logger.info(f"Stop requested after LLM call for {session_key}")
                     stopped = True
+                    break
+
+                if response.executed_tool_calls or response.consumed_steering_messages:
+                    messages = await self._replay_executed_tool_calls(
+                        messages,
+                        response.executed_tool_calls,
+                        response.consumed_steering_messages,
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                    )
+                    final_content = response.content
                     break
 
                 if response.has_tool_calls:
@@ -2082,6 +2268,19 @@ class AgentLoop:
                     notify_chat_id=origin_chat_id,
                     messages=api_messages,
                     tools=tools_defs,
+                    tool_runner=self._make_provider_tool_runner(session_key),
+                    tool_call_handler=self._make_provider_tool_call_handler(
+                        origin_channel,
+                        origin_chat_id,
+                    ),
+                    text_delta_handler=self._make_provider_text_delta_handler(
+                        origin_channel,
+                        origin_chat_id,
+                    ),
+                    steering_message_provider=self._make_provider_steering_message_provider(
+                        session_key,
+                        session,
+                    ),
                 )
 
                 # LLM call cancelled by stop
@@ -2112,6 +2311,17 @@ class AgentLoop:
                 if self._is_stopped(session_key):
                     logger.info(f"Stop requested after LLM call for {session_key}")
                     stopped = True
+                    break
+
+                if response.executed_tool_calls or response.consumed_steering_messages:
+                    messages = await self._replay_executed_tool_calls(
+                        messages,
+                        response.executed_tool_calls,
+                        response.consumed_steering_messages,
+                        channel=origin_channel,
+                        chat_id=origin_chat_id,
+                    )
+                    final_content = response.content
                     break
 
                 if response.has_tool_calls:
