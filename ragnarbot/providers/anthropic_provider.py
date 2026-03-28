@@ -1,9 +1,11 @@
 """Anthropic SDK provider for OAuth token support."""
 
+import asyncio
+import logging
 import os
 from typing import Any
 
-from anthropic import AsyncAnthropic
+from anthropic import APIStatusError, AsyncAnthropic
 
 from ragnarbot.providers.base import DEFAULT_MAX_TOKENS, LLMProvider, LLMResponse, ToolCallRequest
 from ragnarbot.providers.reasoning import resolve_reasoning
@@ -21,6 +23,12 @@ _OAUTH_HEADERS = {
 }
 
 _CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude."
+
+# Application-level retry delays (seconds) for 529 Overloaded errors.
+# Each retry is a fresh SDK-level attempt set (the SDK itself retries twice internally).
+_OVERLOADED_RETRY_DELAYS = [0, 1, 2]
+
+logger = logging.getLogger(__name__)
 
 
 class AnthropicProvider(LLMProvider):
@@ -112,16 +120,37 @@ class AnthropicProvider(LLMProvider):
         if reasoning.anthropic_output_config is not None:
             kwargs["output_config"] = reasoning.anthropic_output_config
 
-        try:
-            # Use streaming to avoid Anthropic SDK ValueError for max_tokens > ~21k
-            async with self.client.messages.stream(**kwargs) as stream:
-                response = await stream.get_final_message()
-            return self._parse_response(response)
-        except Exception as e:
-            return LLMResponse(
-                content=f"Error calling LLM: {e}",
-                finish_reason="error",
-            )
+        last_error: Exception | None = None
+        for attempt, delay in enumerate(
+            [None, *_OVERLOADED_RETRY_DELAYS], start=1,
+        ):
+            if delay is not None:
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                logger.info("Retrying after 529 Overloaded (attempt %d)", attempt)
+            try:
+                # Use streaming to avoid Anthropic SDK ValueError for max_tokens > ~21k
+                async with self.client.messages.stream(**kwargs) as stream:
+                    response = await stream.get_final_message()
+                return self._parse_response(response)
+            except APIStatusError as e:
+                if e.status_code == 529:
+                    last_error = e
+                    continue
+                return LLMResponse(
+                    content=f"Error calling LLM: {e}",
+                    finish_reason="error",
+                )
+            except Exception as e:
+                return LLMResponse(
+                    content=f"Error calling LLM: {e}",
+                    finish_reason="error",
+                )
+
+        return LLMResponse(
+            content=f"Error calling LLM: {last_error}",
+            finish_reason="error",
+        )
 
     def get_default_model(self) -> str:
         return self.default_model
