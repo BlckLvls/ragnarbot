@@ -2,10 +2,15 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
+from anthropic import APIStatusError
 
-from ragnarbot.providers.anthropic_provider import AnthropicProvider, _convert_user_content, _merge_consecutive
-
+from ragnarbot.providers.anthropic_provider import (
+    AnthropicProvider,
+    _convert_user_content,
+    _merge_consecutive,
+)
 
 # ---------------------------------------------------------------------------
 # Message conversion
@@ -319,3 +324,126 @@ class TestProviderInit:
         call_kwargs = provider.client.messages.stream.call_args
         assert call_kwargs.kwargs["model"] == "claude-opus-4-6"
         assert result.content == "hi"
+
+
+# ---------------------------------------------------------------------------
+# 529 Overloaded retry
+# ---------------------------------------------------------------------------
+
+
+def _make_overloaded_error() -> APIStatusError:
+    response = httpx.Response(
+        status_code=529,
+        json={
+            "type": "error",
+            "error": {"type": "overloaded_error", "message": "Overloaded"},
+        },
+        request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
+    )
+    return APIStatusError(
+        message="Overloaded",
+        response=response,
+        body={"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}},
+    )
+
+
+def _make_success_stream(text="Hello"):
+    block = MagicMock()
+    block.type = "text"
+    block.text = text
+
+    usage = MagicMock()
+    usage.input_tokens = 10
+    usage.output_tokens = 5
+    usage.cache_creation_input_tokens = 0
+    usage.cache_read_input_tokens = 0
+
+    response = MagicMock()
+    response.content = [block]
+    response.stop_reason = "end_turn"
+    response.usage = usage
+
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=ctx)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    ctx.get_final_message = AsyncMock(return_value=response)
+    return ctx
+
+
+def _make_provider_with_mock_client() -> AnthropicProvider:
+    with patch.object(AnthropicProvider, "_build_client"):
+        provider = AnthropicProvider(api_key="fake", default_model="claude-opus-4-6")
+    provider.client = MagicMock()
+    provider.client.messages = MagicMock()
+    return provider
+
+
+class TestOverloadedRetry:
+    @pytest.mark.asyncio
+    async def test_succeeds_on_second_attempt(self):
+        provider = _make_provider_with_mock_client()
+
+        call_count = 0
+
+        def mock_stream(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise _make_overloaded_error()
+            return _make_success_stream()
+
+        provider.client.messages.stream = mock_stream
+
+        resp = await provider.chat(
+            messages=[{"role": "user", "content": "hi"}],
+            model="claude-opus-4-6",
+        )
+
+        assert resp.finish_reason == "stop"
+        assert resp.content == "Hello"
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_exhausts_all_retries(self):
+        provider = _make_provider_with_mock_client()
+
+        call_count = 0
+
+        def mock_stream(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise _make_overloaded_error()
+
+        provider.client.messages.stream = mock_stream
+
+        resp = await provider.chat(
+            messages=[{"role": "user", "content": "hi"}],
+            model="claude-opus-4-6",
+        )
+
+        assert resp.finish_reason == "error"
+        assert "Overloaded" in (resp.content or "")
+        # 1 initial + 3 retries = 4 total
+        assert call_count == 4
+
+    @pytest.mark.asyncio
+    async def test_non_overloaded_error_no_retry(self):
+        provider = _make_provider_with_mock_client()
+
+        call_count = 0
+
+        def mock_stream(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("some other error")
+
+        provider.client.messages.stream = mock_stream
+
+        resp = await provider.chat(
+            messages=[{"role": "user", "content": "hi"}],
+            model="claude-opus-4-6",
+        )
+
+        assert resp.finish_reason == "error"
+        assert "some other error" in (resp.content or "")
+        assert call_count == 1
