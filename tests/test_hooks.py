@@ -282,3 +282,128 @@ async def test_hook_tool_history(hook_service):
     result = await tool.execute(action="history", id=hook.id)
     assert "triggers" in result.lower()
     assert "ok" in result
+
+
+# ========== HTTP Server ==========
+
+
+@pytest.fixture
+async def hook_server(hook_service):
+    from ragnarbot.hooks.server import HookServer
+
+    server = HookServer(
+        service=hook_service,
+        host="127.0.0.1",
+        port=0,  # let OS pick a free port
+        max_payload_bytes=1024,
+        rate_limit_per_hook=5,
+    )
+    # aiohttp needs a real port — use AppRunner manually
+    from aiohttp import web
+    server._runner = web.AppRunner(server.app)
+    await server._runner.setup()
+    site = web.TCPSite(server._runner, "127.0.0.1", 0)
+    await site.start()
+    # Extract the actual port
+    actual_port = site._server.sockets[0].getsockname()[1]
+    server._actual_port = actual_port
+    yield server
+    await server._runner.cleanup()
+
+
+def _base_url(server) -> str:
+    return f"http://127.0.0.1:{server._actual_port}"
+
+
+@pytest.mark.asyncio
+async def test_server_health(hook_server):
+    import aiohttp
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{_base_url(hook_server)}/hooks/health") as resp:
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_server_trigger_valid_hook(hook_server, hook_service):
+    import aiohttp
+
+    triggered = []
+    hook_service.on_trigger = lambda hook, payload: _capture(triggered, hook, payload)
+
+    hook = hook_service.add_hook("test-hook", "do stuff", channel="tg", to="123")
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"{_base_url(hook_server)}/hooks/{hook.id}",
+            json={"event": "test"},
+        ) as resp:
+            assert resp.status == 202
+            data = await resp.json()
+            assert data["status"] == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_server_trigger_unknown_hook(hook_server):
+    import aiohttp
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"{_base_url(hook_server)}/hooks/hk_nonexistent",
+            data="test",
+        ) as resp:
+            assert resp.status == 404
+
+
+@pytest.mark.asyncio
+async def test_server_trigger_disabled_hook(hook_server, hook_service):
+    import aiohttp
+    hook = hook_service.add_hook("disabled", "inst")
+    hook_service.update_hook(hook.id, enabled=False)
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"{_base_url(hook_server)}/hooks/{hook.id}",
+            data="test",
+        ) as resp:
+            assert resp.status == 404
+
+
+@pytest.mark.asyncio
+async def test_server_payload_too_large(hook_server, hook_service):
+    import aiohttp
+    hook = hook_service.add_hook("big", "inst")
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"{_base_url(hook_server)}/hooks/{hook.id}",
+            data="x" * 2048,  # exceeds max_payload_bytes=1024
+        ) as resp:
+            assert resp.status == 413
+
+
+@pytest.mark.asyncio
+async def test_server_rate_limiting(hook_server, hook_service):
+    import aiohttp
+    hook = hook_service.add_hook("rated", "inst")
+
+    async with aiohttp.ClientSession() as session:
+        # Send 5 requests (the limit)
+        for _ in range(5):
+            async with session.post(
+                f"{_base_url(hook_server)}/hooks/{hook.id}",
+                data="ok",
+            ) as resp:
+                assert resp.status == 202
+
+        # 6th request should be rate limited
+        async with session.post(
+            f"{_base_url(hook_server)}/hooks/{hook.id}",
+            data="one more",
+        ) as resp:
+            assert resp.status == 429
+
+
+async def _capture(triggered, hook, payload):
+    """Helper for capturing trigger calls."""
+    triggered.append((hook.name, payload))

@@ -39,7 +39,16 @@ class HookServer:
         self._runner = web.AppRunner(self.app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, self.host, self.port)
-        await site.start()
+        try:
+            await site.start()
+        except OSError as e:
+            await self._runner.cleanup()
+            self._runner = None
+            logger.error(
+                f"Hook server failed to bind {self.host}:{self.port}: {e}. "
+                f"Change hooks.port in config if another profile uses this port."
+            )
+            return
         logger.info(f"Hook server listening on {self.host}:{self.port}")
 
     async def stop(self) -> None:
