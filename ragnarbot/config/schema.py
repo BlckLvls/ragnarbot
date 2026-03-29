@@ -220,6 +220,28 @@ class HeartbeatConfig(BaseModel):
     )
 
 
+class HooksConfig(BaseModel):
+    """Webhook hooks configuration."""
+    enabled: bool = Field(
+        default=False,
+        json_schema_extra={"reload": "warm", "label": "Enable webhook hooks HTTP server"},
+    )
+    port: int = Field(
+        default=18791,
+        json_schema_extra={"reload": "warm", "label": "Hooks HTTP server port"},
+    )
+    rate_limit_per_hook: int = Field(
+        default=60,
+        ge=1,
+        json_schema_extra={"reload": "hot", "label": "Max triggers per hook per minute"},
+    )
+    max_payload_bytes: int = Field(
+        default=65536,
+        ge=1024,
+        json_schema_extra={"reload": "hot", "label": "Max hook payload size (bytes)"},
+    )
+
+
 class Config(BaseSettings):
     """Root configuration for ragnarbot."""
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
@@ -227,6 +249,7 @@ class Config(BaseSettings):
     daemon: DaemonConfig = Field(default_factory=DaemonConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
+    hooks: HooksConfig = Field(default_factory=HooksConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     transcription: TranscriptionConfig = Field(default_factory=TranscriptionConfig)
 

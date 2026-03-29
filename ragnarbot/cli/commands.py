@@ -270,6 +270,8 @@ def gateway_main(
     from ragnarbot.cron.service import CronService
     from ragnarbot.cron.types import CronJob
     from ragnarbot.heartbeat.service import HeartbeatService
+    from ragnarbot.hooks.service import HookService
+    from ragnarbot.hooks.types import HookDefinition
     from ragnarbot.media.manager import MediaManager
 
     if verbose:
@@ -320,6 +322,10 @@ def gateway_main(
         cron_store_path = get_data_dir() / "cron" / "jobs.json"
         cron = CronService(cron_store_path)
 
+        hooks_store_path = get_data_dir() / "hooks" / "hooks.json"
+        hooks_logs_dir = get_data_dir() / "hooks" / "logs"
+        hook_service = HookService(hooks_store_path, hooks_logs_dir)
+
         agent = AgentLoop(
             bus=bus,
             provider=provider,
@@ -329,6 +335,7 @@ def gateway_main(
             search_engine=search_engine,
             exec_config=config.tools.exec,
             cron_service=cron,
+            hook_service=hook_service,
             stream_steps=config.agents.defaults.stream_steps,
             media_manager=media_manager,
             debounce_seconds=config.agents.defaults.debounce_seconds,
@@ -431,6 +438,71 @@ def gateway_main(
 
         cron.on_job = on_cron_job
 
+        async def on_hook_trigger(hook: HookDefinition, payload: str) -> str | None:
+            """Execute a hook trigger through the agent."""
+            import time as _time
+
+            start_time = _time.time()
+            response = None
+            status = "ok"
+            error = None
+
+            try:
+                response = await agent.process_hook_isolated(
+                    hook_name=hook.name,
+                    instructions=hook.instructions,
+                    payload=payload,
+                    mode=hook.mode,
+                    channel=hook.channel or "cli",
+                    chat_id=hook.to or "direct",
+                )
+                if response and hook.to:
+                    from ragnarbot.bus.events import OutboundMessage
+                    await bus.publish_outbound(OutboundMessage(
+                        channel=hook.channel or "cli",
+                        chat_id=hook.to,
+                        content=response,
+                    ))
+            except Exception as e:
+                status = "error"
+                error = str(e)
+                raise
+            finally:
+                duration = _time.time() - start_time
+                hook_service.log_trigger(hook, payload, status, duration, response, error)
+
+                if hook.to:
+                    try:
+                        channel = hook.channel or "cli"
+                        session_key = f"{channel}:{hook.to}"
+                        session = agent.sessions.get_or_create(session_key)
+                        ts = _time.strftime("%Y-%m-%d %H:%M:%S")
+                        marker = (
+                            f"[Hook triggered: {hook.name} | id: {hook.id[:16]}... "
+                            f"| {ts} | status: {status}]"
+                        )
+                        session.add_message("assistant", marker)
+                        agent.sessions.save(session)
+                    except Exception as marker_err:
+                        from loguru import logger as _log
+                        _log.warning(f"Failed to save hook marker: {marker_err}")
+
+            return response
+
+        hook_service.on_trigger = on_hook_trigger
+
+        # Create hook HTTP server if enabled
+        hook_server = None
+        if config.hooks.enabled:
+            from ragnarbot.hooks.server import HookServer
+            hook_server = HookServer(
+                service=hook_service,
+                host=config.gateway.host,
+                port=config.hooks.port,
+                max_payload_bytes=config.hooks.max_payload_bytes,
+                rate_limit_per_hook=config.hooks.rate_limit_per_hook,
+            )
+
         import time as _time
 
         from ragnarbot.bus.events import InboundMessage as _InboundMessage
@@ -488,6 +560,18 @@ def gateway_main(
 
         hb_status = f"every {config.heartbeat.interval_m}m" if config.heartbeat.enabled else "disabled"
         console.print(f"[green]✓[/green] Heartbeat: {hb_status}")
+
+        hooks_count = len(hook_service.list_hooks(include_disabled=True))
+        if config.hooks.enabled:
+            console.print(
+                f"[green]✓[/green] Hooks: port {config.hooks.port}, "
+                f"{hooks_count} registered"
+            )
+        elif hooks_count > 0:
+            console.print(
+                f"[yellow]![/yellow] Hooks: disabled ({hooks_count} registered, "
+                f"enable with hooks.enabled=true)"
+            )
 
         async def run():
             _reconcile_pending_update_after_startup()
@@ -593,6 +677,8 @@ def gateway_main(
             try:
                 await cron.start()
                 await heartbeat.start()
+                if hook_server:
+                    await hook_server.start()
 
                 agent_task = asyncio.create_task(agent.run())
                 channel_task = asyncio.create_task(channels.start_all())
@@ -611,12 +697,16 @@ def gateway_main(
                         pass
 
                 # Cleanup
+                if hook_server:
+                    await hook_server.stop()
                 await agent.browser_manager.close_all()
                 heartbeat.stop()
                 cron.stop()
                 await channels.stop_all()
             except KeyboardInterrupt:
                 console.print("\nShutting down...")
+                if hook_server:
+                    await hook_server.stop()
                 await agent.browser_manager.close_all()
                 heartbeat.stop()
                 cron.stop()
