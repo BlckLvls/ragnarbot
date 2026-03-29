@@ -243,6 +243,16 @@ This means you can see in conversation history that a cron job ran, without it t
 
 ---
 
+## Hooks Protocol
+
+Hooks are event-driven HTTP endpoints — external scripts trigger the agent via HTTP POST, and the agent processes the payload autonomously.
+
+**Before creating, modifying, or advising on hooks, ALWAYS load the `hooks` skill first** by reading its SKILL.md with `file_read`. The skill contains critical guidance: how to write effective instructions, payload design, trigger script patterns, the self-authoring workflow, and all hook archetypes (alert, silent, conditional, action, history-aware, multi-hook pipelines). Do not wing it from the tool description alone — the skill has the patterns.
+
+The `hook` tool handles registration (`create`, `list`, `update`, `delete`, `history`). The hooks HTTP server runs on a dedicated port (default 18791) and starts automatically with the gateway.
+
+---
+
 ## Response Protocol
 
 How you deliver your response depends on the situation.
