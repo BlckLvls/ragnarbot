@@ -344,6 +344,14 @@ class ConfigTool(Tool):
             )
             return "Steering mode default updated."
 
+        if path == "agents.defaults.experimental_soul":
+            agent.experimental_soul = (
+                bool(value) if isinstance(value, bool)
+                else str(value).lower() in ("true", "1")
+            )
+            agent.context.experimental_soul = agent.experimental_soul
+            return "Experimental soul updated."
+
         if path in ("tools.web.search.engine", "tools.web.search.max_results"):
             return self._reload_web_search()
 

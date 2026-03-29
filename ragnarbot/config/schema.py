@@ -84,6 +84,10 @@ class AgentDefaults(BaseModel):
         default=True,
         json_schema_extra={"reload": "hot", "label": "Inject same-session messages into active runs"},
     )
+    experimental_soul: bool = Field(
+        default=False,
+        json_schema_extra={"reload": "hot", "label": "Use experimental soul prompt"},
+    )
 
 
 class FallbackConfig(BaseModel):

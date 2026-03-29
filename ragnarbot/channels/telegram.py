@@ -29,7 +29,7 @@ BOT_COMMANDS = [
 ]
 
 CALLBACK_QUERY_PATTERN = (
-    r"^(ctx_mode|reasoning_level|lightning_mode|trace_mode|steering_mode):|^install_codex_cli$"
+    r"^(ctx_mode|reasoning_level|lightning_mode|trace_mode|steering_mode|soul_mode):|^install_codex_cli$"
 )
 
 
@@ -338,6 +338,7 @@ class TelegramChannel(BaseChannel):
         self._app.add_handler(CommandHandler("lightning", self._on_lightning))
         self._app.add_handler(CommandHandler("trace", self._on_trace))
         self._app.add_handler(CommandHandler("steering", self._on_steering))
+        self._app.add_handler(CommandHandler("soul", self._on_soul))
         self._app.add_handler(CallbackQueryHandler(
             self._on_callback_query,
             pattern=CALLBACK_QUERY_PATTERN,
@@ -831,6 +832,30 @@ class TelegramChannel(BaseChannel):
             },
         )
 
+    async def _on_soul(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /soul command — show soul mode toggle (hidden command)."""
+        if not update.message or not update.effective_user:
+            return
+        user = update.effective_user
+        chat_id = update.message.chat_id
+        sender_id = str(user.id)
+        if user.username:
+            sender_id = f"{sender_id}|{user.username}"
+        self._chat_ids[sender_id] = chat_id
+        await self._handle_message(
+            sender_id=sender_id,
+            chat_id=str(chat_id),
+            content="/soul",
+            metadata={
+                "command": "soul",
+                "message_id": update.message.message_id,
+                "user_id": user.id,
+                "username": user.username,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+            },
+        )
+
     async def _on_callback_query(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE,
     ) -> None:
@@ -942,6 +967,22 @@ class TelegramChannel(BaseChannel):
                 metadata={
                     "command": "set_steering_mode",
                     "steering_mode": value,
+                    "callback_message_id": query.message.message_id if query.message else None,
+                    "user_id": user.id,
+                    "username": user.username,
+                    "first_name": user.first_name,
+                    "last_name": user.last_name,
+                },
+            )
+        elif query.data.startswith("soul_mode:"):
+            value = query.data.split(":", 1)[1]
+            await self._handle_message(
+                sender_id=sender_id,
+                chat_id=str(chat_id),
+                content=f"/soul {value}",
+                metadata={
+                    "command": "set_soul_mode",
+                    "soul_mode": value,
                     "callback_message_id": query.message.message_id if query.message else None,
                     "user_id": user.id,
                     "username": user.username,
