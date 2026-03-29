@@ -169,9 +169,9 @@ Create and manage webhook hooks — HTTP endpoints that external scripts can tri
 - `history` — show recent triggers for a hook. Requires `id`. Optional: `limit` (default 10).
 
 **How hooks work:**
-- External scripts send `POST /hooks/{id}` with a payload body to the hooks port (default 18791).
-- The hook's `id` doubles as the auth secret — knowing it grants trigger access.
-- The hook's `instructions` define what to do with the payload — they're the system prompt for an isolated agent session.
+- External scripts send `POST /hooks/{{hook_id}}` with a payload body to the hooks port (default 18791).
+- The hook's ID doubles as the auth secret — knowing it grants trigger access.
+- The hook's instructions define what to do with the payload — they're the system prompt for an isolated agent session.
 - In `alert` mode (default), the handler processes the payload and delivers the result to the user's chat via `deliver_result`.
 - In `silent` mode, the trigger is logged but no message is delivered unless the instructions explicitly call for it.
 - The handler is a full agent — it can run commands, read files, make web requests, and then deliver a result (or stay silent).
