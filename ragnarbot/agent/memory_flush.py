@@ -279,7 +279,7 @@ class MemoryFlushManager:
                     None,
                     messages=messages,
                     tools=None,
-                    temperature=0.2,
+                    reasoning_level="medium",
                 )
                 content = self._extract_content(job, response)
                 if content is None:

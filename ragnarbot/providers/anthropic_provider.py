@@ -107,7 +107,11 @@ class AnthropicProvider(LLMProvider):
             "messages": anthropic_messages,
             "max_tokens": max_tokens,
         }
-        if temperature is not None:
+        if reasoning.anthropic_thinking is not None:
+            # Anthropic requires temperature=1 when thinking is enabled;
+            # omit it entirely so the API uses its default (1.0)
+            pass
+        elif temperature is not None:
             kwargs["temperature"] = temperature
 
         if system_prompt or self.oauth_token:
