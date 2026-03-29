@@ -27,11 +27,11 @@ from ragnarbot.agent.tools.background import (
 )
 from ragnarbot.agent.tools.config_tool import ConfigTool
 from ragnarbot.agent.tools.cron import CronTool
-from ragnarbot.agent.tools.hook import HookTool
 from ragnarbot.agent.tools.deliver_result import DeliverResultTool
 from ragnarbot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from ragnarbot.agent.tools.heartbeat import HeartbeatTool, parse_blocks
 from ragnarbot.agent.tools.heartbeat_done import HeartbeatDoneTool
+from ragnarbot.agent.tools.hook import HookTool
 from ragnarbot.agent.tools.media import DownloadFileTool
 from ragnarbot.agent.tools.registry import ToolRegistry
 from ragnarbot.agent.tools.restart import RestartTool
@@ -77,6 +77,7 @@ if TYPE_CHECKING:
     from ragnarbot.agent.agents_loader import AgentDefinition
     from ragnarbot.config.schema import BrowserConfig, ExecToolConfig, FallbackConfig
     from ragnarbot.cron.service import CronService
+    from ragnarbot.hooks.service import HookService
 
 
 @dataclass
