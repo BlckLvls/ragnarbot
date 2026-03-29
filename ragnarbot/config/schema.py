@@ -223,7 +223,7 @@ class HeartbeatConfig(BaseModel):
 class HooksConfig(BaseModel):
     """Webhook hooks configuration."""
     enabled: bool = Field(
-        default=False,
+        default=True,
         json_schema_extra={"reload": "warm", "label": "Enable webhook hooks HTTP server"},
     )
     port: int = Field(

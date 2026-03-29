@@ -575,19 +575,17 @@ When the user describes a need, choose the right primitive:
 
 ## Enabling and Configuration
 
-Hooks require explicit enablement. The HTTP server does not start unless configured.
-
-To enable hooks: `config(action="set", path="hooks.enabled", value="true")` — then restart to apply (warm reload).
+Hooks are enabled by default. The HTTP server starts automatically with the gateway.
 
 Configuration options:
-- `hooks.enabled` (bool, default: false) — start the hooks HTTP server
+- `hooks.enabled` (bool, default: true) — start the hooks HTTP server
 - `hooks.port` (int, default: 18791) — HTTP server port
 - `hooks.rateLimitPerHook` (int, default: 60) — max triggers per hook per minute
 - `hooks.maxPayloadBytes` (int, default: 65536) — max POST body size in bytes
 
 The server listens on all interfaces by default. The health endpoint is at `GET /hooks/health` — returns `{"status": "ok"}` when the server is running.
 
-When a user asks to create a hook and hooks are not enabled, enable them first, then restart, then proceed with hook creation. Inform the user that hooks have been enabled.
+If hooks have been explicitly disabled by the user, re-enable them with `config(action="set", path="hooks.enabled", value="true")` and restart before creating hooks.
 
 ## Troubleshooting
 
