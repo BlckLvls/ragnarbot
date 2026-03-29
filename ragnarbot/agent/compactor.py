@@ -132,7 +132,7 @@ class Compactor:
                 None,
                 messages=compaction_messages,
                 tools=None,
-                temperature=0.3,
+                reasoning_level="off",
             )
             if response is None or response.finish_reason == "error":
                 logger.warning(
