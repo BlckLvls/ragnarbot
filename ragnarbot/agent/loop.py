@@ -114,7 +114,7 @@ class AgentLoop:
 
     COMPACT_MIN_MESSAGES = 60
     READ_ONLY_COMMANDS = frozenset({
-        "context_info", "context_mode", "lightning", "reasoning", "stop", "trace",
+        "context_info", "context_mode", "lightning", "reasoning", "stop", "trace", "soul",
     })
     IMMEDIATE_COMMANDS = READ_ONLY_COMMANDS | frozenset({
         "install_codex_cli",
@@ -124,6 +124,7 @@ class AgentLoop:
         "set_trace_mode",
         "steering",
         "set_steering_mode",
+        "set_soul_mode",
     })
 
     def __init__(
@@ -150,6 +151,7 @@ class AgentLoop:
         provider_factory: "Callable | None" = None,
         trace_mode: bool = False,
         steering_enabled: bool = True,
+        experimental_soul: bool = False,
         browser_config: "BrowserConfig | None" = None,
     ):
         from ragnarbot.config.schema import ExecToolConfig
@@ -171,6 +173,7 @@ class AgentLoop:
         self.auth_method = auth_method
         self.trace_mode = trace_mode
         self.steering_enabled = steering_enabled
+        self.experimental_soul = experimental_soul
         self.cache_manager = CacheManager(max_context_tokens=max_context_tokens)
 
         # Fallback model support
@@ -191,6 +194,7 @@ class AgentLoop:
 
         self.context = ContextBuilder(workspace, heartbeat_interval_m=heartbeat_interval_m)
         self.context.model = self.model
+        self.context.experimental_soul = self.experimental_soul
         self.sessions = SessionManager(workspace)
         self._session_locks: dict[str, asyncio.Lock] = {}
         self.memory_flush = MemoryFlushManager(
@@ -1589,6 +1593,10 @@ class AgentLoop:
             return self._handle_steering(msg)
         if command == "set_steering_mode":
             return self._handle_set_steering_mode(msg)
+        if command == "soul":
+            return self._handle_soul(msg)
+        if command == "set_soul_mode":
+            return self._handle_set_soul_mode(msg)
         logger.warning(f"Unknown command: {command}")
         return None
 
@@ -1945,6 +1953,50 @@ class AgentLoop:
 
         status = "Enabled" if self.steering_enabled else "Disabled"
         text = f"✅ Steering mode: {status}"
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=text,
+            metadata={
+                "raw_html": True,
+                "edit_message_id": msg.metadata.get("callback_message_id"),
+            },
+        )
+
+    def _handle_soul(self, msg: InboundMessage) -> OutboundMessage:
+        """Show current soul mode with toggle button."""
+        enabled = self.experimental_soul
+        status = "Experimental" if enabled else "Standard"
+        toggle = "off" if enabled else "on"
+        btn_text = "Switch to Standard" if enabled else "Switch to Experimental"
+        text = f"🧬 <b>Soul Mode</b>\n\nCurrent: {status}"
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=text,
+            metadata={
+                "raw_html": True,
+                "inline_keyboard": [[
+                    {"text": btn_text, "callback_data": f"soul_mode:{toggle}"},
+                ]],
+            },
+        )
+
+    def _handle_set_soul_mode(self, msg: InboundMessage) -> OutboundMessage | None:
+        """Toggle soul mode (from callback query)."""
+        value = msg.metadata.get("soul_mode")
+        if value not in ("on", "off"):
+            return None
+
+        self.experimental_soul = value == "on"
+        self.context.experimental_soul = self.experimental_soul
+        from ragnarbot.config.loader import load_config, save_config
+        config = load_config()
+        config.agents.defaults.experimental_soul = self.experimental_soul
+        save_config(config)
+
+        status = "Experimental" if self.experimental_soul else "Standard"
+        text = f"✅ Soul mode: {status}"
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,

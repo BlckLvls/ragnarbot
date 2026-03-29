@@ -31,6 +31,7 @@ class ContextBuilder:
         self.workspace = workspace
         self.heartbeat_interval_m = heartbeat_interval_m
         self.model: str | None = None  # Set by AgentLoop for vision checks
+        self.experimental_soul: bool = False  # Set by AgentLoop for soul switching
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
         self.agents = AgentsLoader(workspace)
@@ -148,8 +149,15 @@ Use `agent_spawn` to start a task with a specific agent type, or omit the agent 
         instance = get_instance()
         model_behavior_addendum = get_model_behavior_addendum(self.model)
 
+        builtin_files = list(self.BUILTIN_FILES)
+        if self.experimental_soul:
+            builtin_files = [
+                "SOUL_EXPERIMENTAL.md" if f == "SOUL.md" else f
+                for f in builtin_files
+            ]
+
         parts = []
-        for filename in self.BUILTIN_FILES:
+        for filename in builtin_files:
             file_path = BUILTIN_DIR / filename
             if file_path.exists():
                 content = file_path.read_text(encoding="utf-8")

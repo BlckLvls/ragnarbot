@@ -339,6 +339,7 @@ def gateway_main(
             auth_method=config.agents.defaults.auth_method,
             trace_mode=config.agents.defaults.trace_mode,
             steering_enabled=config.agents.defaults.steering_enabled,
+            experimental_soul=config.agents.defaults.experimental_soul,
             heartbeat_interval_m=config.heartbeat.interval_m,
             fallback_model=fallback_config.model,
             fallback_config=fallback_config,
