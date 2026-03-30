@@ -82,6 +82,13 @@ class ContextBuilder:
             if hb_isolated:
                 parts.append(hb_isolated)
 
+        # 3d. Hook isolated mode (conditional)
+        if session_metadata and session_metadata.get("hook_isolated"):
+            hook_ctx = session_metadata["hook_isolated"]
+            hook_isolated = self._load_builtin_hook_isolated(hook_ctx)
+            if hook_isolated:
+                parts.append(hook_isolated)
+
         # 4. Bootstrap protocol (first-run only, self-deleting)
         bootstrap_protocol = self.workspace / "BOOTSTRAP.md"
         if bootstrap_protocol.exists():
@@ -216,6 +223,22 @@ Use `agent_spawn` to start a task with a specific agent type, or omit the agent 
         return content.format(
             current_time=_time.strftime("%Y-%m-%d %H:%M:%S %Z"),
             tasks_summary=hb_ctx.get("tasks_summary", "No tasks."),
+            workspace_path=str(self.workspace.expanduser().resolve()),
+        )
+
+    def _load_builtin_hook_isolated(self, hook_ctx: dict) -> str:
+        """Load the hook isolated mode system prompt with placeholders."""
+        import time as _time
+        file_path = BUILTIN_DIR / "HOOK_ISOLATED.md"
+        if not file_path.exists():
+            return ""
+        content = file_path.read_text(encoding="utf-8")
+        return content.format(
+            hook_name=hook_ctx.get("hook_name", "Unknown"),
+            hook_mode=hook_ctx.get("hook_mode", "alert"),
+            current_time=_time.strftime("%Y-%m-%d %H:%M:%S %Z"),
+            instructions=hook_ctx.get("instructions", ""),
+            payload=hook_ctx.get("payload", ""),
             workspace_path=str(self.workspace.expanduser().resolve()),
         )
 

@@ -158,6 +158,26 @@ If the result references a file, include its absolute path, not a workspace-rela
 
 Execution history is stored at `{data_root}/cron/logs/{{job_id}}.jsonl`. Each entry contains timestamp, status, duration, input, and output. Logs persist even after one-shot jobs auto-delete. Use `file_read` to inspect them.
 
+## Hooks
+
+### hook
+Create and manage webhook hooks — HTTP endpoints that external scripts can trigger. Actions:
+- `create` — register a new hook. Requires `name` and `instructions`. Optional: `mode` ("alert" or "silent", default "alert"). Returns `id` (which is also the URL path and auth secret) and trigger URL.
+- `list` — show all registered hooks with ID, name, mode, trigger count, and status.
+- `update` — modify a hook. Requires `id`. Supports: `name`, `instructions`, `mode`.
+- `delete` — remove a hook by `id`.
+- `history` — show recent triggers for a hook. Requires `id`. Optional: `limit` (default 10).
+
+**How hooks work:**
+- External scripts send `POST /hooks/{{hook_id}}` with a payload body to the hooks port (default 18791).
+- The hook's ID doubles as the auth secret — knowing it grants trigger access.
+- The hook's instructions define what to do with the payload — they're the system prompt for an isolated agent session.
+- In `alert` mode (default), the handler processes the payload and delivers the result to the user's chat via `deliver_result`.
+- In `silent` mode, the trigger is logged but no message is delivered unless the instructions explicitly call for it.
+- The handler is a full agent — it can run commands, read files, make web requests, and then deliver a result (or stay silent).
+
+**Hook logs** are stored at `{data_root}/hooks/logs/{{hook_id}}.jsonl`.
+
 ## Heartbeat
 
 ### heartbeat

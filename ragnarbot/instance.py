@@ -34,6 +34,8 @@ class InstanceInfo:
     browser_screenshots_path: Path
     cron_dir: Path
     cron_logs_path: Path
+    hooks_dir: Path
+    hooks_logs_path: Path
     log_dir: Path
     fallback_state_path: Path
     pending_grants_path: Path
@@ -140,6 +142,8 @@ def get_instance(profile: str | None = None) -> InstanceInfo:
         browser_screenshots_path=data_root / "browser-screenshots",
         cron_dir=data_root / "cron",
         cron_logs_path=data_root / "cron" / "logs",
+        hooks_dir=data_root / "hooks",
+        hooks_logs_path=data_root / "hooks" / "logs",
         log_dir=data_root / "logs",
         fallback_state_path=data_root / "fallback_state.json",
         pending_grants_path=data_root / "pending_grants.json",

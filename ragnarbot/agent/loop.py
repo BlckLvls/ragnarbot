@@ -31,6 +31,7 @@ from ragnarbot.agent.tools.deliver_result import DeliverResultTool
 from ragnarbot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from ragnarbot.agent.tools.heartbeat import HeartbeatTool, parse_blocks
 from ragnarbot.agent.tools.heartbeat_done import HeartbeatDoneTool
+from ragnarbot.agent.tools.hook import HookTool
 from ragnarbot.agent.tools.media import DownloadFileTool
 from ragnarbot.agent.tools.registry import ToolRegistry
 from ragnarbot.agent.tools.restart import RestartTool
@@ -76,6 +77,7 @@ if TYPE_CHECKING:
     from ragnarbot.agent.agents_loader import AgentDefinition
     from ragnarbot.config.schema import BrowserConfig, ExecToolConfig, FallbackConfig
     from ragnarbot.cron.service import CronService
+    from ragnarbot.hooks.service import HookService
 
 
 @dataclass
@@ -137,6 +139,7 @@ class AgentLoop:
         search_engine: str = "brave",
         exec_config: "ExecToolConfig | None" = None,
         cron_service: "CronService | None" = None,
+        hook_service: "HookService | None" = None,
         stream_steps: bool = False,
         media_manager: MediaManager | None = None,
         debounce_seconds: float = 0.5,
@@ -163,6 +166,7 @@ class AgentLoop:
         self.search_engine = search_engine
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
+        self.hook_service = hook_service
         self.stream_steps = stream_steps
         self.media_manager = media_manager
         self.debounce_seconds = debounce_seconds
@@ -275,6 +279,10 @@ class AgentLoop:
         # Cron tool (for scheduling)
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
+
+        # Hook tool (for webhooks)
+        if self.hook_service:
+            self.tools.register(HookTool(self.hook_service))
 
         # Heartbeat tool (for managing periodic tasks)
         self.tools.register(HeartbeatTool(workspace=self.workspace))
@@ -1225,6 +1233,10 @@ class AgentLoop:
         cron_tool = self.tools.get("cron")
         if isinstance(cron_tool, CronTool):
             cron_tool.set_context(msg.channel, msg.chat_id)
+
+        hook_tool = self.tools.get("hook")
+        if isinstance(hook_tool, HookTool):
+            hook_tool.set_context(msg.channel, msg.chat_id)
 
         exec_bg_tool = self.tools.get("exec_bg")
         if isinstance(exec_bg_tool, ExecBgTool):
@@ -2271,6 +2283,10 @@ class AgentLoop:
         if isinstance(cron_tool, CronTool):
             cron_tool.set_context(origin_channel, origin_chat_id)
 
+        hook_tool = self.tools.get("hook")
+        if isinstance(hook_tool, HookTool):
+            hook_tool.set_context(origin_channel, origin_chat_id)
+
         exec_bg_tool = self.tools.get("exec_bg")
         if isinstance(exec_bg_tool, ExecBgTool):
             exec_bg_tool.set_context(origin_channel, origin_chat_id)
@@ -2715,6 +2731,12 @@ class AgentLoop:
             cron_tool.set_context(channel, chat_id)
             reg.register(cron_tool)
 
+        # Hooks
+        if self.hook_service:
+            hook_tool = HookTool(self.hook_service)
+            hook_tool.set_context(channel, chat_id)
+            reg.register(hook_tool)
+
         # Background execution
         bg = BackgroundProcessManager(
             bus=self.bus, workspace=self.workspace, exec_config=self.exec_config,
@@ -2960,6 +2982,98 @@ class AgentLoop:
                     return deliver_tool.result
             else:
                 # Agent finished with text — use as fallback result
+                await self._record_fallback_batch(
+                    batch_used_fallback, channel, chat_id,
+                )
+                return response.content or None
+
+    async def process_hook_isolated(
+        self,
+        hook_name: str,
+        instructions: str,
+        payload: str,
+        mode: str,
+        channel: str,
+        chat_id: str,
+    ) -> str | None:
+        """Run an isolated hook trigger — fresh context, no session history.
+
+        Returns the result string (from deliver_result or final LLM text),
+        or None if the agent produced no output.
+        """
+        tools, deliver_tool = self._build_isolated_tool_registry(channel, chat_id)
+
+        session_metadata = {
+            "hook_isolated": {
+                "hook_name": hook_name,
+                "hook_mode": mode,
+                "instructions": instructions,
+                "payload": payload,
+            },
+        }
+
+        messages = self.context.build_messages(
+            history=[],
+            current_message=f"Process this hook trigger for '{hook_name}'.",
+            channel=channel,
+            chat_id=chat_id,
+            session_metadata=session_metadata,
+        )
+
+        chat_kwargs: dict[str, Any] = {
+            "messages": None,
+            "tools": None,
+        }
+
+        batch_used_fallback = False
+        while True:
+            tools_defs = tools.get_definitions()
+            api_messages = [
+                {k: v for k, v in m.items() if k != "_ts"} for m in messages
+            ]
+            chat_kwargs["messages"] = api_messages
+            chat_kwargs["tools"] = tools_defs
+            response, used_fallback, _ = await self._chat_with_fallback(
+                None,
+                **chat_kwargs,
+            )
+            if used_fallback:
+                batch_used_fallback = True
+
+            if response is None:
+                await self._record_fallback_batch(batch_used_fallback, channel, chat_id)
+                return None
+
+            if response.has_tool_calls:
+                tool_call_dicts = []
+                for tc in response.tool_calls:
+                    _tc = {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": json.dumps(tc.arguments),
+                        },
+                    }
+                    if tc.metadata:
+                        _tc["metadata"] = tc.metadata
+                    tool_call_dicts.append(_tc)
+                messages = self.context.add_assistant_message(
+                    messages, response.content, tool_call_dicts,
+                )
+
+                for tc in response.tool_calls:
+                    result = await tools.execute(tc.name, tc.arguments)
+                    messages = self.context.add_tool_result(
+                        messages, tc.id, tc.name, result,
+                    )
+
+                if deliver_tool.result is not None:
+                    await self._record_fallback_batch(
+                        batch_used_fallback, channel, chat_id,
+                    )
+                    return deliver_tool.result
+            else:
                 await self._record_fallback_batch(
                     batch_used_fallback, channel, chat_id,
                 )
