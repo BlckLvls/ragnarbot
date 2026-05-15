@@ -63,6 +63,18 @@ ragnarbot gateway restart  # restart the daemon
 ragnarbot gateway delete   # remove the daemon completely
 ```
 
+## Multiple profiles
+
+Run several fully isolated bots on one machine with the global `--profile <name>` flag. It's an option on the main command, so it goes **before** the subcommand. Each profile gets its own onboarding and its own data root: `default` lives in `~/.ragnarbot`, any other profile in `~/.ragnarbot-<name>` — separate config, credentials, sessions, media, OAuth, browser profile, cron and hook jobs, and daemon.
+
+```bash
+ragnarbot --profile work onboard          # set up a separate "work" bot
+ragnarbot --profile work gateway          # run it (or: gateway start for a daemon)
+ragnarbot --profile work gateway status   # inspect that profile
+```
+
+With no flag everything behaves as `--profile default`. You can also select a profile via the `RAGNARBOT_PROFILE` env var. Profile names must be lowercase letters/digits with `-` or `_` (no dots or slashes). Per-profile daemons run in parallel without conflicting, so `work` and `default` can both be live at once.
+
 ---
 
 MIT · Based on [nanobot](https://github.com/HKUDS/nanobot)
