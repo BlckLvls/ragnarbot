@@ -7,7 +7,13 @@ import litellm
 from litellm import acompletion
 from loguru import logger
 
-from ragnarbot.providers.base import DEFAULT_MAX_TOKENS, LLMProvider, LLMResponse, ToolCallRequest
+from ragnarbot.providers.base import (
+    DEFAULT_MAX_TOKENS,
+    MAX_OUTPUT_TOKENS,
+    LLMProvider,
+    LLMResponse,
+    ToolCallRequest,
+)
 from ragnarbot.providers.lightning import resolve_lightning
 from ragnarbot.providers.reasoning import resolve_reasoning
 
@@ -76,7 +82,11 @@ class LiteLLMProvider(LLMProvider):
         model = model or self.default_model
         reasoning = resolve_reasoning(model, reasoning_level)
         lightning = resolve_lightning(model, "api_key", lightning_mode)
-        max_tokens = max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
+        if max_tokens is None:
+            # OpenAI GPT-5.x accepts up to 128k output tokens; Gemini/OpenRouter
+            # models vary and may reject a value above their own ceiling, so keep
+            # the conservative default for them.
+            max_tokens = MAX_OUTPUT_TOKENS if model.startswith("openai/") else DEFAULT_MAX_TOKENS
 
         is_openrouter = model.startswith("openrouter/")
 

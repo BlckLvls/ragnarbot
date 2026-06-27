@@ -64,9 +64,9 @@ def test_resolve_reasoning_covers_expected_downgrades():
     assert openai_flagship.effective_level == "ultra"
     assert openai_flagship.openai_reasoning == {"effort": "xhigh"}
 
-    openai_mini = resolve_reasoning("openai/gpt-5-mini", "off")
-    assert openai_mini.effective_level == "medium"
-    assert openai_mini.note is not None
+    openai_mini = resolve_reasoning("openai/gpt-5.4-mini", "ultra")
+    assert openai_mini.effective_level == "ultra"
+    assert openai_mini.openai_reasoning == {"effort": "xhigh"}
 
     gemini_pro = resolve_reasoning("gemini/gemini-3.1-pro-preview", "medium")
     assert gemini_pro.effective_level == "high"
@@ -82,9 +82,10 @@ def test_resolve_reasoning_covers_expected_downgrades():
     assert openrouter_gemini.openrouter_reasoning == {"enabled": True, "effort": "xhigh"}
 
     anthropic = resolve_reasoning("anthropic/claude-opus-4-6", "ultra")
-    assert anthropic.effective_level == "ultra"
+    assert anthropic.effective_level == "high"
+    assert anthropic.note == "This model maps ultra to high."
     assert anthropic.anthropic_thinking == {"type": "adaptive"}
-    assert anthropic.anthropic_output_config == {"effort": "max"}
+    assert anthropic.anthropic_output_config == {"effort": "high"}
 
     anthropic_off = resolve_reasoning("anthropic/claude-opus-4-6", "off")
     assert anthropic_off.effective_level == "off"
@@ -98,6 +99,61 @@ def test_resolve_reasoning_covers_expected_downgrades():
     assert anthropic_sonnet.anthropic_output_config == {"effort": "high"}
 
 
+def test_resolve_reasoning_opus_47_plus_exposes_xhigh_and_max():
+    for model in ("anthropic/claude-opus-4-8", "anthropic/claude-opus-4-7"):
+        ultra = resolve_reasoning(model, "ultra")
+        assert ultra.effective_level == "ultra"
+        assert ultra.anthropic_thinking == {"type": "adaptive", "display": "summarized"}
+        assert ultra.anthropic_output_config == {"effort": "xhigh"}
+
+        mx = resolve_reasoning(model, "max")
+        assert mx.effective_level == "max"
+        assert mx.anthropic_thinking == {"type": "adaptive", "display": "summarized"}
+        assert mx.anthropic_output_config == {"effort": "max"}
+
+        off = resolve_reasoning(model, "off")
+        assert off.effective_level == "off"
+        assert off.anthropic_thinking is None
+        assert off.anthropic_output_config is None
+
+
+def test_resolve_reasoning_max_level_across_families():
+    # GPT-5.5 flagship: ultra -> xhigh, max clamps to xhigh (OpenAI has no max).
+    gpt_ultra = resolve_reasoning("openai/gpt-5.5", "ultra")
+    assert gpt_ultra.openai_reasoning == {"effort": "xhigh"}
+    gpt_max = resolve_reasoning("openai/gpt-5.5", "max")
+    assert gpt_max.effective_level == "ultra"
+    assert gpt_max.openai_reasoning == {"effort": "xhigh"}
+    assert gpt_max.note == "This model maps max to xhigh."
+
+    # 4.6 models lack xhigh: max reaches the true max effort.
+    sonnet_max = resolve_reasoning("anthropic/claude-sonnet-4-6", "max")
+    assert sonnet_max.effective_level == "max"
+    assert sonnet_max.anthropic_output_config == {"effort": "max"}
+
+    # Gemini Flash bins max down to high.
+    flash_max = resolve_reasoning("gemini/gemini-3-flash-preview", "max")
+    assert flash_max.effective_level == "high"
+    assert flash_max.note == "This model maps max to high."
+    assert flash_max.gemini_thinking_config["thinkingLevel"] == "HIGH"
+
+    # OpenRouter clamps max to xhigh.
+    openrouter_max = resolve_reasoning("openrouter/openai/gpt-5.5", "max")
+    assert openrouter_max.openrouter_reasoning == {"enabled": True, "effort": "xhigh"}
+    assert openrouter_max.note == "OpenRouter maps max to xhigh."
+
+
+def test_reasoning_level_max_roundtrips(tmp_path):
+    config = Config()
+    config.agents.defaults.reasoning_level = "max"
+
+    config_path = tmp_path / "config.json"
+    save_config(config, config_path)
+
+    loaded = load_config(config_path)
+    assert loaded.agents.defaults.reasoning_level == "max"
+
+
 def test_resolve_lightning_support_matrix():
     supported = resolve_lightning("openai/gpt-5.4", "api_key", True)
     assert supported.supported is True
@@ -109,7 +165,7 @@ def test_resolve_lightning_support_matrix():
     assert oauth.applies is True
     assert oauth.service_tier == "priority"
 
-    mini = resolve_lightning("openai/gpt-5-mini", "api_key", True)
+    mini = resolve_lightning("openai/gpt-5.4-mini", "api_key", True)
     assert mini.supported is False
     assert mini.applies is False
 
@@ -121,7 +177,7 @@ def test_resolve_lightning_support_matrix():
 def test_create_provider_uses_native_anthropic_for_api_key():
     creds = MagicMock()
     creds.providers.anthropic.api_key = "sk-ant-test"
-    provider = _create_provider("anthropic/claude-opus-4-6", "api_key", creds)
+    provider = _create_provider("anthropic/claude-opus-4-8", "api_key", creds)
     assert isinstance(provider, AnthropicProvider)
 
 
@@ -156,12 +212,12 @@ def test_openai_build_request_skips_priority_service_tier_for_raw_oauth_lightnin
 
 def test_openai_build_request_skips_priority_service_tier_for_unsupported_lightning():
     with patch("ragnarbot.auth.openai_oauth.get_account_id", return_value="acct_test"):
-        provider = OpenAIChatGPTProvider(default_model="openai/gpt-5-mini")
+        provider = OpenAIChatGPTProvider(default_model="openai/gpt-5.4-mini")
 
     body = provider._build_request(
         messages=[{"role": "user", "content": "hi"}],
         tools=None,
-        model="gpt-5-mini",
+        model="gpt-5.4-mini",
         reasoning_level="medium",
         lightning_mode=True,
     )
@@ -193,7 +249,7 @@ async def test_gemini_chat_includes_thinking_config():
 
 @pytest.mark.asyncio
 async def test_anthropic_chat_includes_reasoning_kwargs():
-    provider = AnthropicProvider(api_key="sk-test", default_model="anthropic/claude-opus-4-6")
+    provider = AnthropicProvider(api_key="sk-test", default_model="anthropic/claude-opus-4-8")
 
     text_block = MagicMock()
     text_block.type = "text"
@@ -213,17 +269,18 @@ async def test_anthropic_chat_includes_reasoning_kwargs():
 
     await provider.chat(
         [{"role": "user", "content": "hi"}],
-        reasoning_level="ultra",
+        reasoning_level="max",
     )
 
     call_kwargs = provider.client.messages.stream.call_args.kwargs
-    assert call_kwargs["thinking"] == {"type": "adaptive"}
+    assert call_kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
     assert call_kwargs["output_config"] == {"effort": "max"}
+    assert call_kwargs["max_tokens"] == 128_000
 
 
 @pytest.mark.asyncio
 async def test_litellm_passes_reasoning_effort():
-    provider = LiteLLMProvider(api_key="sk-openai", default_model="openai/gpt-5.2")
+    provider = LiteLLMProvider(api_key="sk-openai", default_model="openai/gpt-5.5")
     mock_acompletion = AsyncMock(return_value=_mock_litellm_response())
 
     with (
@@ -236,6 +293,7 @@ async def test_litellm_passes_reasoning_effort():
         )
 
     assert mock_acompletion.await_args.kwargs["reasoning_effort"] == "xhigh"
+    assert mock_acompletion.await_args.kwargs["max_tokens"] == 128_000
 
 
 @pytest.mark.asyncio
@@ -257,7 +315,7 @@ async def test_litellm_passes_priority_service_tier_for_supported_lightning():
 
 @pytest.mark.asyncio
 async def test_litellm_skips_priority_service_tier_for_unsupported_lightning():
-    provider = LiteLLMProvider(api_key="sk-openai", default_model="openai/gpt-5.2")
+    provider = LiteLLMProvider(api_key="sk-openai", default_model="openai/gpt-5.4-mini")
     mock_acompletion = AsyncMock(return_value=_mock_litellm_response())
 
     with (
@@ -291,3 +349,5 @@ async def test_litellm_openrouter_uses_dynamic_reasoning_body():
 
     extra_body = mock_acompletion.await_args.kwargs["extra_body"]
     assert extra_body["reasoning"] == {"enabled": True, "effort": "xhigh"}
+    # Non-OpenAI models (here OpenRouter) keep the conservative output default.
+    assert mock_acompletion.await_args.kwargs["max_tokens"] == 32_000

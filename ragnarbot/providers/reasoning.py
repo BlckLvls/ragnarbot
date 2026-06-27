@@ -5,13 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-ReasoningLevel = Literal["off", "low", "medium", "high", "ultra"]
+ReasoningLevel = Literal["off", "low", "medium", "high", "ultra", "max"]
 SUPPORTED_REASONING_LEVELS: tuple[ReasoningLevel, ...] = (
     "off",
     "low",
     "medium",
     "high",
     "ultra",
+    "max",
 )
 
 
@@ -43,10 +44,15 @@ def resolve_reasoning(model: str, reasoning_level: str | None) -> ReasoningResol
     stored_level = normalize_reasoning_level(reasoning_level)
     normalized_model = _normalize_model_id(model)
 
-    if normalized_model in {"openai/gpt-5.4", "openai/gpt-5.2"}:
+    if normalized_model in {
+        "openai/gpt-5.5",
+        "openai/gpt-5.4",
+        "openai/gpt-5.4-mini",
+        "openai/gpt-5.2",
+    }:
         return _resolve_openai_flagship(normalized_model, stored_level)
-    if normalized_model == "openai/gpt-5-mini":
-        return _resolve_openai_mini(normalized_model, stored_level)
+    if normalized_model in {"anthropic/claude-opus-4-8", "anthropic/claude-opus-4-7"}:
+        return _resolve_anthropic_47_plus(normalized_model, stored_level)
     if normalized_model in {"anthropic/claude-opus-4-6", "anthropic/claude-sonnet-4-6"}:
         return _resolve_anthropic_46(normalized_model, stored_level)
     if normalized_model in {"gemini/gemini-3.1-pro-preview", "gemini/gemini-3-pro-preview"}:
@@ -82,45 +88,32 @@ def _normalize_model_id(model: str) -> str:
 
 
 def _resolve_openai_flagship(model: str, stored_level: ReasoningLevel) -> ReasoningResolution:
+    # OpenAI flagship models top out at xhigh — they have no "max" effort, so the
+    # unified "max" level clamps down to xhigh (same as "ultra").
     effort_map = {
         "off": "none",
         "low": "low",
         "medium": "medium",
         "high": "high",
+        "ultra": "xhigh",
+        "max": "xhigh",
     }
-    if stored_level == "ultra":
-        return ReasoningResolution(
-            model=model,
-            stored_level=stored_level,
-            effective_level="ultra",
-            reasoning_effort="xhigh",
-            openai_reasoning={"effort": "xhigh"},
-        )
-
+    effort = effort_map[stored_level]
+    note = "This model maps max to xhigh." if stored_level == "max" else None
+    effective_level: ReasoningLevel = "ultra" if stored_level == "max" else stored_level
     return ReasoningResolution(
         model=model,
         stored_level=stored_level,
-        effective_level=stored_level,
-        reasoning_effort=effort_map[stored_level],
-        openai_reasoning={"effort": effort_map[stored_level]},
-    )
-
-
-def _resolve_openai_mini(model: str, stored_level: ReasoningLevel) -> ReasoningResolution:
-    note = None
-    if stored_level != "medium":
-        note = "This model uses a fixed medium reasoning level."
-    return ReasoningResolution(
-        model=model,
-        stored_level=stored_level,
-        effective_level="medium",
+        effective_level=effective_level,
         note=note,
-        reasoning_effort="medium",
-        openai_reasoning={"effort": "medium"},
+        reasoning_effort=effort,
+        openai_reasoning={"effort": effort},
     )
 
 
-def _resolve_anthropic_46(model: str, stored_level: ReasoningLevel) -> ReasoningResolution:
+def _resolve_anthropic_47_plus(model: str, stored_level: ReasoningLevel) -> ReasoningResolution:
+    # Opus 4.7/4.8 add the "xhigh" effort rung (between high and max) and default
+    # thinking.display to "omitted" — set "summarized" so thinking stays visible.
     if stored_level == "off":
         return ReasoningResolution(
             model=model,
@@ -130,7 +123,35 @@ def _resolve_anthropic_46(model: str, stored_level: ReasoningLevel) -> Reasoning
             anthropic_output_config=None,
         )
 
-    if stored_level == "ultra" and model != "anthropic/claude-opus-4-6":
+    effort_map = {
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "ultra": "xhigh",
+        "max": "max",
+    }
+    return ReasoningResolution(
+        model=model,
+        stored_level=stored_level,
+        effective_level=stored_level,
+        anthropic_thinking={"type": "adaptive", "display": "summarized"},
+        anthropic_output_config={"effort": effort_map[stored_level]},
+    )
+
+
+def _resolve_anthropic_46(model: str, stored_level: ReasoningLevel) -> ReasoningResolution:
+    # Opus/Sonnet 4.6 support {low, medium, high, max} but not xhigh — the unified
+    # "ultra" (xhigh) tier clamps down to high, while "max" reaches the true max.
+    if stored_level == "off":
+        return ReasoningResolution(
+            model=model,
+            stored_level=stored_level,
+            effective_level="off",
+            anthropic_thinking=None,
+            anthropic_output_config=None,
+        )
+
+    if stored_level == "ultra":
         return ReasoningResolution(
             model=model,
             stored_level=stored_level,
@@ -141,17 +162,16 @@ def _resolve_anthropic_46(model: str, stored_level: ReasoningLevel) -> Reasoning
         )
 
     effort_map = {
-        "off": "low",
         "low": "low",
         "medium": "medium",
         "high": "high",
-        "ultra": "max",
+        "max": "max",
     }
     return ReasoningResolution(
         model=model,
         stored_level=stored_level,
         effective_level=stored_level,
-        anthropic_thinking=None if stored_level == "off" else {"type": "adaptive"},
+        anthropic_thinking={"type": "adaptive"},
         anthropic_output_config={"effort": effort_map[stored_level]},
     )
 
@@ -186,9 +206,16 @@ def _resolve_gemini_flash(model: str, stored_level: ReasoningLevel) -> Reasoning
         "medium": "medium",
         "high": "high",
         "ultra": "high",
+        "max": "high",
     }
-    effective_level: ReasoningLevel = "high" if stored_level == "ultra" else stored_level
-    note = "This model maps ultra to high." if stored_level == "ultra" else None
+    effective_level: ReasoningLevel = (
+        "high" if stored_level in {"ultra", "max"} else stored_level
+    )
+    note = (
+        f"This model maps {stored_level} to high."
+        if stored_level in {"ultra", "max"}
+        else None
+    )
 
     return ReasoningResolution(
         model=model,
@@ -212,15 +239,17 @@ def _resolve_openrouter(model: str, stored_level: ReasoningLevel) -> ReasoningRe
             openrouter_reasoning={"enabled": False},
         )
 
+    # OpenRouter effort tops out at xhigh, so the unified "max" clamps to xhigh.
     effort_map = {
         "low": "low",
         "medium": "medium",
         "high": "high",
         "ultra": "xhigh",
+        "max": "xhigh",
     }
-    effective_level: ReasoningLevel = stored_level
-    note = None
-    if stored_level == "ultra" and model in {
+    effective_level: ReasoningLevel = "ultra" if stored_level == "max" else stored_level
+    note = "OpenRouter maps max to xhigh." if stored_level == "max" else None
+    if stored_level in {"ultra", "max"} and model in {
         "openrouter/google/gemini-3-pro-preview",
         "openrouter/google/gemini-3.1-pro-preview",
         "openrouter/google/gemini-3-flash-preview",

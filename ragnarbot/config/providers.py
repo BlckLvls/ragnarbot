@@ -10,9 +10,14 @@ PROVIDERS = [
         "api_key_url": "https://console.anthropic.com/keys",
         "models": [
             {
-                "id": "anthropic/claude-opus-4-6",
-                "name": "Claude Opus 4.6",
+                "id": "anthropic/claude-opus-4-8",
+                "name": "Claude Opus 4.8",
                 "description": "Most intelligent — agents & coding",
+            },
+            {
+                "id": "anthropic/claude-opus-4-7",
+                "name": "Claude Opus 4.7",
+                "description": "Previous flagship — agents & coding",
             },
             {
                 "id": "anthropic/claude-sonnet-4-6",
@@ -24,22 +29,22 @@ PROVIDERS = [
     {
         "id": "openai",
         "name": "OpenAI",
-        "description": "GPT models (GPT-5.4, GPT-5.2, GPT-5 Mini)",
+        "description": "GPT models (GPT-5.5, GPT-5.4, GPT-5.4 Mini)",
         "api_key_url": "https://platform.openai.com/api-keys",
         "models": [
             {
-                "id": "openai/gpt-5.4",
-                "name": "GPT-5.4",
+                "id": "openai/gpt-5.5",
+                "name": "GPT-5.5",
                 "description": "Latest flagship — best reasoning & coding",
             },
             {
-                "id": "openai/gpt-5.2",
-                "name": "GPT-5.2",
+                "id": "openai/gpt-5.4",
+                "name": "GPT-5.4",
                 "description": "Previous flagship — strong reasoning & coding",
             },
             {
-                "id": "openai/gpt-5-mini",
-                "name": "GPT-5 Mini",
+                "id": "openai/gpt-5.4-mini",
+                "name": "GPT-5.4 Mini",
                 "description": "Fast & affordable",
             },
         ],
@@ -101,9 +106,14 @@ PROVIDERS = [
                 "description": "Strong multilingual reasoning & coding",
             },
             {
-                "id": "openrouter/anthropic/claude-opus-4.6",
-                "name": "Claude Opus 4.6",
+                "id": "openrouter/anthropic/claude-opus-4.8",
+                "name": "Claude Opus 4.8",
                 "description": "Most intelligent — via OpenRouter",
+            },
+            {
+                "id": "openrouter/anthropic/claude-opus-4.7",
+                "name": "Claude Opus 4.7",
+                "description": "Previous flagship — via OpenRouter",
             },
             {
                 "id": "openrouter/anthropic/claude-sonnet-4.6",
@@ -121,14 +131,14 @@ PROVIDERS = [
                 "description": "Best reasoning & coding — via OpenRouter",
             },
             {
-                "id": "openrouter/openai/gpt-5.2",
-                "name": "GPT-5.2",
-                "description": "Previous flagship — via OpenRouter",
+                "id": "openrouter/openai/gpt-5.5",
+                "name": "GPT-5.5",
+                "description": "Latest flagship — via OpenRouter",
             },
             {
                 "id": "openrouter/openai/gpt-5.4",
                 "name": "GPT-5.4",
-                "description": "Latest flagship — via OpenRouter",
+                "description": "Previous flagship — via OpenRouter",
             },
             {
                 "id": "openrouter/google/gemini-3-pro-preview",

@@ -431,7 +431,7 @@ async def test_subagent_inherits_parent_reasoning_level_and_keeps_its_model(tmp_
     await loop.subagents._run_agent(
         task,
         definition=None,
-        model="openai/gpt-5-mini",
+        model="openai/gpt-5.4-mini",
         tools=tools,
         deliver_tool=deliver_tool,
     )
@@ -439,7 +439,7 @@ async def test_subagent_inherits_parent_reasoning_level_and_keeps_its_model(tmp_
     call_kwargs = provider.chat.await_args.kwargs
     assert call_kwargs["reasoning_level"] == "ultra"
     assert call_kwargs["lightning_mode"] is False
-    assert call_kwargs["model"] == "openai/gpt-5-mini"
+    assert call_kwargs["model"] == "openai/gpt-5.4-mini"
 
 
 @pytest.mark.asyncio
@@ -1241,7 +1241,7 @@ class TestCronIsolatedAgentProfile:
         d.mkdir(parents=True)
         (d / "AGENT.md").write_text(
             "---\nname: researcher\ndescription: Research\n"
-            "model: openai/gpt-5-mini\nreasoningLevel: low\n---\nDo work.",
+            "model: openai/gpt-5.4-mini\nreasoningLevel: low\n---\nDo work.",
             encoding="utf-8",
         )
         loader = AgentsLoader(tmp_path / "workspace", builtin_agents_dir=builtin)
@@ -1260,7 +1260,7 @@ class TestCronIsolatedAgentProfile:
 
         assert result == "done"
         call_kwargs = loop.provider.chat.await_args.kwargs
-        assert call_kwargs["model"] == "openai/gpt-5-mini"
+        assert call_kwargs["model"] == "openai/gpt-5.4-mini"
         assert call_kwargs["reasoning_level"] == "low"
         assert OPENAI_STYLE_ADDENDUM in call_kwargs["messages"][0]["content"]
 

@@ -6,6 +6,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 DEFAULT_MAX_TOKENS = 32_000
+# Synchronous-API output ceiling for current OpenAI GPT-5.x and Anthropic Claude 4.x
+# models (both cap a single response at 128k tokens). Used as the default response
+# budget for those providers so long generations are not truncated early.
+MAX_OUTPUT_TOKENS = 128_000
 
 
 @dataclass
@@ -100,7 +104,7 @@ class LLMProvider(ABC):
             model: Model identifier (provider-specific).
             max_tokens: Maximum tokens in response (defaults to DEFAULT_MAX_TOKENS).
             temperature: Sampling temperature (omitted if None — uses API default).
-            reasoning_level: Unified reasoning level (off/low/medium/high/ultra).
+            reasoning_level: Unified reasoning level (off/low/medium/high/ultra/max).
             lightning_mode: Whether OpenAI Lightning Mode is enabled for this request.
             session_key: Stable conversation identifier for stateful transports.
             tool_runner: Optional host-side tool executor for transports that

@@ -7,8 +7,14 @@ from typing import Any
 
 from anthropic import APIStatusError, AsyncAnthropic
 
-from ragnarbot.providers.base import DEFAULT_MAX_TOKENS, LLMProvider, LLMResponse, ToolCallRequest
+from ragnarbot.providers.base import MAX_OUTPUT_TOKENS, LLMProvider, LLMResponse, ToolCallRequest
 from ragnarbot.providers.reasoning import resolve_reasoning
+
+# Anthropic streams every request (see chat()), so it is not bound by the SDK's
+# non-streaming max_tokens ValueError. Default to the full 128k sync-API output
+# ceiling (Claude 4.x) so extended thinking at "max"/"xhigh" effort (Opus 4.7/4.8)
+# is never truncated early. (300k exists but is Batches-API-only.)
+ANTHROPIC_DEFAULT_MAX_TOKENS = MAX_OUTPUT_TOKENS
 
 # Headers required by Anthropic API for OAuth token authentication.
 _OAUTH_HEADERS = {
@@ -41,7 +47,7 @@ class AnthropicProvider(LLMProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        default_model: str = "claude-opus-4-6",
+        default_model: str = "claude-opus-4-8",
         oauth_token: str | None = None,
     ):
         super().__init__(api_key, oauth_token)
@@ -90,7 +96,7 @@ class AnthropicProvider(LLMProvider):
         _ = lightning_mode
         model = model or self.default_model
         reasoning = resolve_reasoning(model, reasoning_level)
-        max_tokens = max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
+        max_tokens = max_tokens if max_tokens is not None else ANTHROPIC_DEFAULT_MAX_TOKENS
         # Strip provider prefix — config stores "anthropic/claude-...", SDK expects "claude-..."
         if model.startswith("anthropic/"):
             model = model[len("anthropic/"):]

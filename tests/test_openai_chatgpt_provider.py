@@ -329,7 +329,7 @@ async def test_provider_keeps_raw_path_for_non_gpt_5_4_models():
     ):
         response = await provider.chat(
             messages=[{"role": "user", "content": "hi"}],
-            model="openai/gpt-5-mini",
+            model="openai/gpt-5.4-mini",
             lightning_mode=True,
             session_key="telegram:123",
             tool_runner=AsyncMock(return_value="ok"),
