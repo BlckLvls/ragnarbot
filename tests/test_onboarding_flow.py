@@ -118,7 +118,7 @@ class TestOnboardingFlow:
 
         assert mock_save_config.called
         config = mock_save_config.call_args[0][0]
-        assert config.agents.defaults.model == "anthropic/claude-opus-4-6"
+        assert config.agents.defaults.model == "anthropic/claude-opus-4-8"
         assert config.agents.defaults.auth_method == "api_key"
 
         assert mock_save_creds.called
@@ -132,6 +132,7 @@ class TestOnboardingFlow:
             (Key.ENTER, ""),        # Select OAuth (first option)
             *[(Key.CHAR, c) for c in "oauth-token-xyz"],
             (Key.ENTER, ""),        # Confirm token
+            (Key.DOWN, ""),         # Navigate past Opus 4.7
             (Key.DOWN, ""),         # Navigate to Sonnet
             (Key.ENTER, ""),        # Select Sonnet
             *SKIP_LIGHTNING,
@@ -162,7 +163,7 @@ class TestOnboardingFlow:
             (Key.ENTER, ""),        # Select API Key
             *[(Key.CHAR, c) for c in "sk-openai-key"],
             (Key.ENTER, ""),        # Confirm key
-            (Key.ENTER, ""),        # Select first model (GPT-5.4)
+            (Key.ENTER, ""),        # Select first model (GPT-5.5)
             *ENABLE_LIGHTNING,
             (Key.ENTER, ""),        # Skip telegram
             (Key.DOWN, ""),         # Voice: past ElevenLabs
@@ -176,7 +177,7 @@ class TestOnboardingFlow:
         mock_save_config, mock_save_creds = self._run_with_keys(keys, tmp_path)
 
         config = mock_save_config.call_args[0][0]
-        assert config.agents.defaults.model == "openai/gpt-5.4"
+        assert config.agents.defaults.model == "openai/gpt-5.5"
         assert config.agents.defaults.auth_method == "api_key"
         assert config.agents.defaults.lightning_mode is True
 
@@ -189,7 +190,7 @@ class TestOnboardingFlow:
             (Key.DOWN, ""),         # Navigate to OpenAI
             (Key.ENTER, ""),        # Select OpenAI
             (Key.ENTER, ""),        # Select OAuth
-            (Key.ENTER, ""),        # Select first model (GPT-5.4)
+            (Key.ENTER, ""),        # Select first model (GPT-5.5)
             *ENABLE_LIGHTNING,
             (Key.ENTER, ""),        # Acknowledge Codex CLI required
         ]
@@ -217,7 +218,7 @@ class TestOnboardingFlow:
             run_onboarding(con)
 
         config = mock_save_config.call_args[0][0]
-        assert config.agents.defaults.model == "openai/gpt-5.4"
+        assert config.agents.defaults.model == "openai/gpt-5.5"
         assert config.agents.defaults.auth_method == "oauth"
         assert config.agents.defaults.lightning_mode is False
         assert mock_save_creds.called

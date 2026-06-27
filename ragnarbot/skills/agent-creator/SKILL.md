@@ -47,7 +47,7 @@ agent-name/
 - **name** — Agent identifier. Must match the directory name. Kebab-case, lowercase.
 - **description** — What the agent does. Shown in the agents summary so the main agent knows when to spawn it. Be specific about the agent's specialty and output format.
 - **model** — `default` (inherits from config) or explicit like `anthropic/claude-sonnet-4.6`. Only override when a specific model is genuinely better for the task.
-- **reasoningLevel** — `inherit` (default, use the parent/global reasoning level) or one of `off`, `low`, `medium`, `high`, `ultra`. Use this only when the agent should consistently run with a different reasoning budget than its parent.
+- **reasoningLevel** — `inherit` (default, use the parent/global reasoning level) or one of `off`, `low`, `medium`, `high`, `ultra`, `max`. Use this only when the agent should consistently run with a different reasoning budget than its parent.
 - **allowedTools** — `all` (gets all safe tools) or explicit list like `[web_search, web_fetch, browser]`. Available safe tools: `file_read`, `file_write`, `file_edit`, `list_dir`, `exec`, `web_search`, `web_fetch`, `browser`, `exec_bg`, `poll`, `output`, `kill`, `dismiss`. Use `[]` for agents that need no tools.
 - **allowedSkills** — `none` (default, no skills), `all` (every available skill), or explicit list like `[agent-creator, prompt-engineering]`. When skills are allowed, the agent receives a skills summary in its prompt and can use `file_read` to load the full SKILL.md on demand. `file_read` is automatically added to the agent's tools when any skills are allowed, even if not listed in `allowedTools`.
 

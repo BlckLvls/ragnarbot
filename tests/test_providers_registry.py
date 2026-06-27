@@ -47,31 +47,36 @@ def test_get_provider_not_found():
 
 def test_get_models_returns_list():
     models = get_models("anthropic")
-    assert len(models) == 2
-    assert models[0]["id"] == "anthropic/claude-opus-4-6"
+    assert len(models) == 3
+    assert models[0]["id"] == "anthropic/claude-opus-4-8"
 
 
-def test_anthropic_registry_drops_4_5_models():
+def test_anthropic_registry_drops_older_models():
     model_ids = [m["id"] for m in get_models("anthropic")]
     assert "anthropic/claude-sonnet-4-5" not in model_ids
     assert "anthropic/claude-haiku-4-5" not in model_ids
+    assert "anthropic/claude-opus-4-6" not in model_ids
+    assert "anthropic/claude-opus-4-8" in model_ids
+    assert "anthropic/claude-opus-4-7" in model_ids
 
 
-def test_openai_models_include_gpt_5_4_first():
+def test_openai_models_include_gpt_5_5_first():
     models = get_models("openai")
     model_ids = [m["id"] for m in models]
 
-    assert models[0]["id"] == "openai/gpt-5.4"
-    assert "openai/gpt-5.2" in model_ids
-    assert "openai/gpt-5-mini" in model_ids
+    assert models[0]["id"] == "openai/gpt-5.5"
+    assert "openai/gpt-5.4" in model_ids
+    assert "openai/gpt-5.2" not in model_ids
+    assert "openai/gpt-5.4-mini" in model_ids
 
 
-def test_openrouter_models_include_gpt_5_4():
+def test_openrouter_models_include_gpt_5_5():
     models = get_models("openrouter")
     model_ids = [m["id"] for m in models]
 
+    assert "openrouter/openai/gpt-5.5" in model_ids
     assert "openrouter/openai/gpt-5.4" in model_ids
-    assert "openrouter/openai/gpt-5.2" in model_ids
+    assert "openrouter/openai/gpt-5.2" not in model_ids
 
 
 def test_gemini_models_include_3_1_pro_first():

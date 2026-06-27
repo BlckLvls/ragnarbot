@@ -39,12 +39,12 @@ class AgentDefaults(BaseModel):
         json_schema_extra={"reload": "cold", "label": "Workspace directory path"},
     )
     model: str = Field(
-        default="anthropic/claude-opus-4-6",
+        default="anthropic/claude-opus-4-8",
         json_schema_extra={"reload": "warm", "label": "LLM model identifier (provider/model)"},
     )
     reasoning_level: str = Field(
         default="medium",
-        pattern="^(off|low|medium|high|ultra)$",
+        pattern="^(off|low|medium|high|ultra|max)$",
         json_schema_extra={"reload": "hot", "label": "Unified reasoning level"},
     )
     lightning_mode: bool = Field(
