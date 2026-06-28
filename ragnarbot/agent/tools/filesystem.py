@@ -27,6 +27,38 @@ def _resolve_path(path: str, workspace: Path | None = None) -> Path:
     return resolve_path_in_workspace(path, workspace)
 
 
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _memory_target(file_path: Path, workspace: Path | None) -> tuple[str, str | None] | None:
+    """If file_path is a memory file under workspace/memory/, return (scope, date)."""
+    if workspace is None:
+        return None
+    try:
+        rel = file_path.resolve().relative_to((Path(workspace) / "memory").resolve())
+    except (ValueError, OSError):
+        return None
+    if len(rel.parts) != 1:
+        return None
+    if file_path.name == "MEMORY.md":
+        return ("long_term", None)
+    if file_path.suffix == ".md" and _DATE_RE.match(file_path.stem):
+        return ("daily", file_path.stem)
+    return None
+
+
+def _fire_memory_hook(on_write, file_path: Path, workspace: Path | None) -> None:
+    if on_write is None:
+        return
+    target = _memory_target(file_path, workspace)
+    if target is None:
+        return
+    try:
+        on_write(target[0], target[1])
+    except Exception:
+        pass  # never let a recall hook break a file write
+
+
 class ReadFileTool(Tool):
     """Tool to read file contents."""
 
@@ -210,8 +242,9 @@ class ReadFileTool(Tool):
 class WriteFileTool(Tool):
     """Tool to write content to a file."""
 
-    def __init__(self, workspace: Path | None = None):
+    def __init__(self, workspace: Path | None = None, on_write=None):
         self._workspace = workspace
+        self._on_write = on_write
 
     @property
     def name(self) -> str:
@@ -243,6 +276,7 @@ class WriteFileTool(Tool):
             file_path = _resolve_path(path, self._workspace)
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content, encoding="utf-8")
+            _fire_memory_hook(self._on_write, file_path, self._workspace)
             return f"Successfully wrote {len(content)} bytes to {path}"
         except PermissionError:
             return f"Error: Permission denied: {path}"
@@ -253,8 +287,9 @@ class WriteFileTool(Tool):
 class EditFileTool(Tool):
     """Tool to edit a file by replacing text."""
 
-    def __init__(self, workspace: Path | None = None):
+    def __init__(self, workspace: Path | None = None, on_write=None):
         self._workspace = workspace
+        self._on_write = on_write
 
     @property
     def name(self) -> str:
@@ -345,6 +380,7 @@ class EditFileTool(Tool):
 
             with file_path.open("w", encoding="utf-8", newline="") as fh:
                 fh.write(new_content)
+            _fire_memory_hook(self._on_write, file_path, self._workspace)
             return self._success(path, content, new_content, mode, n)
         except PermissionError:
             return f"Error: Permission denied: {path}"

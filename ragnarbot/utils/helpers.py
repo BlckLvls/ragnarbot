@@ -51,6 +51,16 @@ def get_memory_path(workspace: Path | None = None) -> Path:
     return ensure_dir(ws / "memory")
 
 
+def get_index_dir() -> Path:
+    """Get the recall index storage directory (per profile)."""
+    return ensure_dir(get_instance().index_dir)
+
+
+def get_models_dir() -> Path:
+    """Get the downloaded-models storage directory (per profile)."""
+    return ensure_dir(get_instance().models_dir)
+
+
 def get_skills_path(workspace: Path | None = None) -> Path:
     """Get the skills directory within the workspace."""
     ws = workspace or get_workspace_path()

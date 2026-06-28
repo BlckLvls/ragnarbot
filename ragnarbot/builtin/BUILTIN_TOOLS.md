@@ -49,6 +49,40 @@ Search file *contents* for a regular expression. Use to find where a symbol, str
 - `output_mode` (optional) — `content` (path:line:text, default), `files_with_matches`, or `count`.
 - `context_lines` (optional) — lines of surrounding context per match.
 
+## Memory & Recall
+
+### recall
+Hybrid search (semantic vectors + BM25 keywords, RRF-fused) over **your own** long-term memory and this user's history — your memory, **not world knowledge**. Two corpora: **memory** = your distilled notes (daily `YYYY-MM-DD` files + long-term `MEMORY.md`: facts, preferences, decisions, open threads); **chats** = raw past conversation turns (what was literally said). Every hit comes back dated and located (day · dialogue · file). Indexing is automatic and runs in the background — you don't manage it.
+
+**Decide before you answer** — only when the turn leans on the past, run this check top to bottom:
+1. Is the answer already in the current context window? → do **not** recall.
+2. Does the user point at shared history? ("як ми домовились", "що я тобі казав про…", "той ресторан/файл", "помнишь…", "remember when…") → recall.
+3. A standing preference, a fact about the user, or a past decision you should already "know"? → recall `scope="memory"`.
+4. Need the literal wording of an earlier exchange? → recall `scope="chats"`.
+
+If any of 2–4 is yes and 1 is no, call recall **before** answering — and before saying "I don't know" or re-asking the user. One cheap lookup beats guessing.
+
+**Don't call it** for in-window content, general knowledge or reasoning you already have, a genuinely new topic with no prior history, or small talk — and don't re-query a thread you already recalled this turn. Each call embeds the query and scans the index: cheap, not free.
+
+**Write the query (exploit the hybrid):** pair **one or two distinctive literal terms** (names, numbers, error strings, rare words — these win the keyword leg) **with the concept in plain words** (wins the semantic leg). Natural language, not boolean; one focused intent per call; phrase it in the language the topic was likely discussed in (mostly uk/ru).
+- "ми вирішили на Postgres чи MySQL?" → `query:"рішення база даних Postgres MySQL", scope:"memory"`
+- "какие у меня предпочтения по кофе?" → `query:"предпочтения кофе", scope:"memory"`
+- vague→strong: `"бот"` → `"ragnarbot падає при старті, помилка session JSONL", scope:"both"`
+- vague→strong: `"мои настройки"` → `"предпочтения: отвечать кратко, без воды", scope:"memory"`
+
+**Params:**
+- `query` — natural language (see above).
+- `scope` — `memory`, `chats`, or `both` (default `both`; use when unsure).
+- `limit` — max results (1–50; default from config). Raise only if the first pass is thin.
+- `date_from` / `date_to` — `YYYY-MM-DD`; add when the user anchors in time ("минулого тижня", "in May") to cut noise.
+- `dialogue_id` — confine to one past session; use **only** an id you saw in a prior hit's metadata, never invented.
+
+**Handle results:**
+- **No matches → iterate, don't stop at one try:** drop filters → widen `scope` to `both` → rephrase with synonyms or the other language → drop a possibly-misspelled rare term. After ~2 honest attempts, tell the user you don't have it rather than inventing.
+- **Off-target → re-query** with a distinctive literal, a different scope, or a date range.
+- **Good hit → ground your answer:** cite where it came from ("у нотатках від 2026-05-12…"), and `file_read` the shown source path if the snippet is partial.
+- If recall **reports it's still preparing**, the index is downloading its embedding model on first run (not "no memory") — answer from context if you can, retry shortly.
+
 ## Background Execution
 
 For tasks that take more than a few seconds — image generation, data processing, long scripts, batch operations. Do NOT use these for quick commands; use `exec` instead.

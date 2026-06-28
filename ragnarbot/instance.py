@@ -46,6 +46,8 @@ class InstanceInfo:
     runtime_state_path: Path
     pending_update_path: Path
     metadata_path: Path
+    index_dir: Path
+    models_dir: Path
 
 
 class GatewayClaimError(RuntimeError):
@@ -154,6 +156,8 @@ def get_instance(profile: str | None = None) -> InstanceInfo:
         runtime_state_path=data_root / "runtime_state.json",
         pending_update_path=data_root / "pending_update.json",
         metadata_path=data_root / "instance.json",
+        index_dir=data_root / "index",
+        models_dir=data_root / "models",
     )
 
 
