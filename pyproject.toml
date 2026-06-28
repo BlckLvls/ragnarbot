@@ -31,6 +31,13 @@ dependencies = [
     "ddgs>=9.0.0",
     "patchright>=1.40.0",
     "aiohttp>=3.9.0",
+    # recall (hybrid vector + BM25 search over memory & chats) — base install for zero-touch.
+    # No torch: ONNX Runtime CPU embeds EmbeddingGemma-300m (q4). The model and the
+    # sqlite-vec extension auto-download at runtime; these libs ship so it works out of the box.
+    "onnxruntime>=1.20.0",
+    "tokenizers>=0.20.0",
+    "sqlite-vec>=0.1.6",
+    "numpy>=1.26.0",
 ]
 
 [project.optional-dependencies]

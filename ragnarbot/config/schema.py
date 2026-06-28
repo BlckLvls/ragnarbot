@@ -224,12 +224,54 @@ class BrowserConfig(BaseModel):
     )
 
 
+class RecallToolConfig(BaseModel):
+    """Hybrid (vector + BM25) recall search over memory files and chats."""
+    enabled: bool = Field(
+        default=True,
+        json_schema_extra={"reload": "warm", "label": "Enable the recall search tool + background indexing"},
+    )
+    auto_install: bool = Field(
+        default=True,
+        json_schema_extra={"reload": "warm", "label": "Auto-download the embedding model and sqlite-vec extension"},
+    )
+    quant: str = Field(
+        default="q4",
+        pattern="^(q4|q8|fp16|fp32)$",
+        json_schema_extra={"reload": "warm", "label": "EmbeddingGemma quant (q4|q8|fp16|fp32)"},
+    )
+    embed_rev: str = Field(
+        default="5090578d9565bb06545b4552f76e6bc2c93e4a66",
+        json_schema_extra={"reload": "warm", "label": "Pinned onnx-community model revision (commit sha)"},
+    )
+    top_k: int = Field(
+        default=8,
+        ge=1,
+        json_schema_extra={"reload": "hot", "label": "Default number of recall results"},
+    )
+    scope_default: str = Field(
+        default="both",
+        pattern="^(memory|chats|both)$",
+        json_schema_extra={"reload": "hot", "label": "Default recall scope (memory|chats|both)"},
+    )
+    rrf_k: int = Field(
+        default=60,
+        ge=1,
+        json_schema_extra={"reload": "hot", "label": "Reciprocal Rank Fusion constant k"},
+    )
+    max_output_chars: int = Field(
+        default=20000,
+        ge=1000,
+        json_schema_extra={"reload": "hot", "label": "Max characters in a recall result payload"},
+    )
+
+
 class ToolsConfig(BaseModel):
     """Tools configuration."""
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
     search: SearchToolConfig = Field(default_factory=SearchToolConfig)
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
+    recall: RecallToolConfig = Field(default_factory=RecallToolConfig)
 
 
 class TranscriptionConfig(BaseModel):
