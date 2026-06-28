@@ -1,5 +1,6 @@
 """Tests for the grep and glob search tools."""
 
+import asyncio
 import os
 import shutil
 import time
@@ -323,6 +324,37 @@ async def test_glob_invalid_modified_within(tmp_path):
     tool = GlobTool(workspace=tmp_path)
     result = await tool.execute(pattern="*.md", modified_within="soon")
     assert result.startswith("Error: invalid modified_within")
+
+
+# --------------------------- long-line handling (no readline 64KB crash) ---------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which("cat") is None, reason="cat not available")
+async def test_rg_reader_handles_giant_line(tmp_path):
+    """A line longer than asyncio's 64KB readline limit must not crash."""
+    big = tmp_path / "big.txt"
+    big.write_text("x" * 200_000 + "\n" + "short\n", encoding="utf-8")
+    proc = await asyncio.create_subprocess_exec(
+        "cat", str(big),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    tool = GrepTool(workspace=tmp_path)
+    lines, truncated = await tool._read_rg_output(proc, cap=100)
+    await proc.wait()
+    assert len(lines) == 2
+    assert lines[0].endswith("…(truncated)")  # giant line truncated, not crashed
+    assert lines[1] == "short"
+
+
+@pytest.mark.asyncio
+async def test_grep_python_handles_giant_line(tmp_path):
+    (tmp_path / "giant.md").write_text(
+        "x" * 200_000 + " needle " + "y" * 50_000 + "\n", encoding="utf-8"
+    )
+    tool = GrepTool(workspace=tmp_path, backend="python")
+    result = await tool.execute(pattern="needle", path="giant.md")
+    assert "giant.md:1:" in result
+    assert "…(truncated)" in result  # matched line truncated, no crash
 
 
 # --------------------------- smart-case matching ---------------------------

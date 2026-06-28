@@ -294,22 +294,8 @@ class GrepTool(Tool):
             *args, cwd=str(cwd),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
-        lines: list[str] = []
-        truncated = False
         try:
-            while True:
-                raw = await asyncio.wait_for(proc.stdout.readline(), timeout=self.timeout)
-                if not raw:
-                    break
-                line = raw.decode("utf-8", errors="replace").rstrip("\n")
-                if line.startswith("./"):  # rg prints './path' when searching '.'
-                    line = line[2:]
-                if len(line) > MAX_LINE_CHARS:
-                    line = line[:MAX_LINE_CHARS] + " …(truncated)"
-                lines.append(line)
-                if len(lines) >= cap:
-                    truncated = True
-                    break
+            lines, truncated = await self._read_rg_output(proc, cap)
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
@@ -322,6 +308,53 @@ class GrepTool(Tool):
             first = stderr.splitlines()[0] if stderr else "ripgrep error"
             return [], False, f"Error: {first}"
         return lines, truncated, None
+
+    async def _read_rg_output(self, proc, cap: int) -> tuple[list[str], bool]:
+        """Read rg stdout in fixed chunks, capped at `cap` lines.
+
+        Uses read() rather than readline() so a single output line longer than
+        asyncio's 64 KiB StreamReader limit can never raise (it is truncated
+        instead). Over-long lines are emitted truncated and their tail skipped.
+        """
+        max_line_bytes = MAX_LINE_CHARS * 8  # generous byte ceiling per output line
+        lines: list[str] = []
+        buf = bytearray()
+        discarding = False  # dropping the tail of an over-long line until its newline
+        while True:
+            chunk = await asyncio.wait_for(proc.stdout.read(65536), timeout=self.timeout)
+            if not chunk:
+                break
+            buf.extend(chunk)
+            if discarding:
+                nl = buf.find(b"\n")
+                if nl == -1:
+                    buf.clear()
+                    continue
+                del buf[: nl + 1]
+                discarding = False
+            while (nl := buf.find(b"\n")) != -1:
+                self._emit_rg_line(bytes(buf[:nl]), lines)
+                del buf[: nl + 1]
+                if len(lines) >= cap:
+                    return lines, True
+            if len(buf) > max_line_bytes:  # over-long line still has no newline
+                self._emit_rg_line(bytes(buf), lines)
+                buf.clear()
+                discarding = True
+                if len(lines) >= cap:
+                    return lines, True
+        if buf and not discarding:
+            self._emit_rg_line(bytes(buf), lines)
+        return lines, False
+
+    @staticmethod
+    def _emit_rg_line(raw: bytes, lines: list[str]) -> None:
+        line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+        if line.startswith("./"):  # rg prints './path' when searching '.'
+            line = line[2:]
+        if len(line) > MAX_LINE_CHARS:
+            line = line[:MAX_LINE_CHARS] + " …(truncated)"
+        lines.append(line)
 
     def _run_python(
         self, pattern, root, glob, case_insensitive,
