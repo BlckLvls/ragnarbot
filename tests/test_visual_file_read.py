@@ -352,3 +352,78 @@ class TestLiteLLMSanitize:
         result = LiteLLMProvider._sanitize_messages(messages)
 
         assert result[0]["content"] == "hello"
+
+
+class TestReadFileWindowing:
+    @pytest.mark.asyncio
+    async def test_offset_and_limit_slice(self, tmp_path):
+        f = tmp_path / "big.txt"
+        f.write_text("\n".join(f"line{i}" for i in range(1, 51)), encoding="utf-8")
+        result = await ReadFileTool(workspace=tmp_path).execute(path="big.txt", offset=5, limit=5)
+        body, _, footer = result.partition("\n\n[")
+        assert body.splitlines() == [f"line{i}" for i in range(5, 10)]
+        assert "showing lines 5-9 of 50" in footer
+        assert "offset=10" in footer
+
+    @pytest.mark.asyncio
+    async def test_limit_without_offset_starts_at_one(self, tmp_path):
+        f = tmp_path / "big.txt"
+        f.write_text("\n".join(f"line{i}" for i in range(1, 51)), encoding="utf-8")
+        result = await ReadFileTool(workspace=tmp_path).execute(path="big.txt", limit=3)
+        assert result.split("\n\n[")[0].splitlines() == ["line1", "line2", "line3"]
+
+    @pytest.mark.asyncio
+    async def test_offset_past_eof(self, tmp_path):
+        f = tmp_path / "small.txt"
+        f.write_text("a\nb\nc", encoding="utf-8")
+        result = await ReadFileTool(workspace=tmp_path).execute(path="small.txt", offset=99)
+        assert "past end of file" in result
+
+    @pytest.mark.asyncio
+    async def test_char_cap_and_footer(self, tmp_path):
+        f = tmp_path / "huge.txt"
+        # 1000 lines of 200 chars ~ 200k chars, well over the 50k cap
+        f.write_text("\n".join("x" * 200 for _ in range(1000)), encoding="utf-8")
+        result = await ReadFileTool(workspace=tmp_path).execute(path="huge.txt")
+        assert len(result) < 60_000  # capped
+        assert "truncated at 50000-char cap" in result
+        assert "offset=" in result
+
+    @pytest.mark.asyncio
+    async def test_line_numbers_on_and_off(self, tmp_path):
+        f = tmp_path / "n.txt"
+        f.write_text("alpha\nbeta", encoding="utf-8")
+        plain = await ReadFileTool(workspace=tmp_path).execute(path="n.txt")
+        assert plain == "alpha\nbeta"
+        numbered = await ReadFileTool(workspace=tmp_path).execute(path="n.txt", line_numbers=True)
+        assert "1\talpha" in numbered
+        assert "2\tbeta" in numbered
+
+    @pytest.mark.asyncio
+    async def test_binary_file_graceful(self, tmp_path):
+        f = tmp_path / "blob.bin"
+        f.write_bytes(b"\x00\x01\x02\xff\xfe valid? no")
+        result = await ReadFileTool(workspace=tmp_path).execute(path="blob.bin")
+        assert "not valid UTF-8" in result or "binary" in result
+
+    @pytest.mark.asyncio
+    async def test_empty_file(self, tmp_path):
+        f = tmp_path / "empty.txt"
+        f.write_text("", encoding="utf-8")
+        result = await ReadFileTool(workspace=tmp_path).execute(path="empty.txt")
+        assert result == "(file is empty)"
+
+    @pytest.mark.asyncio
+    async def test_small_file_no_footer(self, tmp_path):
+        f = tmp_path / "s.txt"
+        f.write_text("one\ntwo\nthree", encoding="utf-8")
+        result = await ReadFileTool(workspace=tmp_path).execute(path="s.txt")
+        assert result == "one\ntwo\nthree"
+        assert "[showing lines" not in result
+
+    @pytest.mark.asyncio
+    async def test_trailing_newline_roundtrip(self, tmp_path):
+        f = tmp_path / "t.txt"
+        f.write_text("one\ntwo\n", encoding="utf-8")
+        result = await ReadFileTool(workspace=tmp_path).execute(path="t.txt")
+        assert result == "one\ntwo\n"
