@@ -94,7 +94,8 @@ async def test_grep_count_mode(tmp_path):
 async def test_grep_no_match(tmp_path):
     _make_corpus(tmp_path)
     tool = GrepTool(workspace=tmp_path, backend="python")
-    result = await tool.execute(pattern="zzznotpresent")
+    # A scoped (non-workspace) search returns the bare message, no hint.
+    result = await tool.execute(pattern="zzznotpresent", path="sub")
     assert result == "No matches found."
 
 
@@ -314,6 +315,47 @@ async def test_glob_invalid_modified_within(tmp_path):
     tool = GlobTool(workspace=tmp_path)
     result = await tool.execute(pattern="*.md", modified_within="soon")
     assert result.startswith("Error: invalid modified_within")
+
+
+# --------------------------- searching outside the workspace ---------------------------
+
+@pytest.mark.asyncio
+async def test_glob_absolute_path_escapes_workspace(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "found.md").write_text("x", encoding="utf-8")
+    tool = GlobTool(workspace=ws)
+    result = await tool.execute(pattern="**/*.md", path=str(outside))
+    assert "found.md" in result
+
+
+@pytest.mark.asyncio
+async def test_grep_absolute_path_escapes_workspace(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "note.txt").write_text("needle here\n", encoding="utf-8")
+    tool = GrepTool(workspace=ws, backend="python")
+    result = await tool.execute(pattern="needle", path=str(outside))
+    assert "note.txt:1:needle here" in result
+
+
+@pytest.mark.asyncio
+async def test_glob_empty_hints_absolute_path(tmp_path):
+    tool = GlobTool(workspace=tmp_path)
+    result = await tool.execute(pattern="**/*.nonexistent")
+    assert "absolute path" in result
+
+
+@pytest.mark.asyncio
+async def test_grep_empty_hints_absolute_path(tmp_path):
+    _make_corpus(tmp_path)
+    tool = GrepTool(workspace=tmp_path, backend="python")
+    result = await tool.execute(pattern="zzznotpresent")
+    assert "absolute path" in result
 
 
 # --------------------------- registry wiring ---------------------------

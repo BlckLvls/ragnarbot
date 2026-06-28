@@ -81,10 +81,11 @@ class GrepTool(Tool):
     def description(self) -> str:
         return (
             "Search file contents with a regular expression. Prefer this over `exec` with "
-            "shell grep/rg — it handles regex escaping, stays scoped to the workspace, returns "
-            "clean path:line:text output, and is never blocked by the shell safety guard. "
-            "Filter files with `glob` (e.g. '*.py'), pick verbosity with `output_mode`, and "
-            "add `context_lines` for surrounding context."
+            "shell grep/rg — it handles regex escaping, returns clean path:line:text output, and "
+            "is never blocked by the shell safety guard. Searches the workspace by default, but "
+            "pass an absolute `path` (e.g. /Users/you/projects/foo) to search anywhere on the "
+            "machine — no need to drop to `exec find`. Filter files with `glob` (e.g. '*.py'), "
+            "pick verbosity with `output_mode`, and add `context_lines` for surrounding context."
         )
 
     @property
@@ -99,7 +100,10 @@ class GrepTool(Tool):
                 },
                 "path": {
                     "type": "string",
-                    "description": "File or directory to search. Defaults to the workspace root.",
+                    "description": (
+                        "File or directory to search. Defaults to the workspace root. Pass an "
+                        "absolute path to search anywhere on the machine (outside the workspace)."
+                    ),
                 },
                 "glob": {
                     "type": "string",
@@ -181,6 +185,11 @@ class GrepTool(Tool):
             return f"Error: invalid regular expression: {exc}"
 
         if not lines:
+            if not path:
+                return (
+                    "No matches found in the workspace. To search elsewhere on the machine, "
+                    "pass an absolute path."
+                )
             return "No matches found."
         return self._format(lines, truncated, output_mode, cap)
 
@@ -387,9 +396,11 @@ class GlobTool(Tool):
     def description(self) -> str:
         return (
             "Find files by name pattern (e.g. '**/*.md', 'src/**/*.py'), sorted by modification "
-            "time (most recent first). Cleaner and faster than `exec` with `find`, scoped to the "
-            "workspace. Use `modified_within` (e.g. '24h') to find recently changed files. "
-            "Returns workspace-relative paths, one per line."
+            "time (most recent first). Cleaner and faster than `exec` with `find`. Searches the "
+            "workspace by default, but pass an absolute `path` (e.g. /Users/you/projects/foo) to "
+            "search anywhere on the machine — no need to drop to `exec find`. Use "
+            "`modified_within` (e.g. '24h') to find recently changed files. Returns relative "
+            "paths, one per line."
         )
 
     @property
@@ -404,7 +415,10 @@ class GlobTool(Tool):
                 },
                 "path": {
                     "type": "string",
-                    "description": "Base directory to search. Defaults to the workspace root.",
+                    "description": (
+                        "Base directory to search. Defaults to the workspace root. Pass an "
+                        "absolute path to search anywhere on the machine (outside the workspace)."
+                    ),
                 },
                 "sort": {
                     "type": "string",
@@ -459,7 +473,8 @@ class GlobTool(Tool):
 
         if not hits:
             within = f" modified within {modified_within}" if modified_within else ""
-            return f"No files matching '{pattern}'{within} under {path or 'the workspace'}."
+            hint = "" if path else " To search outside the workspace, pass an absolute path."
+            return f"No files matching '{pattern}'{within} under {path or 'the workspace'}.{hint}"
 
         if sort == "name":
             hits.sort(key=lambda h: h[0].lower())

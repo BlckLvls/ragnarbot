@@ -33,18 +33,18 @@ Execute a shell command. Returns stdout, stderr, and exit code.
 
 ## Search
 
-Find files and content fast. Prefer these over `exec` with `find`/`grep`/`ls` — they're scoped to the workspace, handle escaping for you, and return clean, capped, workspace-relative output.
+Find files and content fast. Prefer these over `exec` with `find`/`grep`/`ls` — they handle escaping for you and return clean, capped output. They search the **workspace by default**, but you can pass an **absolute `path`** to search anywhere on the machine (e.g. the bot's own source, system config) — you don't need `exec find` for that.
 
 ### glob
 Find files by name pattern. Returns matching paths, most-recently-modified first. Use when you know roughly what a file is called or its extension but not where it lives.
 - `pattern` — a glob like `**/*.py`, `docs/*.md`, or `**/*.{{js,ts}}`.
-- `path` (optional) — directory to search under (defaults to the workspace root).
+- `path` (optional) — directory to search under. Defaults to the workspace root; pass an absolute path to search outside it.
 - `modified_within` (optional) — only files changed within a window, e.g. `24h`, `7d`.
 
 ### grep
 Search file *contents* for a regular expression. Use to find where a symbol, string, or phrase appears.
 - `pattern` — a regular expression (e.g. `def \w+_handler`).
-- `path` (optional) — file or directory to search under.
+- `path` (optional) — file or directory to search under. Defaults to the workspace root; pass an absolute path to search outside it.
 - `glob` (optional) — restrict to files matching a glob (e.g. `*.py`).
 - `output_mode` (optional) — `content` (path:line:text, default), `files_with_matches`, or `count`.
 - `context_lines` (optional) — lines of surrounding context per match.

@@ -431,16 +431,18 @@ When you need to find or change something on disk, pick the narrowest tool for t
 | Change an existing file | `edit_file` | You're modifying a file that already exists (read it first) |
 | Create a new file | `write_file` | The file doesn't exist yet |
 
+**Workspace by default, the whole machine when you need it.** `glob`, `grep`, `file_read`, and `list_dir` search the workspace when given a relative path, but they all accept an **absolute path** to go anywhere on the machine — your own engine source under `/Users/.../projects/`, system config, logs, etc. If a search of the workspace comes up empty and the thing you want is clearly outside it (the bot's own code, an app's files), re-run the same tool with an absolute `path` — **do not** fall back to `exec find`/`grep`.
+
 **Default workflow:**
 
-1. **Locate the file.** Know the name? `glob`. Know only some text inside it? `grep`. Just browsing structure? `list_dir`.
+1. **Locate the file.** Know the name? `glob`. Know only some text inside it? `grep`. Just browsing structure? `list_dir`. Outside the workspace? Same tools, with an absolute `path`.
 2. **Read narrowly.** Open it with `file_read`. For large files, don't dump the whole thing — `grep` for the line, then `file_read` with `offset`/`limit` around it. Add `line_numbers=true` when you need to anchor an edit.
 3. **Change surgically.** Use `edit_file` with enough surrounding context that `old_text` matches exactly once. Use `write_file` only for brand-new files.
 4. **Verify.** Re-read the changed region (or `grep` for the new text) to confirm the edit landed.
 
 **When NOT to use `exec` for search:**
 
-- Don't shell out to `grep`/`find`/`ls`/`cat` for routine navigation — `grep`, `glob`, `file_read`, and `list_dir` are faster, scoped to the workspace, and return clean, capped results you can act on directly.
+- Don't shell out to `grep`/`find`/`ls`/`cat` for navigation — `grep`, `glob`, `file_read`, and `list_dir` are faster and return clean, capped results you can act on directly. This holds for paths outside the workspace too: give the tool an absolute `path` instead of reaching for `exec find`.
 - A `grep` piped through `exec` (e.g. `grep -r ... | head`) is a smell: use the `grep` tool with a `glob` filter instead.
 - Reserve `exec` for what the dedicated tools genuinely can't do: running builds/tests, git operations, multi-step pipelines, or transforming output with `sed`/`awk`/`jq`.
 
