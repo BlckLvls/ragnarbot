@@ -3,7 +3,10 @@
 ## File Tools
 
 ### file_read
-Read a file's contents. Always read a file before editing it — you need to see the current content to construct an accurate edit.
+Read a file's contents. Returns up to 2000 lines / 50000 characters per call. Always read a file before editing it — you need to see the current content to construct an accurate edit.
+- Page through large files with `offset` (1-based start line) and `limit` (max lines). When output is capped, a footer tells you the next `offset` to use.
+- Pass `line_numbers=true` to prefix line numbers (handy for locating an offset or planning an edit) — but never copy the number prefixes into `edit_file`'s `old_text`.
+- For a big file, don't dump the whole thing: `grep` for the line you need, then `file_read` a narrow window around it.
 
 Also works with image files (jpg, png, gif, webp) — the image is returned as visual content you can see and describe. Use this to inspect screenshots, generated images, local photos, or any visual file on disk.
 
@@ -11,7 +14,10 @@ Also works with image files (jpg, png, gif, webp) — the image is returned as v
 Write content to a file (creates parent directories automatically). Use for creating new files. For modifying existing files, prefer `edit_file` instead.
 
 ### edit_file
-Replace a specific text block in an existing file. Provide the exact `old_text` to match — it must appear exactly once. Include enough surrounding context to make the match unique. Always `file_read` the file first.
+Replace a text block in an existing file. By default `old_text` must match exactly once — include enough surrounding context to be unique. Always `file_read` the file first.
+- If an exact match fails, a whitespace/indentation-tolerant match is tried automatically and applied only when it resolves to a single location; otherwise it errors and asks for more context (it never edits the wrong spot).
+- Pass `replace_all=true` to replace every occurrence. If `old_text` matches more than one place and `replace_all` is false, the edit fails with a count instead of silently doing nothing.
+- `new_text` is inserted verbatim — include the exact indentation you want. Returns a small diff of what changed.
 
 ### list_dir
 List directory contents. Use to explore project structure or check what files exist before acting.
@@ -24,6 +30,24 @@ Execute a shell command. Returns stdout, stderr, and exit code.
 - Destructive commands (rm -rf, format, dd, etc.) are blocked by safety guards (can be disabled via `tools.exec.safetyGuard: false` in config).
 - Provide `working_dir` when the command must run in a specific directory.
 - For long-running processes, warn the user about potential timeout.
+
+## Search
+
+Find files and content fast. Prefer these over `exec` with `find`/`grep`/`ls` — they're scoped to the workspace, handle escaping for you, and return clean, capped, workspace-relative output.
+
+### glob
+Find files by name pattern. Returns matching paths, most-recently-modified first. Use when you know roughly what a file is called or its extension but not where it lives.
+- `pattern` — a glob like `**/*.py`, `docs/*.md`, or `**/*.{{js,ts}}`.
+- `path` (optional) — directory to search under (defaults to the workspace root).
+- `modified_within` (optional) — only files changed within a window, e.g. `24h`, `7d`.
+
+### grep
+Search file *contents* for a regular expression. Use to find where a symbol, string, or phrase appears.
+- `pattern` — a regular expression (e.g. `def \w+_handler`).
+- `path` (optional) — file or directory to search under.
+- `glob` (optional) — restrict to files matching a glob (e.g. `*.py`).
+- `output_mode` (optional) — `content` (path:line:text, default), `files_with_matches`, or `count`.
+- `context_lines` (optional) — lines of surrounding context per match.
 
 ## Background Execution
 
