@@ -35,6 +35,7 @@ from ragnarbot.agent.tools.hook import HookTool
 from ragnarbot.agent.tools.media import DownloadFileTool
 from ragnarbot.agent.tools.registry import ToolRegistry
 from ragnarbot.agent.tools.restart import RestartTool
+from ragnarbot.agent.tools.search import GlobTool, GrepTool
 from ragnarbot.agent.tools.shell import ExecTool
 from ragnarbot.agent.tools.telegram import (
     SendFileTool,
@@ -75,7 +76,12 @@ from ragnarbot.session.manager import SessionManager
 
 if TYPE_CHECKING:
     from ragnarbot.agent.agents_loader import AgentDefinition
-    from ragnarbot.config.schema import BrowserConfig, ExecToolConfig, FallbackConfig
+    from ragnarbot.config.schema import (
+        BrowserConfig,
+        ExecToolConfig,
+        FallbackConfig,
+        SearchToolConfig,
+    )
     from ragnarbot.cron.service import CronService
     from ragnarbot.hooks.service import HookService
 
@@ -138,6 +144,7 @@ class AgentLoop:
         brave_api_key: str | None = None,
         search_engine: str = "brave",
         exec_config: "ExecToolConfig | None" = None,
+        search_config: "SearchToolConfig | None" = None,
         cron_service: "CronService | None" = None,
         hook_service: "HookService | None" = None,
         stream_steps: bool = False,
@@ -157,7 +164,7 @@ class AgentLoop:
         experimental_soul: bool = False,
         browser_config: "BrowserConfig | None" = None,
     ):
-        from ragnarbot.config.schema import ExecToolConfig
+        from ragnarbot.config.schema import ExecToolConfig, SearchToolConfig
         self.bus = bus
         self.provider = provider
         self.workspace = workspace
@@ -165,6 +172,7 @@ class AgentLoop:
         self.brave_api_key = brave_api_key
         self.search_engine = search_engine
         self.exec_config = exec_config or ExecToolConfig()
+        self.search_config = search_config or SearchToolConfig()
         self.cron_service = cron_service
         self.hook_service = hook_service
         self.stream_steps = stream_steps
@@ -223,6 +231,7 @@ class AgentLoop:
             brave_api_key=brave_api_key,
             search_engine=search_engine,
             exec_config=self.exec_config,
+            search_config=self.search_config,
             chat_fn=self._chat_with_fallback,
             on_fallback_batch=self._record_fallback_batch,
             browser_manager=self.browser_manager,
@@ -256,6 +265,21 @@ class AgentLoop:
             timeout=self.exec_config.timeout,
             restrict_to_workspace=self.exec_config.restrict_to_workspace,
             safety_guard=self.exec_config.safety_guard,
+        ))
+
+        # Search tools
+        self.tools.register(GrepTool(
+            workspace=self.workspace,
+            backend=self.search_config.backend,
+            max_matches=self.search_config.max_matches,
+            max_output_chars=self.search_config.max_output_chars,
+            timeout=self.search_config.timeout,
+        ))
+        self.tools.register(GlobTool(
+            workspace=self.workspace,
+            max_results=self.search_config.max_results,
+            max_output_chars=self.search_config.max_output_chars,
+            timeout=self.search_config.timeout,
         ))
 
         # Web tools
@@ -2701,6 +2725,21 @@ class AgentLoop:
             timeout=self.exec_config.timeout,
             restrict_to_workspace=self.exec_config.restrict_to_workspace,
             safety_guard=self.exec_config.safety_guard,
+        ))
+
+        # Search
+        reg.register(GrepTool(
+            workspace=self.workspace,
+            backend=self.search_config.backend,
+            max_matches=self.search_config.max_matches,
+            max_output_chars=self.search_config.max_output_chars,
+            timeout=self.search_config.timeout,
+        ))
+        reg.register(GlobTool(
+            workspace=self.workspace,
+            max_results=self.search_config.max_results,
+            max_output_chars=self.search_config.max_output_chars,
+            timeout=self.search_config.timeout,
         ))
 
         # Web

@@ -3,6 +3,7 @@
 import os
 import shutil
 import time
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -291,3 +292,25 @@ async def test_glob_invalid_modified_within(tmp_path):
     tool = GlobTool(workspace=tmp_path)
     result = await tool.execute(pattern="*.md", modified_within="soon")
     assert result.startswith("Error: invalid modified_within")
+
+
+# --------------------------- registry wiring ---------------------------
+
+def test_subagent_registry_includes_search(tmp_path):
+    """General-purpose subagents get grep/glob via SAFE_TOOL_NAMES."""
+    from ragnarbot.agent.agents_loader import AgentsLoader
+    from ragnarbot.agent.subagent import SubagentManager
+
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test/model"
+    loader = AgentsLoader(tmp_path / "ws", builtin_agents_dir=tmp_path / "empty")
+    mgr = SubagentManager(
+        provider=provider,
+        workspace=tmp_path / "ws",
+        bus=MagicMock(),
+        agents_loader=loader,
+        model="test/model",
+    )
+    reg, _ = mgr._build_agent_tool_registry(None, "cli", "direct")
+    assert "grep" in reg.tool_names
+    assert "glob" in reg.tool_names
