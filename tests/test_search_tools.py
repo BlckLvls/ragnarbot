@@ -161,9 +161,10 @@ async def test_grep_path_not_found(tmp_path):
 async def test_grep_ripgrep_missing_explicit(tmp_path, monkeypatch):
     _make_corpus(tmp_path)
     monkeypatch.setattr(shutil, "which", lambda _: None)
-    tool = GrepTool(workspace=tmp_path, backend="ripgrep")
+    # auto_install=False keeps this deterministic (no network download attempt).
+    tool = GrepTool(workspace=tmp_path, backend="ripgrep", auto_install=False)
     result = await tool.execute(pattern="alpha")
-    assert "ripgrep" in result and "not installed" in result
+    assert "ripgrep" in result and "could not be installed" in result
 
 
 @pytest.mark.asyncio

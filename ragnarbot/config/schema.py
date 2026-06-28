@@ -178,6 +178,10 @@ class SearchToolConfig(BaseModel):
         pattern="^(auto|ripgrep|python)$",
         json_schema_extra={"reload": "hot", "label": "Search backend (auto|ripgrep|python)"},
     )
+    auto_install: bool = Field(
+        default=True,
+        json_schema_extra={"reload": "hot", "label": "Auto-download ripgrep when missing"},
+    )
     max_matches: int = Field(
         default=200,
         ge=1,

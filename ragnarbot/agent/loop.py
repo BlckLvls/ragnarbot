@@ -274,6 +274,7 @@ class AgentLoop:
             max_matches=self.search_config.max_matches,
             max_output_chars=self.search_config.max_output_chars,
             timeout=self.search_config.timeout,
+            auto_install=self.search_config.auto_install,
         ))
         self.tools.register(GlobTool(
             workspace=self.workspace,
@@ -2734,6 +2735,7 @@ class AgentLoop:
             max_matches=self.search_config.max_matches,
             max_output_chars=self.search_config.max_output_chars,
             timeout=self.search_config.timeout,
+            auto_install=self.search_config.auto_install,
         ))
         reg.register(GlobTool(
             workspace=self.workspace,

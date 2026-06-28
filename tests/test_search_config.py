@@ -7,6 +7,7 @@ from ragnarbot.config.schema import Config, SearchToolConfig
 def test_search_defaults():
     cfg = Config()
     assert cfg.tools.search.backend == "auto"
+    assert cfg.tools.search.auto_install is True
     assert cfg.tools.search.max_matches == 200
     assert cfg.tools.search.max_results == 200
     assert cfg.tools.search.max_output_chars == 20000

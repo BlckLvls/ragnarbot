@@ -10,13 +10,13 @@ import asyncio
 import fnmatch
 import os
 import re
-import shutil
 import time
 from pathlib import Path
 from typing import Any
 
 from ragnarbot.agent.pathing import resolve_path_in_workspace
 from ragnarbot.agent.tools.base import Tool
+from ragnarbot.agent.tools.ripgrep import ensure_ripgrep
 
 MAX_LINE_CHARS = 500  # truncate any single rendered line to this many chars
 NULL_PROBE_BYTES = 8192  # bytes sniffed to detect binary files
@@ -62,12 +62,14 @@ class GrepTool(Tool):
         max_matches: int = 200,
         max_output_chars: int = 20000,
         timeout: int = 30,
+        auto_install: bool = True,
     ):
         self._workspace = workspace
         self.backend = backend
         self.max_matches = max_matches
         self.max_output_chars = max_output_chars
         self.timeout = timeout
+        self.auto_install = auto_install
 
     @property
     def name(self) -> str:
@@ -144,10 +146,16 @@ class GrepTool(Tool):
         if not root.exists():
             return f"Error: path not found: {path or '.'}"
 
-        rg = shutil.which("rg")
-        if self.backend == "ripgrep" and not rg:
-            return "Error: backend is set to 'ripgrep' but ripgrep (rg) is not installed."
-        use_rg = rg if (self.backend == "ripgrep" or (self.backend == "auto" and rg)) else None
+        if self.backend == "python":
+            use_rg = None
+        else:
+            use_rg = await ensure_ripgrep(self._data_root(), allow_download=self.auto_install)
+            if self.backend == "ripgrep" and not use_rg:
+                return (
+                    "Error: ripgrep (rg) is not available and could not be installed "
+                    "automatically. Install it (e.g. 'brew install ripgrep'), or set "
+                    "tools.search.backend to 'auto' or 'python'."
+                )
 
         try:
             if use_rg:
@@ -173,6 +181,15 @@ class GrepTool(Tool):
         if not lines:
             return "No matches found."
         return self._format(lines, truncated, output_mode, cap)
+
+    @staticmethod
+    def _data_root() -> Path | None:
+        """Profile data root for caching an auto-installed rg binary."""
+        try:
+            from ragnarbot.instance import get_instance
+            return get_instance().data_root
+        except Exception:
+            return None
 
     def _format(self, lines: list[str], truncated: bool, output_mode: str, cap: int) -> str:
         body = "\n".join(lines)
