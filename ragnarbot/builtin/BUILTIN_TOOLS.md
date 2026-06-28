@@ -49,6 +49,18 @@ Search file *contents* for a regular expression. Use to find where a symbol, str
 - `output_mode` (optional) — `content` (path:line:text, default), `files_with_matches`, or `count`.
 - `context_lines` (optional) — lines of surrounding context per match.
 
+## Memory & Recall
+
+### recall
+Hybrid (semantic vector + keyword BM25) search over **your own memory notes and past chat history**. Use it when the user refers to something discussed earlier, asks what you remember, or you need context from previous days or conversations that isn't in the current window. Indexing is automatic and runs in the background — you don't manage it.
+- `query` — what to look for, in natural language.
+- `scope` (optional) — `memory`, `chats`, or `both` (default `both`).
+- `limit` (optional) — max results.
+- `date_from` / `date_to` (optional) — restrict to a day range (`YYYY-MM-DD`).
+- `dialogue_id` (optional) — restrict to a single past session.
+
+Each hit is dated and located (which day, which dialogue/file), so you can cite it or `file_read` the source for more. If recall says it's still preparing, the index is downloading its model on first run — try again shortly.
+
 ## Background Execution
 
 For tasks that take more than a few seconds — image generation, data processing, long scripts, batch operations. Do NOT use these for quick commands; use `exec` instead.

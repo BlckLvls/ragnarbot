@@ -349,6 +349,9 @@ class AgentLoop:
         """Run the agent loop, processing messages from the bus."""
         self._running = True
         await self.memory_flush.resume_pending_jobs()
+        # Recall index: provision + backfill existing chats/memory in the background
+        # so startup is never blocked by the model download or initial indexing.
+        asyncio.create_task(self.index.resume_and_backfill())
         logger.info("Agent loop started")
 
         while self._running:
