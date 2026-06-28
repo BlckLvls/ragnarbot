@@ -43,13 +43,21 @@ async def test_grep_finds_across_files(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_grep_case_insensitive(tmp_path):
-    _make_corpus(tmp_path)
+async def test_grep_smart_case(tmp_path):
+    _make_corpus(tmp_path)  # notes.md has "Beta" on line 2
     tool = GrepTool(workspace=tmp_path, backend="python")
-    sensitive = await tool.execute(pattern="beta", path="notes.md")
-    assert sensitive == "No matches found."
-    insensitive = await tool.execute(pattern="beta", path="notes.md", case_insensitive=True)
-    assert insensitive == "notes.md:2:Beta"
+    # lowercase pattern -> smart-case insensitive -> matches "Beta"
+    assert await tool.execute(pattern="beta", path="notes.md") == "notes.md:2:Beta"
+    # uppercase letter in pattern -> case-sensitive -> "BETA" doesn't match "Beta"
+    assert await tool.execute(pattern="BETA", path="notes.md") == "No matches found."
+    # explicit override: force insensitive
+    assert await tool.execute(
+        pattern="BETA", path="notes.md", case_insensitive=True
+    ) == "notes.md:2:Beta"
+    # explicit override: force sensitive
+    assert await tool.execute(
+        pattern="beta", path="notes.md", case_insensitive=False
+    ) == "No matches found."
 
 
 @pytest.mark.asyncio
@@ -315,6 +323,52 @@ async def test_glob_invalid_modified_within(tmp_path):
     tool = GlobTool(workspace=tmp_path)
     result = await tool.execute(pattern="*.md", modified_within="soon")
     assert result.startswith("Error: invalid modified_within")
+
+
+# --------------------------- smart-case matching ---------------------------
+
+def test_ci_glob_pattern_expands_letters():
+    from ragnarbot.agent.tools.search import _ci_glob_pattern
+    assert _ci_glob_pattern("*soul*") == "*[sS][oO][uU][lL]*"
+    assert _ci_glob_pattern("**/*.md") == "**/*.[mM][dD]"  # ** and . preserved
+    # letters inside an existing [...] class are left alone
+    assert _ci_glob_pattern("[abc]x") == "[abc][xX]"
+
+
+@pytest.mark.asyncio
+async def test_glob_smart_case_lowercase_matches_uppercase_file(tmp_path):
+    (tmp_path / "SOUL.md").write_text("x", encoding="utf-8")
+    tool = GlobTool(workspace=tmp_path)
+    result = await tool.execute(pattern="*soul*")
+    assert "SOUL.md" in result  # the original footgun, now fixed
+
+
+@pytest.mark.asyncio
+async def test_glob_uppercase_pattern_is_case_sensitive(tmp_path):
+    (tmp_path / "Readme.md").write_text("x", encoding="utf-8")
+    tool = GlobTool(workspace=tmp_path)
+    # lowercase -> smart insensitive -> matches
+    assert "Readme.md" in await tool.execute(pattern="*readme*")
+    # uppercase letter -> case-sensitive -> 'README' != 'Readme'
+    assert "Readme.md" not in await tool.execute(pattern="*README*")
+
+
+@pytest.mark.asyncio
+async def test_glob_explicit_case_sensitive(tmp_path):
+    (tmp_path / "SOUL.md").write_text("x", encoding="utf-8")
+    tool = GlobTool(workspace=tmp_path)
+    result = await tool.execute(pattern="*soul*", case_insensitive=False)
+    assert result.startswith("No files matching")
+
+
+@pytest.mark.asyncio
+async def test_glob_smart_case_preserves_recursion(tmp_path):
+    nested = tmp_path / "a" / "b"
+    nested.mkdir(parents=True)
+    (nested / "Config.yaml").write_text("x", encoding="utf-8")
+    tool = GlobTool(workspace=tmp_path)
+    result = await tool.execute(pattern="**/*config*")
+    assert "a/b/Config.yaml" in result  # ** recursion still works under smart-case
 
 
 # --------------------------- searching outside the workspace ---------------------------

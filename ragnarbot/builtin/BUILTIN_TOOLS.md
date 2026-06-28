@@ -33,7 +33,7 @@ Execute a shell command. Returns stdout, stderr, and exit code.
 
 ## Search
 
-Find files and content fast. Prefer these over `exec` with `find`/`grep`/`ls` — they handle escaping for you and return clean, capped output. They search the **workspace by default**, but you can pass an **absolute `path`** to search anywhere on the machine (e.g. the bot's own source, system config) — you don't need `exec find` for that.
+Find files and content fast. Prefer these over `exec` with `find`/`grep`/`ls` — they handle escaping for you and return clean, capped output. They search the **workspace by default**, but you can pass an **absolute `path`** to search anywhere on the machine (e.g. the bot's own source, system config) — you don't need `exec find` for that. Matching is **smart-case**: a lowercase pattern ignores case (so `*soul*` finds `SOUL.md`); add an uppercase letter to match case exactly.
 
 ### glob
 Find files by name pattern. Returns matching paths, most-recently-modified first. Use when you know roughly what a file is called or its extension but not where it lives.

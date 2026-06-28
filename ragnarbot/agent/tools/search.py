@@ -52,6 +52,38 @@ def _matches_glob(rel: str, name: str, glob: str | None) -> bool:
     return fnmatch.fnmatch(name, glob)
 
 
+def _smart_case_insensitive(pattern: str, override: bool | None) -> bool:
+    """Smart-case: insensitive unless the pattern has an uppercase letter.
+
+    An explicit override (True/False) wins; None enables smart-case.
+    """
+    if override is not None:
+        return override
+    return not any(c.isupper() for c in pattern)
+
+
+def _ci_glob_pattern(pattern: str) -> str:
+    """Expand cased letters to [aA]-style classes so pathlib glob is case-insensitive.
+
+    Portable across Python 3.11+ (no `case_sensitive` kwarg, which is 3.12+), and
+    preserves pathlib's path/`**` semantics since matching still runs through glob().
+    """
+    out: list[str] = []
+    in_class = False
+    for ch in pattern:
+        if ch == "[":
+            in_class = True
+            out.append(ch)
+        elif ch == "]":
+            in_class = False
+            out.append(ch)
+        elif ch.isalpha() and not in_class and ch.lower() != ch.upper():
+            out.append(f"[{ch.lower()}{ch.upper()}]")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 class GrepTool(Tool):
     """Search file contents for a regular expression."""
 
@@ -84,8 +116,9 @@ class GrepTool(Tool):
             "shell grep/rg — it handles regex escaping, returns clean path:line:text output, and "
             "is never blocked by the shell safety guard. Searches the workspace by default, but "
             "pass an absolute `path` (e.g. /Users/you/projects/foo) to search anywhere on the "
-            "machine — no need to drop to `exec find`. Filter files with `glob` (e.g. '*.py'), "
-            "pick verbosity with `output_mode`, and add `context_lines` for surrounding context."
+            "machine — no need to drop to `exec find`. Matching is smart-case (a lowercase "
+            "pattern ignores case; add an uppercase letter to match case exactly). Filter files "
+            "with `glob` (e.g. '*.py'), pick verbosity with `output_mode`, add `context_lines`."
         )
 
     @property
@@ -111,7 +144,11 @@ class GrepTool(Tool):
                 },
                 "case_insensitive": {
                     "type": "boolean",
-                    "description": "Case-insensitive match. Default false.",
+                    "description": (
+                        "Force case sensitivity. Omit for smart-case (insensitive unless the "
+                        "pattern contains an uppercase letter). Set true to always ignore case, "
+                        "false to always match case."
+                    ),
                 },
                 "context_lines": {
                     "type": "integer",
@@ -141,13 +178,14 @@ class GrepTool(Tool):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-        case_insensitive: bool = False,
+        case_insensitive: bool | None = None,
         context_lines: int = 0,
         output_mode: str = "content",
         max_matches: int | None = None,
         **kwargs: Any,
     ) -> str:
         cap = max_matches or self.max_matches
+        insensitive = _smart_case_insensitive(pattern, case_insensitive)
         root = resolve_path_in_workspace(path or ".", self._workspace)
         if not root.exists():
             return f"Error: path not found: {path or '.'}"
@@ -166,7 +204,7 @@ class GrepTool(Tool):
         try:
             if use_rg:
                 lines, truncated, err = await self._run_rg(
-                    use_rg, pattern, root, glob, case_insensitive,
+                    use_rg, pattern, root, glob, insensitive,
                     context_lines, output_mode, cap,
                 )
                 if err:
@@ -174,7 +212,7 @@ class GrepTool(Tool):
             else:
                 lines, truncated = await asyncio.wait_for(
                     asyncio.to_thread(
-                        self._run_python, pattern, root, glob, case_insensitive,
+                        self._run_python, pattern, root, glob, insensitive,
                         context_lines, output_mode, cap,
                     ),
                     timeout=self.timeout,
@@ -398,9 +436,10 @@ class GlobTool(Tool):
             "Find files by name pattern (e.g. '**/*.md', 'src/**/*.py'), sorted by modification "
             "time (most recent first). Cleaner and faster than `exec` with `find`. Searches the "
             "workspace by default, but pass an absolute `path` (e.g. /Users/you/projects/foo) to "
-            "search anywhere on the machine — no need to drop to `exec find`. Use "
-            "`modified_within` (e.g. '24h') to find recently changed files. Returns relative "
-            "paths, one per line."
+            "search anywhere on the machine — no need to drop to `exec find`. Matching is "
+            "smart-case (a lowercase pattern ignores case, so '*soul*' finds SOUL.md; add an "
+            "uppercase letter to match case exactly). Use `modified_within` (e.g. '24h') for "
+            "recently changed files. Returns relative paths, one per line."
         )
 
     @property
@@ -434,6 +473,14 @@ class GlobTool(Tool):
                     "type": "string",
                     "description": "Only files modified within this window, e.g. '30m', '24h', '7d', or seconds.",
                 },
+                "case_insensitive": {
+                    "type": "boolean",
+                    "description": (
+                        "Force case sensitivity. Omit for smart-case (insensitive unless the "
+                        "pattern contains an uppercase letter). Set true to always ignore case, "
+                        "false to always match case."
+                    ),
+                },
             },
             "required": ["pattern"],
         }
@@ -445,6 +492,7 @@ class GlobTool(Tool):
         sort: str = "mtime",
         limit: int | None = None,
         modified_within: str | None = None,
+        case_insensitive: bool | None = None,
         **kwargs: Any,
     ) -> str:
         cap = limit or self.max_results
@@ -461,9 +509,15 @@ class GlobTool(Tool):
                 return f"Error: invalid modified_within '{modified_within}'. Use e.g. '30m', '24h', '7d'."
             cutoff = time.time() - secs
 
+        # Smart-case: a lowercase pattern matches case-insensitively. We expand cased
+        # letters to [aA] classes (portable on 3.11; preserves pathlib '**' semantics).
+        glob_pattern = pattern
+        if _smart_case_insensitive(pattern, case_insensitive):
+            glob_pattern = _ci_glob_pattern(pattern)
+
         try:
             hits = await asyncio.wait_for(
-                asyncio.to_thread(self._collect, base, pattern, cutoff),
+                asyncio.to_thread(self._collect, base, glob_pattern, cutoff),
                 timeout=self.timeout,
             )
         except asyncio.TimeoutError:
