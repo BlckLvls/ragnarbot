@@ -143,7 +143,21 @@ def _onboarding_loop(console: Console) -> None:
             step = 7
 
         elif step == 7:
-            result = voice_transcription_screen(console)
+            # An OpenAI transcription model reuses the OpenAI LLM key. It's
+            # available if entered earlier this run (api_key auth) or already saved.
+            from ragnarbot.auth.credentials import load_credentials
+
+            provider_id = PROVIDERS[provider_idx]["id"]
+            auth_method = "oauth" if auth_idx == 0 else "api_key"
+            openai_key_in_run = (
+                provider_id == "openai" and auth_method == "api_key" and bool(token)
+            )
+            openai_key_available = openai_key_in_run or bool(
+                load_credentials().providers.openai.api_key
+            )
+            result = voice_transcription_screen(
+                console, openai_key_available=openai_key_available
+            )
             if result is None:
                 step = 6
                 continue
@@ -280,6 +294,9 @@ def _save_results(
 
     if voice_api_key and voice_provider in ("groq", "elevenlabs"):
         getattr(creds.services, voice_provider).api_key = voice_api_key
+    elif voice_api_key and voice_provider.startswith("openai-"):
+        # OpenAI transcription shares the LLM provider key slot.
+        creds.providers.openai.api_key = voice_api_key
 
     if web_search_key:
         creds.services.brave_search.api_key = web_search_key

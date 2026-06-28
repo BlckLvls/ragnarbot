@@ -106,8 +106,10 @@ class TestOnboardingFlow:
             (Key.ENTER, ""),         # Select first model (Opus)
             *SKIP_LIGHTNING,
             (Key.ENTER, ""),         # Skip telegram (empty enter)
-            (Key.DOWN, ""),          # Voice: past ElevenLabs
-            (Key.DOWN, ""),          # Voice: to Skip
+            (Key.DOWN, ""),         # Voice: past OpenAI Transcribe
+            (Key.DOWN, ""),         # Voice: past OpenAI Mini Transcribe
+            (Key.DOWN, ""),         # Voice: past ElevenLabs
+            (Key.DOWN, ""),         # Voice: to Skip
             (Key.ENTER, ""),         # Select Skip
             *SKIP_WEB_SEARCH,       # Skip web search
             (Key.DOWN, ""),          # Navigate to "No" (manual start)
@@ -137,6 +139,8 @@ class TestOnboardingFlow:
             (Key.ENTER, ""),        # Select Sonnet
             *SKIP_LIGHTNING,
             (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Voice: past OpenAI Transcribe
+            (Key.DOWN, ""),         # Voice: past OpenAI Mini Transcribe
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
             (Key.ENTER, ""),        # Select Skip
@@ -166,6 +170,8 @@ class TestOnboardingFlow:
             (Key.ENTER, ""),        # Select first model (GPT-5.5)
             *ENABLE_LIGHTNING,
             (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Voice: past OpenAI Transcribe
+            (Key.DOWN, ""),         # Voice: past OpenAI Mini Transcribe
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
             (Key.ENTER, ""),        # Select Skip
@@ -238,6 +244,8 @@ class TestOnboardingFlow:
             (Key.ENTER, ""),        # Select Flash
             *SKIP_LIGHTNING,
             (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Voice: past OpenAI Transcribe
+            (Key.DOWN, ""),         # Voice: past OpenAI Mini Transcribe
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
             (Key.ENTER, ""),        # Select Skip
@@ -267,6 +275,8 @@ class TestOnboardingFlow:
             (Key.ENTER, ""),        # Select first model
             *SKIP_LIGHTNING,
             (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Voice: past OpenAI Transcribe
+            (Key.DOWN, ""),         # Voice: past OpenAI Mini Transcribe
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
             (Key.ENTER, ""),        # Select Skip
@@ -291,6 +301,8 @@ class TestOnboardingFlow:
             (Key.ENTER, ""),        # Select first model
             *ENABLE_LIGHTNING,
             (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Voice: past OpenAI Transcribe
+            (Key.DOWN, ""),         # Voice: past OpenAI Mini Transcribe
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
             (Key.ENTER, ""),        # Select Skip
@@ -358,6 +370,8 @@ class TestOnboardingFlow:
             (Key.ENTER, ""),        # Select first model
             *SKIP_LIGHTNING,
             (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Voice: past OpenAI Transcribe
+            (Key.DOWN, ""),         # Voice: past OpenAI Mini Transcribe
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
             (Key.ENTER, ""),        # Select Skip
@@ -402,6 +416,8 @@ class TestTelegramValidation:
             *[(Key.CHAR, c) for c in "123456:ABC-DEF"],
             (Key.ENTER, ""),        # Submit token
             (Key.ENTER, ""),        # Accept bot info screen
+            (Key.DOWN, ""),         # Voice: past OpenAI Transcribe
+            (Key.DOWN, ""),         # Voice: past OpenAI Mini Transcribe
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
             (Key.ENTER, ""),        # Select Skip
@@ -472,6 +488,8 @@ class TestVoiceTranscriptionOnboarding:
             (Key.ENTER, ""),        # Select first model
             *SKIP_LIGHTNING,
             (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Voice: past OpenAI Transcribe
+            (Key.DOWN, ""),         # Voice: past OpenAI Mini Transcribe
             (Key.DOWN, ""),         # Voice: past ElevenLabs to Groq
             (Key.ENTER, ""),        # Select Groq
             *[(Key.CHAR, c) for c in "gsk-groq-key"],
@@ -489,6 +507,62 @@ class TestVoiceTranscriptionOnboarding:
         creds = mock_save_creds.call_args[0][0]
         assert creds.services.groq.api_key == "gsk-groq-key"
 
+    def test_openai_voice_selection_prompts_for_key(self, tmp_path):
+        """Select OpenAI GPT-4o Transcribe with no OpenAI key yet — prompt and save it."""
+        keys = [
+            (Key.ENTER, ""),        # Select Anthropic
+            (Key.DOWN, ""),         # Navigate to API Key
+            (Key.ENTER, ""),        # Select API Key
+            *[(Key.CHAR, c) for c in "sk-ant-key"],
+            (Key.ENTER, ""),        # Confirm key
+            (Key.ENTER, ""),        # Select first model
+            *SKIP_LIGHTNING,
+            (Key.ENTER, ""),        # Skip telegram
+            (Key.ENTER, ""),        # Voice: select OpenAI GPT-4o Transcribe (first option)
+            *[(Key.CHAR, c) for c in "sk-openai-voice"],
+            (Key.ENTER, ""),        # Confirm OpenAI key
+            *SKIP_WEB_SEARCH,      # Skip web search
+            (Key.DOWN, ""),         # Navigate to "No" (manual start)
+            (Key.ENTER, ""),        # Select manual start
+            (Key.ENTER, ""),        # Confirm summary
+        ]
+        mock_save_config, mock_save_creds = self._run_with_keys(keys, tmp_path)
+
+        config = mock_save_config.call_args[0][0]
+        assert config.transcription.provider == "openai-gpt-4o-transcribe"
+
+        creds = mock_save_creds.call_args[0][0]
+        assert creds.providers.openai.api_key == "sk-openai-voice"
+
+    def test_openai_voice_reuses_existing_key(self, tmp_path):
+        """OpenAI chosen as LLM with API key — voice reuses it without re-prompting."""
+        keys = [
+            (Key.DOWN, ""),         # Navigate to OpenAI
+            (Key.ENTER, ""),        # Select OpenAI
+            (Key.DOWN, ""),         # Navigate to API Key
+            (Key.ENTER, ""),        # Select API Key
+            *[(Key.CHAR, c) for c in "sk-openai-llm"],
+            (Key.ENTER, ""),        # Confirm key
+            (Key.ENTER, ""),        # Select first model (GPT-5.5)
+            *SKIP_LIGHTNING,
+            (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Voice: to OpenAI GPT-4o Mini Transcribe
+            (Key.ENTER, ""),        # Select OpenAI GPT-4o Mini Transcribe
+            (Key.ENTER, ""),        # Acknowledge "using your existing OpenAI key" notice
+            *SKIP_WEB_SEARCH,      # Skip web search
+            (Key.DOWN, ""),         # Navigate to "No" (manual start)
+            (Key.ENTER, ""),        # Select manual start
+            (Key.ENTER, ""),        # Confirm summary
+        ]
+        mock_save_config, mock_save_creds = self._run_with_keys(keys, tmp_path)
+
+        config = mock_save_config.call_args[0][0]
+        assert config.transcription.provider == "openai-gpt-4o-mini-transcribe"
+
+        creds = mock_save_creds.call_args[0][0]
+        # Reused the LLM key; the voice step neither re-prompted nor changed it.
+        assert creds.providers.openai.api_key == "sk-openai-llm"
+
     def test_web_search_brave_with_key(self, tmp_path):
         """Select Brave Search and provide API key during onboarding."""
         keys = [
@@ -500,6 +574,8 @@ class TestVoiceTranscriptionOnboarding:
             (Key.ENTER, ""),        # Select first model
             *SKIP_LIGHTNING,
             (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Voice: past OpenAI Transcribe
+            (Key.DOWN, ""),         # Voice: past OpenAI Mini Transcribe
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
             (Key.ENTER, ""),        # Select Skip
@@ -529,6 +605,8 @@ class TestVoiceTranscriptionOnboarding:
             (Key.ENTER, ""),        # Select first model
             *SKIP_LIGHTNING,
             (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Voice: past OpenAI Transcribe
+            (Key.DOWN, ""),         # Voice: past OpenAI Mini Transcribe
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
             (Key.ENTER, ""),        # Select Skip
@@ -554,6 +632,8 @@ class TestVoiceTranscriptionOnboarding:
             (Key.ENTER, ""),        # Select first model
             *SKIP_LIGHTNING,
             (Key.ENTER, ""),        # Skip telegram
+            (Key.DOWN, ""),         # Voice: past OpenAI Transcribe
+            (Key.DOWN, ""),         # Voice: past OpenAI Mini Transcribe
             (Key.DOWN, ""),         # Voice: past ElevenLabs
             (Key.DOWN, ""),         # Voice: to Skip
             (Key.ENTER, ""),        # Select Skip
