@@ -196,9 +196,17 @@ def _validate_telegram_token(console: Console, token: str) -> str | None:
         return None
 
 
-def voice_transcription_screen(console: Console) -> tuple[str, str] | None:
-    """Voice transcription setup. Returns (provider, api_key), ("none","") for skip, or None (back)."""
+def voice_transcription_screen(
+    console: Console, openai_key_available: bool = False
+) -> tuple[str, str] | None:
+    """Voice transcription setup. Returns (provider, api_key), ("none","") for skip, or None (back).
+
+    When ``openai_key_available`` is True, an OpenAI model reuses the existing
+    OpenAI key (from the LLM provider step or a previous run) without prompting.
+    """
     voice_providers = [
+        ("OpenAI GPT-4o Transcribe", "Highest accuracy (needs OpenAI API key)"),
+        ("OpenAI GPT-4o Mini Transcribe", "Fast & cheaper (needs OpenAI API key)"),
         ("ElevenLabs (Scribe v2)", "Best quality, multilingual — recommended"),
         ("Groq (Whisper v3 Turbo)", "Fast and free"),
         ("Skip", "Disable voice transcription"),
@@ -211,11 +219,42 @@ def voice_transcription_screen(console: Console) -> tuple[str, str] | None:
     )
     if idx is None:
         return None
-    if idx == 2:
+    if idx == 4:
         return ("none", "")
 
-    provider_id = "elevenlabs" if idx == 0 else "groq"
-    provider_label = "ElevenLabs" if idx == 0 else "Groq"
+    # OpenAI models — key comes from the shared OpenAI provider slot.
+    if idx in (0, 1):
+        provider_value = (
+            "openai-gpt-4o-transcribe" if idx == 0 else "openai-gpt-4o-mini-transcribe"
+        )
+        if openai_key_available:
+            ok = info_screen(
+                console,
+                "Using your existing OpenAI key",
+                [
+                    "Your OpenAI API key is already configured, so we'll reuse it",
+                    "for voice transcription — no need to enter it again.",
+                ],
+                subtitle="Step 7 of 9 — OpenAI",
+            )
+            if not ok:
+                return None
+            return (provider_value, "")
+
+        api_key = text_input(
+            console,
+            "OpenAI API key",
+            "API key",
+            hint="Get your API key at: https://platform.openai.com/api-keys",
+            secret=False,
+            subtitle="Step 7 of 9 — OpenAI",
+        )
+        if api_key is None:
+            return None
+        return (provider_value, api_key)
+
+    provider_id = "elevenlabs" if idx == 2 else "groq"
+    provider_label = "ElevenLabs" if idx == 2 else "Groq"
 
     api_key = text_input(
         console,
@@ -318,7 +357,13 @@ def summary_screen(
     search_engine: str = "none",
 ) -> bool:
     """Show summary of configured values. Returns True on Enter."""
-    voice_label = {"groq": "Groq", "elevenlabs": "ElevenLabs", "none": "Skipped"}
+    voice_label = {
+        "groq": "Groq",
+        "elevenlabs": "ElevenLabs",
+        "openai-gpt-4o-transcribe": "OpenAI GPT-4o Transcribe",
+        "openai-gpt-4o-mini-transcribe": "OpenAI GPT-4o Mini Transcribe",
+        "none": "Skipped",
+    }
     search_label = {"brave": "Brave Search", "duckduckgo": "DuckDuckGo", "none": "Skipped"}
     lightning_resolution = resolve_lightning(model_id, auth_method, lightning_mode)
     needs_codex_cli = auth_method == "oauth" and lightning_resolution.supported and not is_codex_cli_available()

@@ -50,7 +50,7 @@ class ChannelManager:
 
                 transcriber = create_transcription_provider(
                     self.config.transcription.provider,
-                    self.credentials.services,
+                    self.credentials,
                 )
                 self.channels["telegram"] = TelegramChannel(
                     self.config.channels.telegram,

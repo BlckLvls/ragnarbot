@@ -50,6 +50,16 @@ CONFIG_DEPENDENCIES = [
         ["services.elevenlabs.api_key"],
         "requires secrets.services.elevenlabs.api_key",
     ),
+    ConfigDependency(
+        "transcription.provider", "openai-gpt-4o-transcribe", "exact",
+        ["providers.openai.api_key"],
+        "requires secrets.providers.openai.api_key",
+    ),
+    ConfigDependency(
+        "transcription.provider", "openai-gpt-4o-mini-transcribe", "exact",
+        ["providers.openai.api_key"],
+        "requires secrets.providers.openai.api_key",
+    ),
 ]
 
 

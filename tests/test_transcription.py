@@ -2,10 +2,11 @@
 
 import pytest
 
-from ragnarbot.auth.credentials import ServicesCredentials
+from ragnarbot.auth.credentials import Credentials
 from ragnarbot.providers.transcription import (
     ElevenLabsTranscriptionProvider,
     GroqTranscriptionProvider,
+    OpenAITranscriptionProvider,
     TranscriptionError,
     TranscriptionProvider,
     create_transcription_provider,
@@ -49,35 +50,70 @@ class TestElevenLabsProvider:
             await provider.transcribe(tmp_path / "nonexistent.ogg")
 
 
+class TestOpenAIProvider:
+    def test_is_transcription_provider(self):
+        provider = OpenAITranscriptionProvider(api_key="sk-test")
+        assert isinstance(provider, TranscriptionProvider)
+
+    def test_default_model(self):
+        provider = OpenAITranscriptionProvider(api_key="sk-test")
+        assert provider.model == "gpt-4o-transcribe"
+
+    @pytest.mark.asyncio
+    async def test_missing_file_raises(self, tmp_path):
+        provider = OpenAITranscriptionProvider(api_key="sk-test")
+        with pytest.raises(TranscriptionError, match="file not found"):
+            await provider.transcribe(tmp_path / "nonexistent.ogg")
+
+
 class TestFactory:
     def test_groq_with_key(self):
-        services = ServicesCredentials()
-        services.groq.api_key = "gsk-test"
-        provider = create_transcription_provider("groq", services)
+        creds = Credentials()
+        creds.services.groq.api_key = "gsk-test"
+        provider = create_transcription_provider("groq", creds)
         assert isinstance(provider, GroqTranscriptionProvider)
 
     def test_elevenlabs_with_key(self):
-        services = ServicesCredentials()
-        services.elevenlabs.api_key = "xi-test"
-        provider = create_transcription_provider("elevenlabs", services)
+        creds = Credentials()
+        creds.services.elevenlabs.api_key = "xi-test"
+        provider = create_transcription_provider("elevenlabs", creds)
         assert isinstance(provider, ElevenLabsTranscriptionProvider)
 
+    def test_openai_transcribe_with_key(self):
+        creds = Credentials()
+        creds.providers.openai.api_key = "sk-test"
+        provider = create_transcription_provider("openai-gpt-4o-transcribe", creds)
+        assert isinstance(provider, OpenAITranscriptionProvider)
+        assert provider.model == "gpt-4o-transcribe"
+
+    def test_openai_mini_transcribe_with_key(self):
+        creds = Credentials()
+        creds.providers.openai.api_key = "sk-test"
+        provider = create_transcription_provider("openai-gpt-4o-mini-transcribe", creds)
+        assert isinstance(provider, OpenAITranscriptionProvider)
+        assert provider.model == "gpt-4o-mini-transcribe"
+
     def test_groq_without_key_returns_none(self):
-        services = ServicesCredentials()
-        provider = create_transcription_provider("groq", services)
+        creds = Credentials()
+        provider = create_transcription_provider("groq", creds)
         assert provider is None
 
     def test_elevenlabs_without_key_returns_none(self):
-        services = ServicesCredentials()
-        provider = create_transcription_provider("elevenlabs", services)
+        creds = Credentials()
+        provider = create_transcription_provider("elevenlabs", creds)
+        assert provider is None
+
+    def test_openai_without_key_returns_none(self):
+        creds = Credentials()
+        provider = create_transcription_provider("openai-gpt-4o-transcribe", creds)
         assert provider is None
 
     def test_none_provider(self):
-        services = ServicesCredentials()
-        provider = create_transcription_provider("none", services)
+        creds = Credentials()
+        provider = create_transcription_provider("none", creds)
         assert provider is None
 
     def test_unknown_provider(self):
-        services = ServicesCredentials()
-        provider = create_transcription_provider("whisperx", services)
+        creds = Credentials()
+        provider = create_transcription_provider("whisperx", creds)
         assert provider is None

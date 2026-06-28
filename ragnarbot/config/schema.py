@@ -278,7 +278,7 @@ class TranscriptionConfig(BaseModel):
     """Voice transcription configuration."""
     provider: str = Field(
         default="none",
-        pattern="^(groq|elevenlabs|none)$",
+        pattern="^(groq|elevenlabs|openai-gpt-4o-transcribe|openai-gpt-4o-mini-transcribe|none)$",
         json_schema_extra={"reload": "warm", "label": "Voice transcription provider"},
     )
 
