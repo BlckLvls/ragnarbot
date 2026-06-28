@@ -52,12 +52,14 @@ class MemoryFlushManager:
         sessions: SessionManager,
         chat_fn: MemoryChatFn,
         save_session_fn: Callable[[Session], Any],
+        on_memory_written: Callable[[str, str | None], Any] | None = None,
     ):
         self.workspace = workspace
         self.sessions = sessions
         self.memory = MemoryStore(workspace)
         self._chat_fn = chat_fn
         self._save_session_fn = save_session_fn
+        self._on_memory_written = on_memory_written
         self._tasks: dict[str, asyncio.Task] = {}
         self._file_locks: dict[str, asyncio.Lock] = {}
 
@@ -289,6 +291,7 @@ class MemoryFlushManager:
                 self._write_target(job, content)
 
             await self._mark_job_done(session_id, job_id, result="updated")
+            self._notify_written(job)
             logger.info(
                 f"Memory flush job {job_id} completed for {target_path or 'unknown target'}"
             )
@@ -297,6 +300,15 @@ class MemoryFlushManager:
             attempts = await self._mark_job_error(session_id, job_id, str(exc))
             if attempts is not None and attempts < self.MAX_RETRIES:
                 asyncio.create_task(self._retry_later(session_id, job_id, attempts))
+
+    def _notify_written(self, job: dict[str, Any]) -> None:
+        """Out-of-band, never-raise hook after a successful memory write."""
+        if self._on_memory_written is None:
+            return
+        try:
+            self._on_memory_written(job.get("scope"), job.get("date"))
+        except Exception as exc:
+            logger.warning(f"on_memory_written hook failed: {exc}")
 
     def _extract_content(
         self,

@@ -80,6 +80,7 @@ if TYPE_CHECKING:
         BrowserConfig,
         ExecToolConfig,
         FallbackConfig,
+        RecallToolConfig,
         SearchToolConfig,
     )
     from ragnarbot.cron.service import CronService
@@ -163,8 +164,9 @@ class AgentLoop:
         steering_enabled: bool = True,
         experimental_soul: bool = False,
         browser_config: "BrowserConfig | None" = None,
+        recall_config: "RecallToolConfig | None" = None,
     ):
-        from ragnarbot.config.schema import ExecToolConfig, SearchToolConfig
+        from ragnarbot.config.schema import ExecToolConfig, RecallToolConfig, SearchToolConfig
         self.bus = bus
         self.provider = provider
         self.workspace = workspace
@@ -173,6 +175,7 @@ class AgentLoop:
         self.search_engine = search_engine
         self.exec_config = exec_config or ExecToolConfig()
         self.search_config = search_config or SearchToolConfig()
+        self.recall_config = recall_config or RecallToolConfig()
         self.cron_service = cron_service
         self.hook_service = hook_service
         self.stream_steps = stream_steps
@@ -209,11 +212,19 @@ class AgentLoop:
         self.context.experimental_soul = self.experimental_soul
         self.sessions = SessionManager(workspace)
         self._session_locks: dict[str, asyncio.Lock] = {}
+        from ragnarbot.agent.index.manager import IndexManager
+        self.index = IndexManager(
+            sessions=self.sessions,
+            config=self.recall_config,
+            save_session_fn=self._save_session_locked,
+            workspace=workspace,
+        )
         self.memory_flush = MemoryFlushManager(
             workspace=workspace,
             sessions=self.sessions,
             chat_fn=self._chat_with_fallback,
             save_session_fn=self._save_session_locked,
+            on_memory_written=self.index.on_memory_written,
         )
         self.tools = ToolRegistry()
 
@@ -255,9 +266,15 @@ class AgentLoop:
         """Register the default set of tools."""
         # File tools
         self.tools.register(ReadFileTool(model=self.model, workspace=self.workspace))
-        self.tools.register(WriteFileTool(workspace=self.workspace))
-        self.tools.register(EditFileTool(workspace=self.workspace))
+        self.tools.register(WriteFileTool(
+            workspace=self.workspace, on_write=self.index.on_memory_written))
+        self.tools.register(EditFileTool(
+            workspace=self.workspace, on_write=self.index.on_memory_written))
         self.tools.register(ListDirTool(workspace=self.workspace))
+
+        # Recall (hybrid memory + chat search)
+        from ragnarbot.agent.tools.recall import RecallTool
+        self.tools.register(RecallTool(searcher=self.index, config=self.recall_config))
 
         # Shell tool
         self.tools.register(ExecTool(
@@ -1376,6 +1393,7 @@ class AgentLoop:
                             session, memory_segment,
                         )
                         start_memory_jobs = start_memory_jobs or bool(created_jobs)
+                        self.index.enqueue_chat_segment(session, memory_segment)
                     compacted_this_turn = True
 
                 # Re-apply previous flush to history messages so the API
@@ -1590,6 +1608,7 @@ class AgentLoop:
 
         if start_memory_jobs:
             await self.memory_flush.start_session_jobs(session.key)
+        await self.index.start_chat_jobs(session)
 
         if stopped or not outbound_content:
             return None
@@ -1643,6 +1662,7 @@ class AgentLoop:
         tail_segment = self._build_new_chat_memory_segment(old_session)
         if tail_segment is not None:
             self.memory_flush.enqueue_segment(old_session, tail_segment)
+            self.index.enqueue_chat_segment(old_session, tail_segment)
             await self._save_session_locked(old_session)
 
         session = self.sessions.create_new(msg.session_key)
@@ -1658,6 +1678,7 @@ class AgentLoop:
 
         if tail_segment is not None:
             await self.memory_flush.start_session_jobs(old_session.key)
+            await self.index.start_chat_jobs(old_session)
 
         return OutboundMessage(
             channel=msg.channel,
@@ -2248,11 +2269,13 @@ class AgentLoop:
 
         if memory_segment is not None:
             self.memory_flush.enqueue_segment(session, memory_segment)
+            self.index.enqueue_chat_segment(session, memory_segment)
 
         await self._save_session_locked(session)
 
         if memory_segment is not None:
             await self.memory_flush.start_session_jobs(session.key)
+            await self.index.start_chat_jobs(session)
 
         if compactions_after > compactions_before:
             logger.info(f"Manual compaction completed for {session_key}")
@@ -2389,6 +2412,7 @@ class AgentLoop:
                             session, memory_segment,
                         )
                         start_memory_jobs = start_memory_jobs or bool(created_jobs)
+                        self.index.enqueue_chat_segment(session, memory_segment)
                     compacted_this_turn = True
 
                 # Re-apply previous flush to history messages
@@ -2582,6 +2606,7 @@ class AgentLoop:
 
         if start_memory_jobs:
             await self.memory_flush.start_session_jobs(session.key)
+        await self.index.start_chat_jobs(session)
 
         if stopped or not outbound_content:
             return None

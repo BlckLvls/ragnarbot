@@ -398,6 +398,17 @@ class ConfigTool(Tool):
                 agent._fallback_config.recovery_probe_interval = int(value)
             return "Fallback recovery probe interval updated."
 
+        # Recall config — hot fields update the live object shared by tool + manager.
+        if path.startswith("tools.recall.") and path.split(".")[-1] in (
+            "top_k", "scope_default", "rrf_k", "max_output_chars"
+        ):
+            field = path.split(".")[-1]
+            cfg = getattr(agent, "recall_config", None)
+            if cfg is not None and hasattr(cfg, field):
+                cur = getattr(cfg, field)
+                setattr(cfg, field, int(value) if isinstance(cur, int) and not isinstance(cur, bool) else value)
+            return f"Recall {field} updated."
+
         return None
 
     def _apply_warm_reload(self, path: str, value: Any) -> str | None:

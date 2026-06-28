@@ -355,6 +355,7 @@ def gateway_main(
                 model, auth_method, creds,
             ),
             browser_config=config.tools.browser,
+            recall_config=config.tools.recall,
         )
 
         def _format_schedule(schedule) -> str:
