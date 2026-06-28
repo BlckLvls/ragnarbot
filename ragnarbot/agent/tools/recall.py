@@ -18,11 +18,14 @@ class RecallTool(Tool):
 
     name = "recall"
     description = (
-        "Search your own long-term memory notes and your past chat history "
-        "(hybrid semantic + keyword). Use it when the user refers to something "
-        "discussed earlier, asks what you remember, or you need context from "
-        "previous days or conversations that is not in the current window. "
-        "Returns dated, located snippets (which day, which dialogue, which file)."
+        "Hybrid (semantic + keyword) search over your OWN long-term memory notes and "
+        "past chat history — not world knowledge. Reach for it when the user refers to "
+        "something discussed earlier, asks what you remember, or you need a "
+        "fact/preference/decision from previous days or sessions that isn't in the "
+        "current window. For best hits, pair a distinctive literal term (name, number, "
+        "rare word) with the concept, in the language it was likely discussed in. "
+        "Returns dated, located snippets (which day, which dialogue, which file) you "
+        "can file_read to expand."
     )
     parameters = {
         "type": "object",
