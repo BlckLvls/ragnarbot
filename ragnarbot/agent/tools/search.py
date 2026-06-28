@@ -63,6 +63,7 @@ class GrepTool(Tool):
         max_output_chars: int = 20000,
         timeout: int = 30,
         auto_install: bool = True,
+        data_root: Path | None = None,
     ):
         self._workspace = workspace
         self.backend = backend
@@ -70,6 +71,7 @@ class GrepTool(Tool):
         self.max_output_chars = max_output_chars
         self.timeout = timeout
         self.auto_install = auto_install
+        self._data_root_override = data_root
 
     @property
     def name(self) -> str:
@@ -182,9 +184,10 @@ class GrepTool(Tool):
             return "No matches found."
         return self._format(lines, truncated, output_mode, cap)
 
-    @staticmethod
-    def _data_root() -> Path | None:
+    def _data_root(self) -> Path | None:
         """Profile data root for caching an auto-installed rg binary."""
+        if self._data_root_override is not None:
+            return self._data_root_override
         try:
             from ragnarbot.instance import get_instance
             return get_instance().data_root
@@ -211,12 +214,15 @@ class GrepTool(Tool):
             return root.parent, root.name
         return root, "."
 
-    async def _run_rg(
-        self, rg, pattern, root, glob, case_insensitive,
-        context_lines, output_mode, cap,
-    ) -> tuple[list[str], bool, str | None]:
-        cwd, target = self._search_base(root)
-        args = [rg, "--line-number", "--no-heading", "--color", "never", "--sort", "path"]
+    @staticmethod
+    def _rg_argv(rg, pattern, target, glob, case_insensitive, context_lines, output_mode):
+        # --no-ignore --hidden: do NOT honor .gitignore/hidden rules, so the rg
+        # backend searches the same files as the Python fallback. We still prune the
+        # known junk dirs explicitly so results aren't flooded by .git/node_modules/etc.
+        args = [rg, "--line-number", "--no-heading", "--color", "never", "--sort", "path",
+                "--no-ignore", "--hidden"]
+        for d in sorted(PY_SKIP_DIRS):
+            args += ["-g", f"!{d}"]
         if case_insensitive:
             args.append("-i")
         if output_mode == "files_with_matches":
@@ -228,6 +234,14 @@ class GrepTool(Tool):
         if glob:
             args += ["-g", glob]
         args += ["-e", pattern, "--", target]
+        return args
+
+    async def _run_rg(
+        self, rg, pattern, root, glob, case_insensitive,
+        context_lines, output_mode, cap,
+    ) -> tuple[list[str], bool, str | None]:
+        cwd, target = self._search_base(root)
+        args = self._rg_argv(rg, pattern, target, glob, case_insensitive, context_lines, output_mode)
 
         proc = await asyncio.create_subprocess_exec(
             *args, cwd=str(cwd),

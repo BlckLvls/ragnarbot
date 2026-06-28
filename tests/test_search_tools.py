@@ -161,10 +161,31 @@ async def test_grep_path_not_found(tmp_path):
 async def test_grep_ripgrep_missing_explicit(tmp_path, monkeypatch):
     _make_corpus(tmp_path)
     monkeypatch.setattr(shutil, "which", lambda _: None)
-    # auto_install=False keeps this deterministic (no network download attempt).
-    tool = GrepTool(workspace=tmp_path, backend="ripgrep", auto_install=False)
+    # auto_install=False + sandboxed data_root keeps this deterministic (no download,
+    # no dependency on a binary cached in the real profile).
+    tool = GrepTool(
+        workspace=tmp_path, backend="ripgrep", auto_install=False, data_root=tmp_path
+    )
     result = await tool.execute(pattern="alpha")
     assert "ripgrep" in result and "could not be installed" in result
+
+
+def test_grep_rg_argv_disables_gitignore():
+    args = GrepTool._rg_argv("rg", "foo", ".", None, False, 0, "content")
+    assert "--no-ignore" in args  # do not honor .gitignore
+    assert "--hidden" in args  # search dotfiles too (matches Python fallback)
+    assert "!node_modules" in args  # but still prune known junk dirs
+    assert "!.git" in args
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+async def test_grep_ripgrep_ignores_gitignore(tmp_path):
+    (tmp_path / ".gitignore").write_text("secret.txt\n", encoding="utf-8")
+    (tmp_path / "secret.txt").write_text("findme please\n", encoding="utf-8")
+    tool = GrepTool(workspace=tmp_path, backend="ripgrep", data_root=tmp_path)
+    result = await tool.execute(pattern="findme", output_mode="files_with_matches")
+    assert "secret.txt" in result  # gitignored file is still searched
 
 
 @pytest.mark.asyncio
@@ -174,8 +195,8 @@ async def test_grep_ripgrep_python_parity(tmp_path):
     corpus.mkdir()
     (corpus / "a.txt").write_text("alpha\nbeta\n", encoding="utf-8")
     (corpus / "b.txt").write_text("gamma\nalpha\n", encoding="utf-8")
-    rg_tool = GrepTool(workspace=tmp_path, backend="ripgrep")
-    py_tool = GrepTool(workspace=tmp_path, backend="python")
+    rg_tool = GrepTool(workspace=tmp_path, backend="ripgrep", data_root=tmp_path)
+    py_tool = GrepTool(workspace=tmp_path, backend="python", data_root=tmp_path)
     rg = await rg_tool.execute(pattern="alpha", path="clean", output_mode="files_with_matches")
     py = await py_tool.execute(pattern="alpha", path="clean", output_mode="files_with_matches")
     assert set(rg.splitlines()) == set(py.splitlines()) == {"a.txt", "b.txt"}
