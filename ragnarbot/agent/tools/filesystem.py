@@ -1,12 +1,16 @@
 """File system tools: read, write, edit."""
 
 import base64
+import difflib
 import mimetypes
+import re
 from pathlib import Path
 from typing import Any
 
 from ragnarbot.agent.pathing import resolve_path_in_workspace
 from ragnarbot.agent.tools.base import Tool
+
+EDIT_DIFF_MAX_CHARS = 4_000  # only attach a unified diff to edit results below this size
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5 MB (Anthropic API limit for base64 images)
@@ -258,7 +262,14 @@ class EditFileTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Edit a file by replacing old_text with new_text. The old_text must exist exactly in the file."
+        return (
+            "Replace a text block in an existing file. By default `old_text` must match exactly "
+            "once — include enough surrounding context to be unique. If an exact match is not "
+            "found, a whitespace/indentation-tolerant match is tried automatically and applied "
+            "only when it resolves to a single location (otherwise it errors and asks for more "
+            "context — it never edits the wrong spot). Pass `replace_all=true` to replace every "
+            "occurrence. Always file_read the file first."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -271,40 +282,133 @@ class EditFileTool(Tool):
                 },
                 "old_text": {
                     "type": "string",
-                    "description": "The exact text to find and replace"
+                    "description": (
+                        "The text to find and replace. Include enough surrounding context to "
+                        "match exactly one location. If no exact match is found, a "
+                        "whitespace-tolerant match is attempted."
+                    )
                 },
                 "new_text": {
                     "type": "string",
-                    "description": "The text to replace with"
+                    "description": "The replacement text, inserted verbatim (include the indentation you want)."
+                },
+                "replace_all": {
+                    "type": "boolean",
+                    "description": (
+                        "Replace every exact occurrence instead of requiring a unique match. "
+                        "Default false. When false and old_text occurs more than once, the edit "
+                        "fails with a count so you can add context."
+                    )
                 }
             },
             "required": ["path", "old_text", "new_text"]
         }
 
-    async def execute(self, path: str, old_text: str, new_text: str, **kwargs: Any) -> str:
+    async def execute(
+        self, path: str, old_text: str, new_text: str,
+        replace_all: bool = False, **kwargs: Any,
+    ) -> str:
         try:
             file_path = _resolve_path(path, self._workspace)
             if not file_path.exists():
                 return f"Error: File not found: {path}"
 
-            content = file_path.read_text(encoding="utf-8")
+            if old_text == new_text:
+                return "Error: old_text and new_text are identical; nothing to change."
 
-            if old_text not in content:
-                return "Error: old_text not found in file. Make sure it matches exactly."
+            try:
+                # newline="" disables newline translation so CRLF/LF is preserved byte-for-byte.
+                with file_path.open("r", encoding="utf-8", newline="") as fh:
+                    content = fh.read()
+            except UnicodeDecodeError:
+                return f"Error: {path} is not valid UTF-8 text (looks binary); cannot edit."
 
-            # Count occurrences
+            # Phase 1: exact substring match.
             count = content.count(old_text)
-            if count > 1:
-                return f"Warning: old_text appears {count} times. Please provide more context to make it unique."
+            if count == 1:
+                new_content = content.replace(old_text, new_text, 1)
+                mode, n = "exact", 1
+            elif count > 1 and replace_all:
+                new_content = content.replace(old_text, new_text)
+                mode, n = "exact", count
+            elif count > 1:
+                return (
+                    f"Error: old_text matches {count} locations. Pass replace_all=true to replace "
+                    f"all, or add surrounding context to target exactly one."
+                )
+            else:
+                # Phase 2: whitespace/indentation-tolerant fallback (single span only).
+                new_content, err = self._whitespace_tolerant_edit(content, old_text, new_text)
+                if err:
+                    return err
+                mode, n = "whitespace-tolerant", 1
 
-            new_content = content.replace(old_text, new_text, 1)
-            file_path.write_text(new_content, encoding="utf-8")
-
-            return f"Successfully edited {path}"
+            with file_path.open("w", encoding="utf-8", newline="") as fh:
+                fh.write(new_content)
+            return self._success(path, content, new_content, mode, n)
         except PermissionError:
             return f"Error: Permission denied: {path}"
         except Exception as e:
             return f"Error editing file: {str(e)}"
+
+    @staticmethod
+    def _norm(s: str) -> str:
+        """Match key: indentation- and trailing-whitespace-insensitive."""
+        return re.sub(r"[ \t]+", " ", s.strip())
+
+    def _whitespace_tolerant_edit(
+        self, content: str, old_text: str, new_text: str,
+    ) -> tuple[str, str | None]:
+        """Return (new_content, None) on a single normalized match, else ('', error)."""
+        src_keep = content.splitlines(keepends=True)
+        src_plain = [ln.rstrip("\r\n") for ln in src_keep]
+
+        pat = old_text.replace("\r\n", "\n").replace("\r", "\n")
+        pat_trailing_nl = pat.endswith("\n")
+        pat_lines = pat[:-1].split("\n") if pat_trailing_nl else pat.split("\n")
+
+        pat_keys = [self._norm(x) for x in pat_lines]
+        if all(k == "" for k in pat_keys):
+            return "", "Error: old_text is only whitespace; provide real content to match."
+
+        src_keys = [self._norm(x) for x in src_plain]
+        length = len(pat_keys)
+        starts = [
+            i for i in range(0, len(src_keys) - length + 1)
+            if src_keys[i:i + length] == pat_keys
+        ]
+        if not starts:
+            return "", (
+                "Error: old_text not found, even with whitespace-tolerant matching. "
+                "file_read the file and copy the exact text."
+            )
+        if len(starts) > 1:
+            return "", (
+                f"Error: old_text matches {len(starts)} locations after whitespace-tolerant "
+                f"matching. Add more surrounding context so it targets exactly one."
+            )
+
+        i = starts[0]
+        last = i + length - 1
+        char_start = sum(len(src_keep[j]) for j in range(i))
+        text_end = char_start + sum(len(src_keep[j]) for j in range(i, last)) + len(src_plain[last])
+        term = src_keep[last][len(src_plain[last]):]  # "", "\n", or "\r\n"
+        char_end = text_end + (len(term) if pat_trailing_nl else 0)
+        new_content = content[:char_start] + new_text + content[char_end:]
+        return new_content, None
+
+    @staticmethod
+    def _success(path: str, old: str, new: str, mode: str, n: int) -> str:
+        header = f"Successfully edited {path} ({n} replacement(s), {mode} match)."
+        diff = "".join(
+            difflib.unified_diff(
+                old.splitlines(keepends=True), new.splitlines(keepends=True),
+                fromfile=path, tofile=path, n=2,
+            )
+        )
+        if diff and len(diff) <= EDIT_DIFF_MAX_CHARS:
+            return f"{header}\n{diff}"
+        return header
 
 
 class ListDirTool(Tool):

@@ -427,3 +427,107 @@ class TestReadFileWindowing:
         f.write_text("one\ntwo\n", encoding="utf-8")
         result = await ReadFileTool(workspace=tmp_path).execute(path="t.txt")
         assert result == "one\ntwo\n"
+
+
+class TestEditFileRobust:
+    @pytest.mark.asyncio
+    async def test_exact_single(self, tmp_path):
+        f = tmp_path / "f.txt"
+        f.write_text("hello world", encoding="utf-8")
+        result = await EditFileTool(workspace=tmp_path).execute(
+            path="f.txt", old_text="world", new_text="there"
+        )
+        assert "Successfully edited" in result
+        assert f.read_text() == "hello there"
+
+    @pytest.mark.asyncio
+    async def test_replace_all(self, tmp_path):
+        f = tmp_path / "f.txt"
+        f.write_text("a\na\na\n", encoding="utf-8")
+        result = await EditFileTool(workspace=tmp_path).execute(
+            path="f.txt", old_text="a", new_text="X", replace_all=True
+        )
+        assert "3 replacement(s)" in result
+        assert f.read_text() == "X\nX\nX\n"
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_without_replace_all_errors(self, tmp_path):
+        f = tmp_path / "f.txt"
+        f.write_text("a\na\n", encoding="utf-8")
+        result = await EditFileTool(workspace=tmp_path).execute(
+            path="f.txt", old_text="a", new_text="X"
+        )
+        assert result.startswith("Error: old_text matches 2 locations")
+        assert f.read_text() == "a\na\n"  # unchanged
+
+    @pytest.mark.asyncio
+    async def test_whitespace_tolerant_single(self, tmp_path):
+        f = tmp_path / "code.py"
+        f.write_text("def foo():\n        return 1\n", encoding="utf-8")  # 8-space indent
+        result = await EditFileTool(workspace=tmp_path).execute(
+            path="code.py",
+            old_text="def foo():\n    return 1",  # 4-space indent
+            new_text="def foo():\n    return 2",
+        )
+        assert "whitespace-tolerant" in result
+        assert f.read_text() == "def foo():\n    return 2\n"
+
+    @pytest.mark.asyncio
+    async def test_whitespace_tolerant_ambiguous_errors(self, tmp_path):
+        f = tmp_path / "f.py"
+        f.write_text("if a:\n    do()\nif a:\n  do()\n", encoding="utf-8")
+        result = await EditFileTool(workspace=tmp_path).execute(
+            path="f.py", old_text="if a:\n do()", new_text="if a:\n done()"
+        )
+        assert "matches 2 locations after whitespace-tolerant" in result
+        assert f.read_text() == "if a:\n    do()\nif a:\n  do()\n"  # unchanged
+
+    @pytest.mark.asyncio
+    async def test_whitespace_tolerant_not_found(self, tmp_path):
+        f = tmp_path / "f.txt"
+        f.write_text("alpha\nbeta\n", encoding="utf-8")
+        result = await EditFileTool(workspace=tmp_path).execute(
+            path="f.txt", old_text="gamma\ndelta", new_text="x"
+        )
+        assert "not found" in result
+
+    @pytest.mark.asyncio
+    async def test_crlf_preserved_on_untouched_lines(self, tmp_path):
+        f = tmp_path / "crlf.txt"
+        f.write_bytes(b"alpha\r\n    target\r\nomega\r\n")
+        result = await EditFileTool(workspace=tmp_path).execute(
+            path="crlf.txt",
+            old_text="        target",  # 8-space indent forces the tolerant path
+            new_text="    target_done",
+        )
+        assert "whitespace-tolerant" in result
+        assert f.read_bytes() == b"alpha\r\n    target_done\r\nomega\r\n"
+
+    @pytest.mark.asyncio
+    async def test_identical_text_errors(self, tmp_path):
+        f = tmp_path / "f.txt"
+        f.write_text("same", encoding="utf-8")
+        result = await EditFileTool(workspace=tmp_path).execute(
+            path="f.txt", old_text="same", new_text="same"
+        )
+        assert "identical" in result
+        assert f.read_text() == "same"
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_old_text_errors(self, tmp_path):
+        f = tmp_path / "f.txt"
+        f.write_text("alpha\nbeta\n", encoding="utf-8")
+        result = await EditFileTool(workspace=tmp_path).execute(
+            path="f.txt", old_text="   \n  ", new_text="x"
+        )
+        assert "only whitespace" in result
+
+    @pytest.mark.asyncio
+    async def test_deletion(self, tmp_path):
+        f = tmp_path / "f.txt"
+        f.write_text("keep\nremove me\nkeep\n", encoding="utf-8")
+        result = await EditFileTool(workspace=tmp_path).execute(
+            path="f.txt", old_text="remove me\n", new_text=""
+        )
+        assert "Successfully edited" in result
+        assert f.read_text() == "keep\nkeep\n"
