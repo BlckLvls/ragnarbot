@@ -352,3 +352,182 @@ class TestLiteLLMSanitize:
         result = LiteLLMProvider._sanitize_messages(messages)
 
         assert result[0]["content"] == "hello"
+
+
+class TestReadFileWindowing:
+    @pytest.mark.asyncio
+    async def test_offset_and_limit_slice(self, tmp_path):
+        f = tmp_path / "big.txt"
+        f.write_text("\n".join(f"line{i}" for i in range(1, 51)), encoding="utf-8")
+        result = await ReadFileTool(workspace=tmp_path).execute(path="big.txt", offset=5, limit=5)
+        body, _, footer = result.partition("\n\n[")
+        assert body.splitlines() == [f"line{i}" for i in range(5, 10)]
+        assert "showing lines 5-9 of 50" in footer
+        assert "offset=10" in footer
+
+    @pytest.mark.asyncio
+    async def test_limit_without_offset_starts_at_one(self, tmp_path):
+        f = tmp_path / "big.txt"
+        f.write_text("\n".join(f"line{i}" for i in range(1, 51)), encoding="utf-8")
+        result = await ReadFileTool(workspace=tmp_path).execute(path="big.txt", limit=3)
+        assert result.split("\n\n[")[0].splitlines() == ["line1", "line2", "line3"]
+
+    @pytest.mark.asyncio
+    async def test_offset_past_eof(self, tmp_path):
+        f = tmp_path / "small.txt"
+        f.write_text("a\nb\nc", encoding="utf-8")
+        result = await ReadFileTool(workspace=tmp_path).execute(path="small.txt", offset=99)
+        assert "past end of file" in result
+
+    @pytest.mark.asyncio
+    async def test_char_cap_and_footer(self, tmp_path):
+        f = tmp_path / "huge.txt"
+        # 1000 lines of 200 chars ~ 200k chars, well over the 50k cap
+        f.write_text("\n".join("x" * 200 for _ in range(1000)), encoding="utf-8")
+        result = await ReadFileTool(workspace=tmp_path).execute(path="huge.txt")
+        assert len(result) < 60_000  # capped
+        assert "truncated at 50000-char cap" in result
+        assert "offset=" in result
+
+    @pytest.mark.asyncio
+    async def test_line_numbers_on_and_off(self, tmp_path):
+        f = tmp_path / "n.txt"
+        f.write_text("alpha\nbeta", encoding="utf-8")
+        plain = await ReadFileTool(workspace=tmp_path).execute(path="n.txt")
+        assert plain == "alpha\nbeta"
+        numbered = await ReadFileTool(workspace=tmp_path).execute(path="n.txt", line_numbers=True)
+        assert "1\talpha" in numbered
+        assert "2\tbeta" in numbered
+
+    @pytest.mark.asyncio
+    async def test_binary_file_graceful(self, tmp_path):
+        f = tmp_path / "blob.bin"
+        f.write_bytes(b"\x00\x01\x02\xff\xfe valid? no")
+        result = await ReadFileTool(workspace=tmp_path).execute(path="blob.bin")
+        assert "not valid UTF-8" in result or "binary" in result
+
+    @pytest.mark.asyncio
+    async def test_empty_file(self, tmp_path):
+        f = tmp_path / "empty.txt"
+        f.write_text("", encoding="utf-8")
+        result = await ReadFileTool(workspace=tmp_path).execute(path="empty.txt")
+        assert result == "(file is empty)"
+
+    @pytest.mark.asyncio
+    async def test_small_file_no_footer(self, tmp_path):
+        f = tmp_path / "s.txt"
+        f.write_text("one\ntwo\nthree", encoding="utf-8")
+        result = await ReadFileTool(workspace=tmp_path).execute(path="s.txt")
+        assert result == "one\ntwo\nthree"
+        assert "[showing lines" not in result
+
+    @pytest.mark.asyncio
+    async def test_trailing_newline_roundtrip(self, tmp_path):
+        f = tmp_path / "t.txt"
+        f.write_text("one\ntwo\n", encoding="utf-8")
+        result = await ReadFileTool(workspace=tmp_path).execute(path="t.txt")
+        assert result == "one\ntwo\n"
+
+
+class TestEditFileRobust:
+    @pytest.mark.asyncio
+    async def test_exact_single(self, tmp_path):
+        f = tmp_path / "f.txt"
+        f.write_text("hello world", encoding="utf-8")
+        result = await EditFileTool(workspace=tmp_path).execute(
+            path="f.txt", old_text="world", new_text="there"
+        )
+        assert "Successfully edited" in result
+        assert f.read_text() == "hello there"
+
+    @pytest.mark.asyncio
+    async def test_replace_all(self, tmp_path):
+        f = tmp_path / "f.txt"
+        f.write_text("a\na\na\n", encoding="utf-8")
+        result = await EditFileTool(workspace=tmp_path).execute(
+            path="f.txt", old_text="a", new_text="X", replace_all=True
+        )
+        assert "3 replacement(s)" in result
+        assert f.read_text() == "X\nX\nX\n"
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_without_replace_all_errors(self, tmp_path):
+        f = tmp_path / "f.txt"
+        f.write_text("a\na\n", encoding="utf-8")
+        result = await EditFileTool(workspace=tmp_path).execute(
+            path="f.txt", old_text="a", new_text="X"
+        )
+        assert result.startswith("Error: old_text matches 2 locations")
+        assert f.read_text() == "a\na\n"  # unchanged
+
+    @pytest.mark.asyncio
+    async def test_whitespace_tolerant_single(self, tmp_path):
+        f = tmp_path / "code.py"
+        f.write_text("def foo():\n        return 1\n", encoding="utf-8")  # 8-space indent
+        result = await EditFileTool(workspace=tmp_path).execute(
+            path="code.py",
+            old_text="def foo():\n    return 1",  # 4-space indent
+            new_text="def foo():\n    return 2",
+        )
+        assert "whitespace-tolerant" in result
+        assert f.read_text() == "def foo():\n    return 2\n"
+
+    @pytest.mark.asyncio
+    async def test_whitespace_tolerant_ambiguous_errors(self, tmp_path):
+        f = tmp_path / "f.py"
+        f.write_text("if a:\n    do()\nif a:\n  do()\n", encoding="utf-8")
+        result = await EditFileTool(workspace=tmp_path).execute(
+            path="f.py", old_text="if a:\n do()", new_text="if a:\n done()"
+        )
+        assert "matches 2 locations after whitespace-tolerant" in result
+        assert f.read_text() == "if a:\n    do()\nif a:\n  do()\n"  # unchanged
+
+    @pytest.mark.asyncio
+    async def test_whitespace_tolerant_not_found(self, tmp_path):
+        f = tmp_path / "f.txt"
+        f.write_text("alpha\nbeta\n", encoding="utf-8")
+        result = await EditFileTool(workspace=tmp_path).execute(
+            path="f.txt", old_text="gamma\ndelta", new_text="x"
+        )
+        assert "not found" in result
+
+    @pytest.mark.asyncio
+    async def test_crlf_preserved_on_untouched_lines(self, tmp_path):
+        f = tmp_path / "crlf.txt"
+        f.write_bytes(b"alpha\r\n    target\r\nomega\r\n")
+        result = await EditFileTool(workspace=tmp_path).execute(
+            path="crlf.txt",
+            old_text="        target",  # 8-space indent forces the tolerant path
+            new_text="    target_done",
+        )
+        assert "whitespace-tolerant" in result
+        assert f.read_bytes() == b"alpha\r\n    target_done\r\nomega\r\n"
+
+    @pytest.mark.asyncio
+    async def test_identical_text_errors(self, tmp_path):
+        f = tmp_path / "f.txt"
+        f.write_text("same", encoding="utf-8")
+        result = await EditFileTool(workspace=tmp_path).execute(
+            path="f.txt", old_text="same", new_text="same"
+        )
+        assert "identical" in result
+        assert f.read_text() == "same"
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_old_text_errors(self, tmp_path):
+        f = tmp_path / "f.txt"
+        f.write_text("alpha\nbeta\n", encoding="utf-8")
+        result = await EditFileTool(workspace=tmp_path).execute(
+            path="f.txt", old_text="   \n  ", new_text="x"
+        )
+        assert "only whitespace" in result
+
+    @pytest.mark.asyncio
+    async def test_deletion(self, tmp_path):
+        f = tmp_path / "f.txt"
+        f.write_text("keep\nremove me\nkeep\n", encoding="utf-8")
+        result = await EditFileTool(workspace=tmp_path).execute(
+            path="f.txt", old_text="remove me\n", new_text=""
+        )
+        assert "Successfully edited" in result
+        assert f.read_text() == "keep\nkeep\n"

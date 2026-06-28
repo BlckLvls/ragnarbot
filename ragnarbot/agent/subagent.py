@@ -16,7 +16,7 @@ from ragnarbot.agent.tools.deliver_result import DeliverResultTool
 from ragnarbot.agent.tools.registry import ToolRegistry
 from ragnarbot.bus.events import InboundMessage
 from ragnarbot.bus.queue import MessageBus
-from ragnarbot.config.schema import ExecToolConfig
+from ragnarbot.config.schema import ExecToolConfig, SearchToolConfig
 from ragnarbot.providers.base import LLMProvider
 
 BUILTIN_DIR = Path(__file__).parent.parent / "builtin"
@@ -24,6 +24,7 @@ BUILTIN_DIR = Path(__file__).parent.parent / "builtin"
 # Tools that are safe for sub-agents
 SAFE_TOOL_NAMES = {
     "file_read", "file_write", "file_edit", "list_dir",
+    "grep", "glob",
     "exec", "web_search", "web_fetch", "browser",
     "exec_bg", "poll", "output", "kill", "dismiss",
 }
@@ -74,6 +75,7 @@ class SubagentManager:
         brave_api_key: str | None = None,
         search_engine: str = "brave",
         exec_config: ExecToolConfig | None = None,
+        search_config: SearchToolConfig | None = None,
         chat_fn=None,
         on_fallback_batch=None,
         browser_manager=None,
@@ -87,6 +89,7 @@ class SubagentManager:
         self.brave_api_key = brave_api_key
         self.search_engine = search_engine
         self.exec_config = exec_config or ExecToolConfig()
+        self.search_config = search_config or SearchToolConfig()
         self.browser_manager = browser_manager
         self.context_builder = context_builder
         self._tasks: dict[str, AgentTask] = {}
@@ -548,6 +551,7 @@ class SubagentManager:
             ReadFileTool,
             WriteFileTool,
         )
+        from ragnarbot.agent.tools.search import GlobTool, GrepTool
         from ragnarbot.agent.tools.shell import ExecTool
         from ragnarbot.agent.tools.web import WebFetchTool, WebSearchTool
 
@@ -583,6 +587,24 @@ class SubagentManager:
                 timeout=self.exec_config.timeout,
                 restrict_to_workspace=self.exec_config.restrict_to_workspace,
                 safety_guard=self.exec_config.safety_guard,
+            ))
+
+        # Search
+        if "grep" in allowed:
+            reg.register(GrepTool(
+                workspace=self.workspace,
+                backend=self.search_config.backend,
+                max_matches=self.search_config.max_matches,
+                max_output_chars=self.search_config.max_output_chars,
+                timeout=self.search_config.timeout,
+                auto_install=self.search_config.auto_install,
+            ))
+        if "glob" in allowed:
+            reg.register(GlobTool(
+                workspace=self.workspace,
+                max_results=self.search_config.max_results,
+                max_output_chars=self.search_config.max_output_chars,
+                timeout=self.search_config.timeout,
             ))
 
         # Web

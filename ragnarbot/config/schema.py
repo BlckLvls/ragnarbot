@@ -171,6 +171,39 @@ class ExecToolConfig(BaseModel):
     )
 
 
+class SearchToolConfig(BaseModel):
+    """grep / glob search tools configuration."""
+    backend: str = Field(
+        default="auto",
+        pattern="^(auto|ripgrep|python)$",
+        json_schema_extra={"reload": "hot", "label": "Search backend (auto|ripgrep|python)"},
+    )
+    auto_install: bool = Field(
+        default=True,
+        json_schema_extra={"reload": "hot", "label": "Auto-download ripgrep when missing"},
+    )
+    max_matches: int = Field(
+        default=200,
+        ge=1,
+        json_schema_extra={"reload": "hot", "label": "Max grep matches returned"},
+    )
+    max_results: int = Field(
+        default=200,
+        ge=1,
+        json_schema_extra={"reload": "hot", "label": "Max glob results returned"},
+    )
+    max_output_chars: int = Field(
+        default=20000,
+        ge=1000,
+        json_schema_extra={"reload": "hot", "label": "Max search output characters"},
+    )
+    timeout: int = Field(
+        default=30,
+        ge=1,
+        json_schema_extra={"reload": "hot", "label": "Search timeout (seconds)"},
+    )
+
+
 class BrowserConfig(BaseModel):
     """Browser automation tool configuration."""
     idle_timeout: int = Field(
@@ -195,6 +228,7 @@ class ToolsConfig(BaseModel):
     """Tools configuration."""
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
+    search: SearchToolConfig = Field(default_factory=SearchToolConfig)
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
 
 

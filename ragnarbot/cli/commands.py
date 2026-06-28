@@ -334,6 +334,7 @@ def gateway_main(
             brave_api_key=brave_api_key,
             search_engine=search_engine,
             exec_config=config.tools.exec,
+            search_config=config.tools.search,
             cron_service=cron,
             hook_service=hook_service,
             stream_steps=config.agents.defaults.stream_steps,
