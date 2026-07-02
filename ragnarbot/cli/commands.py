@@ -551,6 +551,22 @@ def gateway_main(
 
         channels = ChannelManager(config, bus, creds, media_manager=media_manager)
 
+        # Web console server (serves the SPA, WebSocket, and REST API)
+        web_server = None
+        web_channel = channels.get_channel("web")
+        if config.web.enabled and web_channel is not None:
+            from ragnarbot.web.server import WebServer
+            web_server = WebServer(
+                config=config,
+                channel=web_channel,
+                agent=agent,
+                host=config.web.host,
+                port=config.web.port,
+            )
+            console.print(
+                f"[green]✓[/green] Web console: http://{config.web.host}:{config.web.port}"
+            )
+
         if channels.enabled_channels:
             console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
         else:
@@ -681,6 +697,8 @@ def gateway_main(
                 await heartbeat.start()
                 if hook_server:
                     await hook_server.start()
+                if web_server:
+                    await web_server.start()
 
                 agent_task = asyncio.create_task(agent.run())
                 channel_task = asyncio.create_task(channels.start_all())
@@ -701,6 +719,8 @@ def gateway_main(
                 # Cleanup
                 if hook_server:
                     await hook_server.stop()
+                if web_server:
+                    await web_server.stop()
                 await agent.browser_manager.close_all()
                 heartbeat.stop()
                 cron.stop()
@@ -709,6 +729,8 @@ def gateway_main(
                 console.print("\nShutting down...")
                 if hook_server:
                     await hook_server.stop()
+                if web_server:
+                    await web_server.stop()
                 await agent.browser_manager.close_all()
                 heartbeat.stop()
                 cron.stop()

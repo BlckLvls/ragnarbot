@@ -6,7 +6,6 @@ from typing import Any
 from loguru import logger
 
 from ragnarbot.auth.credentials import Credentials
-from ragnarbot.bus.events import OutboundMessage
 from ragnarbot.bus.queue import MessageBus
 from ragnarbot.channels.base import BaseChannel
 from ragnarbot.config.schema import Config
@@ -62,30 +61,37 @@ class ChannelManager:
                 logger.info("Telegram channel enabled")
             except ImportError as e:
                 logger.warning(f"Telegram channel not available: {e}")
-        
-    
+
+        # Web console channel
+        if self.config.web.enabled:
+            from ragnarbot.web.channel import WebChannel
+
+            self.channels["web"] = WebChannel(self.config.web, self.bus)
+            logger.info("Web channel enabled")
+
+
     async def start_all(self) -> None:
         """Start all channels and the outbound dispatcher."""
         if not self.channels:
             logger.warning("No channels enabled")
             return
-        
+
         # Start outbound dispatcher
         self._dispatch_task = asyncio.create_task(self._dispatch_outbound())
-        
+
         # Start channels
         tasks = []
         for name, channel in self.channels.items():
             logger.info(f"Starting {name} channel...")
             tasks.append(asyncio.create_task(channel.start()))
-        
+
         # Wait for all to complete (they should run forever)
         await asyncio.gather(*tasks, return_exceptions=True)
-    
+
     async def stop_all(self) -> None:
         """Stop all channels and the dispatcher."""
         logger.info("Stopping all channels...")
-        
+
         # Stop dispatcher
         if self._dispatch_task:
             self._dispatch_task.cancel()
@@ -93,7 +99,7 @@ class ChannelManager:
                 await self._dispatch_task
             except asyncio.CancelledError:
                 pass
-        
+
         # Stop all channels
         for name, channel in self.channels.items():
             try:
@@ -101,18 +107,18 @@ class ChannelManager:
                 logger.info(f"Stopped {name} channel")
             except Exception as e:
                 logger.error(f"Error stopping {name}: {e}")
-    
+
     async def _dispatch_outbound(self) -> None:
         """Dispatch outbound messages to the appropriate channel."""
         logger.info("Outbound dispatcher started")
-        
+
         while True:
             try:
                 msg = await asyncio.wait_for(
                     self.bus.consume_outbound(),
                     timeout=1.0
                 )
-                
+
                 channel = self.channels.get(msg.channel)
                 if channel:
                     try:
@@ -121,16 +127,16 @@ class ChannelManager:
                         logger.error(f"Error sending to {msg.channel}: {e}")
                 else:
                     logger.warning(f"Unknown channel: {msg.channel}")
-                    
+
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
                 break
-    
+
     def get_channel(self, name: str) -> BaseChannel | None:
         """Get a channel by name."""
         return self.channels.get(name)
-    
+
     def get_status(self) -> dict[str, Any]:
         """Get status of all channels."""
         return {
@@ -140,7 +146,7 @@ class ChannelManager:
             }
             for name, channel in self.channels.items()
         }
-    
+
     @property
     def enabled_channels(self) -> list[str]:
         """Get list of enabled channel names."""
