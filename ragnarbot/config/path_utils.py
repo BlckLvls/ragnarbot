@@ -194,12 +194,15 @@ def get_field_meta(model_cls: type[BaseModel], path: str) -> dict:
             "label": extra.get("label", ""),
         }
 
-        # Extract pattern from field metadata
+        # Extract constraints from field metadata
         pattern = None
         for m in field_info.metadata:
             if hasattr(m, "pattern"):
                 pattern = m.pattern
-                break
+            if hasattr(m, "ge"):
+                meta["ge"] = m.ge
+            if hasattr(m, "le"):
+                meta["le"] = m.le
         if pattern:
             meta["pattern"] = pattern
 

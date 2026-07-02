@@ -388,6 +388,7 @@ class AgentLoop:
 
             # System messages → background task
             if msg.channel == "system":
+                await self._notify_system_event(msg)
                 self._processing_task = asyncio.create_task(
                     self._process_and_send(msg, system=True),
                 )
@@ -486,6 +487,27 @@ class AgentLoop:
         state.pending_steering.append(msg)
         logger.info(f"Queued steering message for active run {msg.session_key}")
         return True
+
+    async def _notify_system_event(self, msg: InboundMessage) -> None:
+        """Record sub-agent/background-job announcements in the notification pool."""
+        store = getattr(self, "notification_store", None)
+        if store is None:
+            return
+        kind_map = {
+            "subagent": ("agent", "Sub-agent finished"),
+            "background": ("job", "Background job finished"),
+            "background_poll": ("job", "Background jobs status"),
+            "gateway": ("system", "Gateway"),
+        }
+        kind, title = kind_map.get(msg.sender_id, ("system", "System event"))
+        first_line = (msg.content or "").strip().splitlines()[0][:120] if msg.content else ""
+        try:
+            await store.add_and_publish(
+                self.bus, kind=kind, title=first_line or title,
+                body=msg.content or "", status="ok",
+            )
+        except Exception as e:
+            logger.debug(f"System notification failed: {e}")
 
     def _record_turn_usage(self, channel: str, usage: dict[str, Any]) -> None:
         """Append per-turn token usage to the usage log (best-effort)."""

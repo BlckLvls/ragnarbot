@@ -86,6 +86,8 @@ class WebServer:
         port: int = 18792,
         media_manager: Any = None,
         data_dir: Path | None = None,
+        heartbeat: Any = None,
+        notifications: Any = None,
     ):
         self.config = config
         self.channel = channel
@@ -94,6 +96,8 @@ class WebServer:
         self.port = port
         self.media_manager = media_manager
         self.data_dir = data_dir
+        self.heartbeat = heartbeat
+        self.notifications = notifications
         self._runner: web.AppRunner | None = None
 
         self.uploads = UploadStore((data_dir or Path(".")) / "web" / "uploads")
@@ -136,9 +140,13 @@ class WebServer:
     # ── routes ───────────────────────────────────────────────────
 
     def _setup_routes(self) -> None:
+        from ragnarbot.web.api import ApiRoutes
+
         r = self.app.router
         r.add_get("/ws", self._handle_ws)
         r.add_get("/api/status", self._handle_status)
+
+        ApiRoutes(self).register(r)
 
         r.add_post("/api/uploads", self._handle_upload)
         r.add_post("/api/transcribe", self._handle_transcribe)

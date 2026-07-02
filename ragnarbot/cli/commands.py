@@ -420,6 +420,14 @@ def gateway_main(
                 duration = _time.time() - start_time
                 log_execution(job, response, status, duration, error)
 
+                store = getattr(agent, "notification_store", None)
+                if store:
+                    await store.add_and_publish(
+                        bus, kind="cron", title=f"Cron: {job.name}",
+                        body=error or (response if isinstance(response, str) else "") or "",
+                        status=status, source_id=job.id,
+                    )
+
                 if job.payload.mode == "isolated" and job.payload.to:
                     try:
                         channel = job.payload.channel or "cli"
@@ -473,6 +481,14 @@ def gateway_main(
                 duration = _time.time() - start_time
                 hook_service.log_trigger(hook, payload, status, duration, response, error)
 
+                store = getattr(agent, "notification_store", None)
+                if store:
+                    await store.add_and_publish(
+                        bus, kind="hook", title=f"Hook: {hook.name}",
+                        body=error or (response if isinstance(response, str) else "") or "",
+                        status=status, source_id=hook.id[:16],
+                    )
+
                 if hook.to:
                     try:
                         channel = hook.channel or "cli"
@@ -514,6 +530,12 @@ def gateway_main(
 
         async def on_heartbeat_deliver(result: str, channel: str, chat_id: str):
             """Phase 2: inject heartbeat result into user's active chat."""
+            store = getattr(agent, "notification_store", None)
+            if store:
+                await store.add_and_publish(
+                    bus, kind="heartbeat", title="Heartbeat report",
+                    body=result, status="ok",
+                )
             await bus.publish_inbound(_InboundMessage(
                 channel=channel,
                 sender_id="heartbeat",
@@ -555,7 +577,10 @@ def gateway_main(
         web_server = None
         web_channel = channels.get_channel("web")
         if config.web.enabled and web_channel is not None:
+            from ragnarbot.web.notifications import NotificationStore
             from ragnarbot.web.server import WebServer
+            notifications = NotificationStore(get_data_dir() / "web" / "notifications.jsonl")
+            agent.notification_store = notifications
             web_server = WebServer(
                 config=config,
                 channel=web_channel,
@@ -564,6 +589,8 @@ def gateway_main(
                 port=config.web.port,
                 media_manager=media_manager,
                 data_dir=get_data_dir(),
+                heartbeat=heartbeat,
+                notifications=notifications,
             )
             console.print(
                 f"[green]✓[/green] Web console: http://{config.web.host}:{config.web.port}"
