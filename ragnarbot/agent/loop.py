@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import time
+import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -485,6 +487,34 @@ class AgentLoop:
         logger.info(f"Queued steering message for active run {msg.session_key}")
         return True
 
+    def _record_turn_usage(self, channel: str, usage: dict[str, Any]) -> None:
+        """Append per-turn token usage to the usage log (best-effort)."""
+        try:
+            from datetime import datetime
+
+            from ragnarbot.config.loader import get_data_dir
+
+            path = get_data_dir() / "web" / "usage.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            record = {"ts": datetime.now().isoformat(), "source": channel, **usage}
+            with open(path, "a") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception as e:
+            logger.debug(f"Failed to record usage: {e}")
+
+    async def _publish_web_event(
+        self, channel: str, chat_id: str, event: str, data: dict[str, Any] | None = None,
+    ) -> None:
+        """Publish a structured live-update event for streaming-aware channels."""
+        if channel != "web":
+            return
+        await self.bus.publish_outbound(OutboundMessage(
+            channel=channel,
+            chat_id=chat_id,
+            content="",
+            metadata={"event": event, "data": data or {}},
+        ))
+
     async def _chat_or_stop(
         self, run_session_key: str, provider: LLMProvider | None = None, **chat_kwargs,
     ):
@@ -895,8 +925,20 @@ class AgentLoop:
         self,
         channel: str,
         chat_id: str,
+        turn_id: str | None = None,
     ) -> ToolCallHandler | None:
         """Build a live trace handler for provider-managed tool calls."""
+        if channel == "web":
+
+            async def _handle_web(tool_call: ToolCallRequest) -> None:
+                await self._publish_web_event(channel, chat_id, "tool_start", {
+                    "turn_id": turn_id,
+                    "tool": tool_call.name,
+                    "args_preview": _args_preview(tool_call.arguments),
+                })
+
+            return _handle_web
+
         if not self.trace_mode:
             return None
 
@@ -914,8 +956,33 @@ class AgentLoop:
         self,
         channel: str,
         chat_id: str,
+        turn_id: str | None = None,
     ) -> TextDeltaHandler | None:
-        """Build an intermediate-text handler for provider-managed turns."""
+        """Build an intermediate-text handler for provider-managed turns.
+
+        For the web channel the handler is token-level: providers that support
+        true streaming (they check the ``token_level`` attribute) emit every
+        text delta as a structured event. Other channels keep the coarse
+        segment-level behavior used by provider-managed transports.
+        """
+        if channel == "web":
+            seq = 0
+
+            async def _handle_web(content: str) -> None:
+                nonlocal seq
+                if not content:
+                    return
+                seq += 1
+                await self.bus.publish_outbound(OutboundMessage(
+                    channel=channel,
+                    chat_id=chat_id,
+                    content=content,
+                    metadata={"event": "delta", "data": {"turn_id": turn_id, "seq": seq}},
+                ))
+
+            _handle_web.token_level = True
+            return _handle_web
+
         if not self.stream_steps:
             return None
 
@@ -1258,6 +1325,12 @@ class AgentLoop:
             metadata={"chat_action": "typing"},
         ))
 
+        turn_id = uuid.uuid4().hex[:8]
+        turn_started_at = time.monotonic()
+        await self._publish_web_event(msg.channel, msg.chat_id, "turn_started", {
+            "turn_id": turn_id,
+        })
+
         # Get or create session
         session = self.sessions.get_or_create(msg.session_key)
 
@@ -1354,6 +1427,8 @@ class AgentLoop:
         batch_used_fallback = False  # track once per user message batch
         start_memory_jobs = False
         self._fb_error_notified = False  # reset per batch
+        turn_output_tokens = 0
+        turn_last_usage: dict[str, Any] = {}
 
         try:
             while True:
@@ -1433,10 +1508,12 @@ class AgentLoop:
                     tool_call_handler=self._make_provider_tool_call_handler(
                         msg.channel,
                         msg.chat_id,
+                        turn_id=turn_id,
                     ),
                     text_delta_handler=self._make_provider_text_delta_handler(
                         msg.channel,
                         msg.chat_id,
+                        turn_id=turn_id,
                     ),
                     steering_message_provider=self._make_provider_steering_message_provider(
                         session_key,
@@ -1449,6 +1526,10 @@ class AgentLoop:
                     logger.info(f"LLM call cancelled by stop for {session_key}")
                     stopped = True
                     break
+
+                if response.usage:
+                    turn_output_tokens += response.usage.get("completion_tokens", 0) or 0
+                    turn_last_usage = response.usage
 
                 # Recovery notification — primary came back after fallback mode
                 if not used_fallback and self._fb_just_recovered:
@@ -1486,7 +1567,8 @@ class AgentLoop:
                     break
 
                 if response.has_tool_calls:
-                    if self.stream_steps and response.content:
+                    # Web already received this text as token deltas — don't duplicate
+                    if self.stream_steps and response.content and msg.channel != "web":
                         await self.bus.publish_outbound(OutboundMessage(
                             channel=msg.channel,
                             chat_id=msg.chat_id,
@@ -1555,6 +1637,13 @@ class AgentLoop:
                                 metadata={"intermediate": True, "raw_html": True},
                             ))
 
+                        await self._publish_web_event(msg.channel, msg.chat_id, "tool_start", {
+                            "turn_id": turn_id,
+                            "tool": tool_call.name,
+                            "args_preview": _args_preview(tool_call.arguments),
+                        })
+                        tool_started_at = time.monotonic()
+
                         try:
                             result = await self._execute_tool_with_tracking(
                                 session_key, tool_call.name, tool_call.arguments,
@@ -1574,6 +1663,16 @@ class AgentLoop:
                                     messages, remaining.id, remaining.name, "[Stopped by user]",
                                 )
                             break
+                        await self._publish_web_event(msg.channel, msg.chat_id, "tool_end", {
+                            "turn_id": turn_id,
+                            "tool": tool_call.name,
+                            "status": (
+                                "error"
+                                if isinstance(result, str) and result.startswith("Error")
+                                else "ok"
+                            ),
+                            "duration_ms": int((time.monotonic() - tool_started_at) * 1000),
+                        })
                         messages = self.context.add_tool_result(
                             messages, tool_call.id, tool_call.name, result
                         )
@@ -1613,13 +1712,37 @@ class AgentLoop:
             await self.memory_flush.start_session_jobs(session.key)
         await self.index.start_chat_jobs(session)
 
+        turn_usage = {
+            "input_tokens": turn_last_usage.get("prompt_tokens", 0) or 0,
+            "output_tokens": turn_output_tokens,
+            "cache_read_tokens": turn_last_usage.get("cache_read_input_tokens", 0)
+            or turn_last_usage.get("cached_tokens", 0) or 0,
+            "model": self._fallback_model if batch_used_fallback else self.model,
+            "duration_ms": int((time.monotonic() - turn_started_at) * 1000),
+        }
+        if msg.channel == "web":
+            context_tokens = self.cache_manager.estimate_context_tokens(
+                messages, self.model, tools=self.tools.get_definitions(),
+            )
+            await self._publish_web_event(msg.channel, msg.chat_id, "context_info", {
+                "used_tokens": context_tokens,
+                "max_tokens": self.max_context_tokens,
+            })
+            await self._publish_web_event(msg.channel, msg.chat_id, "turn_ended", {
+                "turn_id": turn_id,
+                "status": "stopped" if stopped else "ok",
+                "usage": turn_usage,
+            })
+        self._record_turn_usage(msg.channel, turn_usage)
+
         if stopped or not outbound_content:
             return None
 
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
-            content=outbound_content
+            content=outbound_content,
+            metadata={"turn_id": turn_id, "usage": turn_usage},
         )
 
     async def _handle_command(self, command: str, msg: InboundMessage) -> OutboundMessage | None:
@@ -2325,6 +2448,13 @@ class AgentLoop:
         session_key = f"{origin_channel}:{origin_chat_id}"
         session = self.sessions.get_or_create(session_key)
 
+        turn_id = uuid.uuid4().hex[:8]
+        turn_started_at = time.monotonic()
+        await self._publish_web_event(origin_channel, origin_chat_id, "turn_started", {
+            "turn_id": turn_id,
+            "system": True,
+        })
+
         # Update tool contexts
         agent_tool = self.tools.get("agent")
         if isinstance(agent_tool, AgentTool):
@@ -2373,6 +2503,8 @@ class AgentLoop:
         batch_used_fallback = False
         start_memory_jobs = False
         self._fb_error_notified = False  # reset per system message
+        turn_output_tokens = 0
+        turn_last_usage: dict[str, Any] = {}
 
         try:
             while True:
@@ -2449,10 +2581,12 @@ class AgentLoop:
                     tool_call_handler=self._make_provider_tool_call_handler(
                         origin_channel,
                         origin_chat_id,
+                        turn_id=turn_id,
                     ),
                     text_delta_handler=self._make_provider_text_delta_handler(
                         origin_channel,
                         origin_chat_id,
+                        turn_id=turn_id,
                     ),
                     steering_message_provider=self._make_provider_steering_message_provider(
                         session_key,
@@ -2465,6 +2599,10 @@ class AgentLoop:
                     logger.info(f"LLM call cancelled by stop for {session_key}")
                     stopped = True
                     break
+
+                if response.usage:
+                    turn_output_tokens += response.usage.get("completion_tokens", 0) or 0
+                    turn_last_usage = response.usage
 
                 # Recovery notification
                 if not used_fallback and self._fb_just_recovered:
@@ -2503,7 +2641,8 @@ class AgentLoop:
 
                 if response.has_tool_calls:
                     # Stream intermediate content to user if enabled
-                    if self.stream_steps and response.content:
+                    # (web already received this text as token deltas)
+                    if self.stream_steps and response.content and origin_channel != "web":
                         await self.bus.publish_outbound(OutboundMessage(
                             channel=origin_channel,
                             chat_id=origin_chat_id,
@@ -2555,6 +2694,15 @@ class AgentLoop:
                                 metadata={"intermediate": True, "raw_html": True},
                             ))
 
+                        await self._publish_web_event(
+                            origin_channel, origin_chat_id, "tool_start", {
+                                "turn_id": turn_id,
+                                "tool": tool_call.name,
+                                "args_preview": _args_preview(tool_call.arguments),
+                            },
+                        )
+                        tool_started_at = time.monotonic()
+
                         try:
                             result = await self._execute_tool_with_tracking(
                                 session_key, tool_call.name, tool_call.arguments,
@@ -2574,6 +2722,20 @@ class AgentLoop:
                                     messages, remaining.id, remaining.name, "[Stopped by user]",
                                 )
                             break
+                        await self._publish_web_event(
+                            origin_channel, origin_chat_id, "tool_end", {
+                                "turn_id": turn_id,
+                                "tool": tool_call.name,
+                                "status": (
+                                    "error"
+                                    if isinstance(result, str) and result.startswith("Error")
+                                    else "ok"
+                                ),
+                                "duration_ms": int(
+                                    (time.monotonic() - tool_started_at) * 1000
+                                ),
+                            },
+                        )
                         messages = self.context.add_tool_result(
                             messages, tool_call.id, tool_call.name, result
                         )
@@ -2611,13 +2773,29 @@ class AgentLoop:
             await self.memory_flush.start_session_jobs(session.key)
         await self.index.start_chat_jobs(session)
 
+        turn_usage = {
+            "input_tokens": turn_last_usage.get("prompt_tokens", 0) or 0,
+            "output_tokens": turn_output_tokens,
+            "cache_read_tokens": turn_last_usage.get("cache_read_input_tokens", 0)
+            or turn_last_usage.get("cached_tokens", 0) or 0,
+            "model": self._fallback_model if batch_used_fallback else self.model,
+            "duration_ms": int((time.monotonic() - turn_started_at) * 1000),
+        }
+        await self._publish_web_event(origin_channel, origin_chat_id, "turn_ended", {
+            "turn_id": turn_id,
+            "status": "stopped" if stopped else "ok",
+            "usage": turn_usage,
+        })
+        self._record_turn_usage("system", turn_usage)
+
         if stopped or not outbound_content:
             return None
 
         return OutboundMessage(
             channel=origin_channel,
             chat_id=origin_chat_id,
-            content=outbound_content
+            content=outbound_content,
+            metadata={"turn_id": turn_id, "usage": turn_usage},
         )
 
     @staticmethod
@@ -3450,3 +3628,14 @@ def _ext_from_mime(mime_type: str) -> str:
         "image/webp": "webp",
     }
     return mapping.get(mime_type, "jpg")
+
+
+def _args_preview(arguments: dict, max_len: int = 120) -> str:
+    """Short single-line preview of tool arguments for live activity feeds."""
+    try:
+        preview = json.dumps(arguments, ensure_ascii=False)
+    except (TypeError, ValueError):
+        preview = str(arguments)
+    if len(preview) > max_len:
+        preview = preview[: max_len - 1] + "…"
+    return preview

@@ -65,7 +65,7 @@ class LiteLLMProvider(LLMProvider):
         text_delta_handler=None,
         steering_message_provider=None,
     ) -> LLMResponse:
-        _ = session_key, tool_runner, tool_call_handler, text_delta_handler, steering_message_provider
+        _ = session_key, tool_runner, tool_call_handler, steering_message_provider
         """
         Send a chat completion request via LiteLLM.
 
@@ -143,16 +143,14 @@ class LiteLLMProvider(LLMProvider):
             kwargs["messages"] = self._adapt_tool_images(kwargs["messages"])
 
         try:
-            response = await acompletion(**kwargs)
-            return self._parse_response(response)
+            return await self._complete(kwargs, text_delta_handler)
         except litellm.RateLimitError as e:
             err_msg = str(e)
             if "CachedContent" in err_msg and "FreeTier" in err_msg:
                 logger.warning("Gemini free tier does not support caching, retrying without cache")
                 kwargs["messages"] = self._strip_cache_control(kwargs["messages"])
                 try:
-                    response = await acompletion(**kwargs)
-                    return self._parse_response(response)
+                    return await self._complete(kwargs, text_delta_handler)
                 except Exception as retry_err:
                     return LLMResponse(
                         content=f"Error calling LLM: {str(retry_err)}",
@@ -167,6 +165,89 @@ class LiteLLMProvider(LLMProvider):
                 content=f"Error calling LLM: {str(e)}",
                 finish_reason="error",
             )
+
+    async def _complete(self, kwargs: dict[str, Any], text_delta_handler=None) -> LLMResponse:
+        """Run one completion call, streaming token deltas when a handler wants them.
+
+        Only token-level handlers (marked with ``token_level = True``) trigger
+        streaming; segment-level handlers are meant for provider-managed
+        transports and are ignored here, matching the old behavior.
+        """
+        if not getattr(text_delta_handler, "token_level", False):
+            response = await acompletion(**kwargs)
+            return self._parse_response(response)
+
+        stream = await acompletion(
+            **kwargs, stream=True, stream_options={"include_usage": True},
+        )
+        return await self._consume_stream(stream, text_delta_handler)
+
+    async def _consume_stream(self, stream: Any, text_delta_handler) -> LLMResponse:
+        """Accumulate a streamed completion into an LLMResponse, emitting text deltas."""
+        import json
+
+        content_parts: list[str] = []
+        finish_reason: str | None = None
+        usage_chunk: Any = None
+        # tool calls arrive as fragments keyed by index
+        tool_frags: dict[int, dict[str, Any]] = {}
+
+        async for chunk in stream:
+            if getattr(chunk, "usage", None):
+                usage_chunk = chunk
+            choices = getattr(chunk, "choices", None)
+            if not choices:
+                continue
+            choice = choices[0]
+            if choice.finish_reason:
+                finish_reason = choice.finish_reason
+            delta = getattr(choice, "delta", None)
+            if delta is None:
+                continue
+
+            text = getattr(delta, "content", None)
+            if text:
+                content_parts.append(text)
+                await text_delta_handler(text)
+
+            for tc in getattr(delta, "tool_calls", None) or []:
+                idx = getattr(tc, "index", 0) or 0
+                frag = tool_frags.setdefault(idx, {"id": None, "name": None, "args": []})
+                if getattr(tc, "id", None):
+                    frag["id"] = tc.id
+                fn = getattr(tc, "function", None)
+                if fn is not None:
+                    if getattr(fn, "name", None):
+                        frag["name"] = (frag["name"] or "") + fn.name if frag["name"] else fn.name
+                    if getattr(fn, "arguments", None):
+                        frag["args"].append(fn.arguments)
+
+        tool_calls = []
+        for idx in sorted(tool_frags):
+            frag = tool_frags[idx]
+            if not frag["name"]:
+                continue
+            raw_args = "".join(frag["args"])
+            try:
+                args = json.loads(raw_args) if raw_args else {}
+            except json.JSONDecodeError:
+                args = self._recover_truncated_json(raw_args)
+            tool_calls.append(ToolCallRequest(
+                id=frag["id"] or f"call_{idx}",
+                name=frag["name"],
+                arguments=args,
+            ))
+
+        usage = {}
+        if usage_chunk is not None:
+            usage = self._parse_usage(usage_chunk.usage)
+
+        return LLMResponse(
+            content="".join(content_parts) or None,
+            tool_calls=tool_calls,
+            finish_reason=finish_reason or "stop",
+            usage=usage,
+        )
 
     @staticmethod
     def _sanitize_messages(messages: list[dict]) -> list[dict]:
@@ -418,22 +499,7 @@ class LiteLLMProvider(LLMProvider):
 
         usage = {}
         if hasattr(response, "usage") and response.usage:
-            usage = {
-                "prompt_tokens": response.usage.prompt_tokens,
-                "completion_tokens": response.usage.completion_tokens,
-                "total_tokens": response.usage.total_tokens,
-            }
-            # Extract cache usage from prompt_tokens_details (LiteLLM unified format)
-            details = getattr(response.usage, "prompt_tokens_details", None)
-            if details:
-                if isinstance(details, dict):
-                    usage["cache_creation_input_tokens"] = (
-                        details.get("cache_creation_input_tokens", 0) or 0
-                    )
-                    usage["cache_read_input_tokens"] = (
-                        details.get("cache_read_input_tokens", 0) or 0
-                    )
-                    usage["cached_tokens"] = details.get("cached_tokens", 0) or 0
+            usage = self._parse_usage(response.usage)
 
         return LLMResponse(
             content=message.content,
@@ -441,6 +507,26 @@ class LiteLLMProvider(LLMProvider):
             finish_reason=choice.finish_reason or "stop",
             usage=usage,
         )
+
+    @staticmethod
+    def _parse_usage(raw_usage: Any) -> dict[str, Any]:
+        """Normalize LiteLLM usage (regular or final stream chunk) to our dict format."""
+        usage = {
+            "prompt_tokens": getattr(raw_usage, "prompt_tokens", 0) or 0,
+            "completion_tokens": getattr(raw_usage, "completion_tokens", 0) or 0,
+            "total_tokens": getattr(raw_usage, "total_tokens", 0) or 0,
+        }
+        # Extract cache usage from prompt_tokens_details (LiteLLM unified format)
+        details = getattr(raw_usage, "prompt_tokens_details", None)
+        if details and isinstance(details, dict):
+            usage["cache_creation_input_tokens"] = (
+                details.get("cache_creation_input_tokens", 0) or 0
+            )
+            usage["cache_read_input_tokens"] = (
+                details.get("cache_read_input_tokens", 0) or 0
+            )
+            usage["cached_tokens"] = details.get("cached_tokens", 0) or 0
+        return usage
 
     def get_default_model(self) -> str:
         """Get the default model."""

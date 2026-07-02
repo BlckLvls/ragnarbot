@@ -101,6 +101,8 @@ class WebChannel(BaseChannel):
             "content": msg.content or "",
             "media": msg.media or [],
         }
+        if md.get("usage"):
+            message["usage"] = md["usage"]
         if md.get("intermediate"):
             return {"type": "intermediate", "message": message, "turn_id": md.get("turn_id")}
         return {"type": "final", "message": message, "turn_id": md.get("turn_id")}
@@ -156,6 +158,17 @@ class WebChannel(BaseChannel):
                 attachments=attachments,
                 metadata=metadata,
             )
+            # Echo to all tabs so every client renders the user message
+            await self.broadcast({
+                "type": "user_message",
+                "message": {
+                    "role": "user",
+                    "content": text,
+                    "attachments": [
+                        {"type": a.type, "filename": a.filename} for a in attachments
+                    ],
+                },
+            })
             return
 
         if msg_type == "stop":

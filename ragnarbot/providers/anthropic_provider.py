@@ -90,7 +90,6 @@ class AnthropicProvider(LLMProvider):
             session_key,
             tool_runner,
             tool_call_handler,
-            text_delta_handler,
             steering_message_provider,
         )
         _ = lightning_mode
@@ -141,6 +140,15 @@ class AnthropicProvider(LLMProvider):
             try:
                 # Use streaming to avoid Anthropic SDK ValueError for max_tokens > ~21k
                 async with self.client.messages.stream(**kwargs) as stream:
+                    # Only token-level handlers get raw deltas (see LiteLLMProvider._complete)
+                    if getattr(text_delta_handler, "token_level", False):
+                        async for event in stream:
+                            if (
+                                event.type == "content_block_delta"
+                                and getattr(event.delta, "type", "") == "text_delta"
+                                and event.delta.text
+                            ):
+                                await text_delta_handler(event.delta.text)
                     response = await stream.get_final_message()
                 return self._parse_response(response)
             except APIStatusError as e:
