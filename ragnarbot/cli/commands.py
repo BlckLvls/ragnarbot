@@ -562,6 +562,8 @@ def gateway_main(
                 agent=agent,
                 host=config.web.host,
                 port=config.web.port,
+                media_manager=media_manager,
+                data_dir=get_data_dir(),
             )
             console.print(
                 f"[green]✓[/green] Web console: http://{config.web.host}:{config.web.port}"
