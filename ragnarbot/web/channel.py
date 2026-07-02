@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from typing import Any
+from typing import Any, Callable
 
 from aiohttp import WSMsgType, web
 from loguru import logger
@@ -37,6 +37,8 @@ class WebChannel(BaseChannel):
         super().__init__(config, bus)
         self._clients: set[web.WebSocketResponse] = set()
         self._stopped: asyncio.Event = asyncio.Event()
+        # Replaced by WebServer with the UploadStore resolver
+        self.attachment_resolver: Callable[[str], MediaAttachment | None] = lambda _aid: None
 
     # ── lifecycle ────────────────────────────────────────────────
 
@@ -117,8 +119,10 @@ class WebChannel(BaseChannel):
     async def handle_ws(self, request: web.Request, state: dict[str, Any]) -> web.WebSocketResponse:
         """WebSocket endpoint handler. `state` is the snapshot sent on connect."""
         origin = request.headers.get("Origin")
-        if origin and request.host and request.host not in origin:
-            raise web.HTTPForbidden(reason="cross-origin websocket rejected")
+        if origin and request.host:
+            from urllib.parse import urlparse
+            if urlparse(origin).netloc != request.host:
+                raise web.HTTPForbidden(reason="cross-origin websocket rejected")
 
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
@@ -199,16 +203,10 @@ class WebChannel(BaseChannel):
         ))
 
     def _resolve_attachments(self, attachment_ids: list[str]) -> list[MediaAttachment]:
-        """Resolve uploaded attachment IDs to MediaAttachment objects.
-
-        Upload support arrives with the uploads API; until then unknown IDs are dropped.
-        """
-        resolver = getattr(self, "attachment_resolver", None)
-        if not resolver:
-            return []
+        """Resolve uploaded attachment IDs via the UploadStore (set by WebServer)."""
         attachments = []
         for aid in attachment_ids:
-            att = resolver(aid)
+            att = self.attachment_resolver(aid)
             if att:
                 attachments.append(att)
         return attachments

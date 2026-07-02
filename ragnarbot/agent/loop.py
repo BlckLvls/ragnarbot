@@ -257,6 +257,8 @@ class AgentLoop:
 
         self._running = False
         self._restart_requested = False
+        # Set by the gateway when the web console is enabled (see commands.py)
+        self.notification_store = None
         self._processing_task: asyncio.Task | None = None
         self._run_state: RunState | None = None
         self._stop_events: dict[str, asyncio.Event] = {}
@@ -490,7 +492,7 @@ class AgentLoop:
 
     async def _notify_system_event(self, msg: InboundMessage) -> None:
         """Record sub-agent/background-job announcements in the notification pool."""
-        store = getattr(self, "notification_store", None)
+        store = self.notification_store
         if store is None:
             return
         kind_map = {
@@ -500,7 +502,8 @@ class AgentLoop:
             "gateway": ("system", "Gateway"),
         }
         kind, title = kind_map.get(msg.sender_id, ("system", "System event"))
-        first_line = (msg.content or "").strip().splitlines()[0][:120] if msg.content else ""
+        content_lines = (msg.content or "").strip().splitlines()
+        first_line = content_lines[0][:120] if content_lines else ""
         try:
             await store.add_and_publish(
                 self.bus, kind=kind, title=first_line or title,
@@ -536,6 +539,45 @@ class AgentLoop:
             content="",
             metadata={"event": event, "data": data or {}},
         ))
+
+    async def _publish_tool_start(
+        self, channel: str, chat_id: str, turn_id: str | None, tool: str, arguments: dict,
+    ) -> None:
+        await self._publish_web_event(channel, chat_id, "tool_start", {
+            "turn_id": turn_id,
+            "tool": tool,
+            "args_preview": _args_preview(arguments),
+        })
+
+    async def _publish_tool_end(
+        self, channel: str, chat_id: str, turn_id: str | None, tool: str,
+        result: Any, started_at: float,
+    ) -> None:
+        await self._publish_web_event(channel, chat_id, "tool_end", {
+            "turn_id": turn_id,
+            "tool": tool,
+            "status": (
+                "error" if isinstance(result, str) and result.startswith("Error") else "ok"
+            ),
+            "duration_ms": int((time.monotonic() - started_at) * 1000),
+        })
+
+    def _build_turn_usage(
+        self,
+        turn_last_usage: dict[str, Any],
+        turn_output_tokens: int,
+        used_fallback: bool,
+        turn_started_at: float,
+    ) -> dict[str, Any]:
+        """Assemble the per-turn usage record shared by both turn loops."""
+        return {
+            "input_tokens": turn_last_usage.get("prompt_tokens", 0) or 0,
+            "output_tokens": turn_output_tokens,
+            "cache_read_tokens": turn_last_usage.get("cache_read_input_tokens", 0)
+            or turn_last_usage.get("cached_tokens", 0) or 0,
+            "model": self._fallback_model if used_fallback else self.model,
+            "duration_ms": int((time.monotonic() - turn_started_at) * 1000),
+        }
 
     async def _chat_or_stop(
         self, run_session_key: str, provider: LLMProvider | None = None, **chat_kwargs,
@@ -931,15 +973,36 @@ class AgentLoop:
             if state.active_tool_task is tool_task:
                 state.active_tool_task = None
 
-    def _make_provider_tool_runner(self, session_key: str):
-        """Build a host-side tool runner for provider-managed tool transports."""
+    def _make_provider_tool_runner(
+        self,
+        session_key: str,
+        channel: str | None = None,
+        chat_id: str | None = None,
+        turn_id: str | None = None,
+    ):
+        """Build a host-side tool runner for provider-managed tool transports.
+
+        When channel context is given, web tool events are emitted around each
+        execution — provider-managed transports never reach the loop's own
+        tool block, so this is where their tool_start/tool_end come from.
+        """
 
         async def _run(tool_call: ToolCallRequest):
-            return await self._execute_tool_with_tracking(
+            if channel and chat_id:
+                await self._publish_tool_start(
+                    channel, chat_id, turn_id, tool_call.name, tool_call.arguments,
+                )
+            started_at = time.monotonic()
+            result = await self._execute_tool_with_tracking(
                 session_key,
                 tool_call.name,
                 tool_call.arguments,
             )
+            if channel and chat_id:
+                await self._publish_tool_end(
+                    channel, chat_id, turn_id, tool_call.name, result, started_at,
+                )
+            return result
 
         return _run
 
@@ -950,16 +1013,9 @@ class AgentLoop:
         turn_id: str | None = None,
     ) -> ToolCallHandler | None:
         """Build a live trace handler for provider-managed tool calls."""
+        # web tool events come from the tool runner (start AND end) — no handler needed
         if channel == "web":
-
-            async def _handle_web(tool_call: ToolCallRequest) -> None:
-                await self._publish_web_event(channel, chat_id, "tool_start", {
-                    "turn_id": turn_id,
-                    "tool": tool_call.name,
-                    "args_preview": _args_preview(tool_call.arguments),
-                })
-
-            return _handle_web
+            return None
 
         if not self.trace_mode:
             return None
@@ -988,18 +1044,17 @@ class AgentLoop:
         segment-level behavior used by provider-managed transports.
         """
         if channel == "web":
-            seq = 0
-
+            # No sequence numbers: deltas ride a single ordered WebSocket, and
+            # the handler is re-created per LLM iteration so a counter would
+            # restart mid-turn anyway.
             async def _handle_web(content: str) -> None:
-                nonlocal seq
                 if not content:
                     return
-                seq += 1
                 await self.bus.publish_outbound(OutboundMessage(
                     channel=channel,
                     chat_id=chat_id,
                     content=content,
-                    metadata={"event": "delta", "data": {"turn_id": turn_id, "seq": seq}},
+                    metadata={"event": "delta", "data": {"turn_id": turn_id}},
                 ))
 
             _handle_web.token_level = True
@@ -1526,7 +1581,9 @@ class AgentLoop:
                     notify_chat_id=msg.chat_id,
                     messages=api_messages,
                     tools=tools_defs,
-                    tool_runner=self._make_provider_tool_runner(session_key),
+                    tool_runner=self._make_provider_tool_runner(
+                        session_key, msg.channel, msg.chat_id, turn_id,
+                    ),
                     tool_call_handler=self._make_provider_tool_call_handler(
                         msg.channel,
                         msg.chat_id,
@@ -1659,11 +1716,10 @@ class AgentLoop:
                                 metadata={"intermediate": True, "raw_html": True},
                             ))
 
-                        await self._publish_web_event(msg.channel, msg.chat_id, "tool_start", {
-                            "turn_id": turn_id,
-                            "tool": tool_call.name,
-                            "args_preview": _args_preview(tool_call.arguments),
-                        })
+                        await self._publish_tool_start(
+                            msg.channel, msg.chat_id, turn_id,
+                            tool_call.name, tool_call.arguments,
+                        )
                         tool_started_at = time.monotonic()
 
                         try:
@@ -1685,16 +1741,10 @@ class AgentLoop:
                                     messages, remaining.id, remaining.name, "[Stopped by user]",
                                 )
                             break
-                        await self._publish_web_event(msg.channel, msg.chat_id, "tool_end", {
-                            "turn_id": turn_id,
-                            "tool": tool_call.name,
-                            "status": (
-                                "error"
-                                if isinstance(result, str) and result.startswith("Error")
-                                else "ok"
-                            ),
-                            "duration_ms": int((time.monotonic() - tool_started_at) * 1000),
-                        })
+                        await self._publish_tool_end(
+                            msg.channel, msg.chat_id, turn_id,
+                            tool_call.name, result, tool_started_at,
+                        )
                         messages = self.context.add_tool_result(
                             messages, tool_call.id, tool_call.name, result
                         )
@@ -1734,14 +1784,9 @@ class AgentLoop:
             await self.memory_flush.start_session_jobs(session.key)
         await self.index.start_chat_jobs(session)
 
-        turn_usage = {
-            "input_tokens": turn_last_usage.get("prompt_tokens", 0) or 0,
-            "output_tokens": turn_output_tokens,
-            "cache_read_tokens": turn_last_usage.get("cache_read_input_tokens", 0)
-            or turn_last_usage.get("cached_tokens", 0) or 0,
-            "model": self._fallback_model if batch_used_fallback else self.model,
-            "duration_ms": int((time.monotonic() - turn_started_at) * 1000),
-        }
+        turn_usage = self._build_turn_usage(
+            turn_last_usage, turn_output_tokens, batch_used_fallback, turn_started_at,
+        )
         if msg.channel == "web":
             context_tokens = self.cache_manager.estimate_context_tokens(
                 messages, self.model, tools=self.tools.get_definitions(),
@@ -2603,7 +2648,9 @@ class AgentLoop:
                     notify_chat_id=origin_chat_id,
                     messages=api_messages,
                     tools=tools_defs,
-                    tool_runner=self._make_provider_tool_runner(session_key),
+                    tool_runner=self._make_provider_tool_runner(
+                        session_key, origin_channel, origin_chat_id, turn_id,
+                    ),
                     tool_call_handler=self._make_provider_tool_call_handler(
                         origin_channel,
                         origin_chat_id,
@@ -2720,12 +2767,9 @@ class AgentLoop:
                                 metadata={"intermediate": True, "raw_html": True},
                             ))
 
-                        await self._publish_web_event(
-                            origin_channel, origin_chat_id, "tool_start", {
-                                "turn_id": turn_id,
-                                "tool": tool_call.name,
-                                "args_preview": _args_preview(tool_call.arguments),
-                            },
+                        await self._publish_tool_start(
+                            origin_channel, origin_chat_id, turn_id,
+                            tool_call.name, tool_call.arguments,
                         )
                         tool_started_at = time.monotonic()
 
@@ -2748,19 +2792,9 @@ class AgentLoop:
                                     messages, remaining.id, remaining.name, "[Stopped by user]",
                                 )
                             break
-                        await self._publish_web_event(
-                            origin_channel, origin_chat_id, "tool_end", {
-                                "turn_id": turn_id,
-                                "tool": tool_call.name,
-                                "status": (
-                                    "error"
-                                    if isinstance(result, str) and result.startswith("Error")
-                                    else "ok"
-                                ),
-                                "duration_ms": int(
-                                    (time.monotonic() - tool_started_at) * 1000
-                                ),
-                            },
+                        await self._publish_tool_end(
+                            origin_channel, origin_chat_id, turn_id,
+                            tool_call.name, result, tool_started_at,
                         )
                         messages = self.context.add_tool_result(
                             messages, tool_call.id, tool_call.name, result
@@ -2799,14 +2833,9 @@ class AgentLoop:
             await self.memory_flush.start_session_jobs(session.key)
         await self.index.start_chat_jobs(session)
 
-        turn_usage = {
-            "input_tokens": turn_last_usage.get("prompt_tokens", 0) or 0,
-            "output_tokens": turn_output_tokens,
-            "cache_read_tokens": turn_last_usage.get("cache_read_input_tokens", 0)
-            or turn_last_usage.get("cached_tokens", 0) or 0,
-            "model": self._fallback_model if batch_used_fallback else self.model,
-            "duration_ms": int((time.monotonic() - turn_started_at) * 1000),
-        }
+        turn_usage = self._build_turn_usage(
+            turn_last_usage, turn_output_tokens, batch_used_fallback, turn_started_at,
+        )
         await self._publish_web_event(origin_channel, origin_chat_id, "turn_ended", {
             "turn_id": turn_id,
             "status": "stopped" if stopped else "ok",

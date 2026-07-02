@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, CronJob } from '../lib/api'
+import { relFuture, relPast } from '../lib/format'
 import { Page } from '../app/shell'
 import {
   Button,
@@ -38,29 +39,6 @@ function fmtDate(ms: number): string {
     hour: '2-digit',
     minute: '2-digit',
   })
-}
-
-function relFuture(ms: number): string {
-  const d = ms - Date.now()
-  if (d <= 0) return 'now'
-  const mins = Math.floor(d / 60_000)
-  if (mins < 60) return `in ${mins}m`
-  const h = Math.floor(mins / 60)
-  const rm = mins % 60
-  if (h < 24) return `in ${h}h ${rm}m`
-  const days = Math.floor(h / 24)
-  return `in ${days}d ${h % 24}h`
-}
-
-function relPast(iso: string): string {
-  const d = new Date(iso)
-  if (isNaN(d.getTime())) return iso
-  const t = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  const today = new Date()
-  const yst = new Date(Date.now() - 86_400_000)
-  if (d.toDateString() === today.toDateString()) return `today ${t}`
-  if (d.toDateString() === yst.toDateString()) return `yesterday ${t}`
-  return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${t}`
 }
 
 function scheduleLabel(s: CronJob['schedule']): string {

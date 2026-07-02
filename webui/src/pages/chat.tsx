@@ -1,9 +1,10 @@
 // Chat: streaming conversation with voice input, attachments, and conversation switching.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ChatMessage, SessionInfo, UploadResult, mediaUrl } from '../lib/api'
 import { LiveTurn, ToolEvent, useChat } from '../lib/ws'
+import { fmtTokens } from '../lib/format'
 import { Markdown } from '../components/markdown'
 import { Caret, ContextMeter, PixelWordmark, StreamDots, Waveform } from '../components/pixel'
 import {
@@ -184,10 +185,6 @@ function ActivityStrip({ tools, live }: { tools: ToolEvent[]; live?: boolean }) 
 
 // ── message rendering ────────────────────────────────────────
 
-function fmtTokens(n: number) {
-  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
-}
-
 function UsageLine({ usage }: { usage: NonNullable<ChatMessage['usage']> }) {
   return (
     <div className="mt-1 font-mono text-[9.5px] text-faint">
@@ -199,7 +196,7 @@ function UsageLine({ usage }: { usage: NonNullable<ChatMessage['usage']> }) {
   )
 }
 
-function MessageRow({ msg }: { msg: ChatMessage }) {
+const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMessage }) {
   const meta = (msg.metadata ?? {}) as Record<string, any>
   if (meta.type === 'compaction') {
     return (
@@ -261,7 +258,7 @@ function MessageRow({ msg }: { msg: ChatMessage }) {
       {msg.usage && <UsageLine usage={msg.usage} />}
     </div>
   )
-}
+})
 
 function LiveTurnView({ turn }: { turn: LiveTurn }) {
   return (
@@ -603,13 +600,19 @@ export default function ChatPage() {
     queryKey: ['messages', s.sessionId],
     queryFn: () => api.get<{ messages: ChatMessage[]; title: string }>('/api/sessions/active/messages?limit=200'),
     enabled: s.sessionId !== null,
+    // Live WS events own the message list after the initial load — a focus
+    // refetch would wipe tool timelines/usage and race in-flight messages.
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
   })
 
+  const appliedSessionRef = useRef<string | null>(null)
   useEffect(() => {
-    if (history) {
+    if (history && s.sessionId && appliedSessionRef.current !== s.sessionId) {
+      appliedSessionRef.current = s.sessionId
       useChat.setState({ messages: history.messages, sessionTitle: history.title })
     }
-  }, [history])
+  }, [history, s.sessionId])
 
   useEffect(() => {
     qc.invalidateQueries({ queryKey: ['sessions', 'web'] })
@@ -713,7 +716,7 @@ export default function ChatPage() {
           )}
         </div>
 
-        <ComposerWithDropTarget />
+        <Composer />
       </div>
 
       {/* drag overlay */}
@@ -743,9 +746,4 @@ export default function ChatPage() {
       <ChatSettingsSheet open={showSettings} onClose={() => setShowSettings(false)} />
     </div>
   )
-}
-
-// Composer wrapper that listens for drag-and-drop uploads dispatched by the page
-function ComposerWithDropTarget() {
-  return <Composer />
 }

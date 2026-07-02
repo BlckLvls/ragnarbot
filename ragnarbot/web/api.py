@@ -19,6 +19,14 @@ def _json_error(message: str, status: int = 400) -> web.Response:
     return web.json_response({"error": message}, status=status)
 
 
+def _int_query(request: web.Request, name: str, default: int, lo: int = 1, hi: int = 10000) -> int:
+    """Parse an int query param, clamping to [lo, hi]; bad input falls back to default."""
+    try:
+        return max(lo, min(hi, int(request.query.get(name, default))))
+    except (TypeError, ValueError):
+        return default
+
+
 class ApiRoutes:
     """All module REST endpoints. Thin wrappers over existing services."""
 
@@ -426,7 +434,7 @@ class ApiRoutes:
         return web.json_response({"summary": self.agent.bg_processes.get_status_summary()})
 
     async def jobs_output(self, request: web.Request) -> web.Response:
-        lines = int(request.query.get("lines", "50"))
+        lines = _int_query(request, "lines", 50, hi=1000)
         output = self.agent.bg_processes.get_output(request.match_info["job_id"], lines=lines)
         return web.json_response({"output": output})
 
@@ -609,7 +617,7 @@ class ApiRoutes:
     async def logs_tail(self, request: web.Request) -> web.Response:
         from ragnarbot.instance import get_instance
 
-        lines = min(int(request.query.get("lines", "200")), 2000)
+        lines = _int_query(request, "lines", 200, hi=2000)
         log_path = get_instance().log_dir / "gateway.log"
         if not log_path.is_file():
             return web.json_response({"lines": [], "path": str(log_path)})
@@ -652,7 +660,7 @@ class ApiRoutes:
         if self.notifications is None:
             return web.json_response({"items": [], "unread": 0})
         items = self.notifications.list(
-            limit=int(request.query.get("limit", "50")),
+            limit=_int_query(request, "limit", 50, hi=500),
             before=request.query.get("before"),
             kind=request.query.get("kind"),
         )
@@ -665,8 +673,12 @@ class ApiRoutes:
         if self.notifications is None:
             return _json_error("notifications unavailable", 500)
         body = await request.json()
-        ids = body.get("ids")
-        self.notifications.mark_read(None if body.get("all") else ids)
+        if body.get("all"):
+            self.notifications.mark_read(None)
+        elif isinstance(body.get("ids"), list):
+            self.notifications.mark_read(body["ids"])
+        else:
+            return _json_error("either all:true or ids:[...] is required")
         return web.json_response({"ok": True, "unread": self.notifications.unread_count()})
 
     async def usage(self, request: web.Request) -> web.Response:

@@ -28,6 +28,24 @@ class NotificationStore:
                 self._read_ids = set(json.loads(self._read_marker.read_text()))
             except Exception:
                 self._read_ids = set()
+        # in-memory unread counter — avoids a full JSONL rescan per request
+        self._unread = self._count_unread_from_disk()
+
+    def _count_unread_from_disk(self) -> int:
+        total = 0
+        if not self.path.exists():
+            return 0
+        with open(self.path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    if json.loads(line)["id"] not in self._read_ids:
+                        total += 1
+                except Exception:
+                    continue
+        return total
 
     def add(
         self,
@@ -51,6 +69,7 @@ class NotificationStore:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
         except Exception as e:
             logger.warning(f"Failed to persist notification: {e}")
+        self._unread += 1
         return record
 
     async def add_and_publish(self, bus: Any, **kwargs: Any) -> dict[str, Any]:
@@ -94,20 +113,7 @@ class NotificationStore:
         return records
 
     def unread_count(self) -> int:
-        total = 0
-        if not self.path.exists():
-            return 0
-        with open(self.path) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    if json.loads(line)["id"] not in self._read_ids:
-                        total += 1
-                except Exception:
-                    continue
-        return total
+        return self._unread
 
     def mark_read(self, ids: list[str] | None = None) -> None:
         """Mark specific notifications read, or all when ids is None."""
@@ -119,8 +125,11 @@ class NotificationStore:
                             self._read_ids.add(json.loads(line)["id"])
                         except Exception:
                             continue
+            self._unread = 0
         else:
+            before = len(self._read_ids)
             self._read_ids.update(ids)
+            self._unread = max(0, self._unread - (len(self._read_ids) - before))
         try:
             self._read_marker.write_text(json.dumps(sorted(self._read_ids)))
         except Exception as e:

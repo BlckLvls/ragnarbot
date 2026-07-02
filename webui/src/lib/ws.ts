@@ -50,7 +50,6 @@ interface ChatState {
 
 let socket: WebSocket | null = null
 let reconnectDelay = 500
-let seenSeq = 0
 
 export const useChat = create<ChatState>((set, get) => ({
   conn: 'connecting',
@@ -134,15 +133,14 @@ export function connectWs(onNotification?: (n: Notification) => void) {
         useChat.setState(ev.value ? { processing: true } : { processing: false, liveTurn: null })
         break
       case 'turn_started':
-        seenSeq = 0
         useChat.setState({
           processing: true,
           liveTurn: { turnId: ev.turn_id ?? null, text: '', tools: [], system: !!ev.system },
         })
         break
       case 'delta': {
-        if (typeof ev.seq === 'number' && ev.seq <= seenSeq) break
-        if (typeof ev.seq === 'number') seenSeq = ev.seq
+        // deltas ride one ordered WebSocket — no dedup needed (a seq counter
+        // would restart every LLM iteration and drop post-tool text)
         const turn = s.liveTurn ?? { turnId: ev.turn_id ?? null, text: '', tools: [] }
         useChat.setState({
           processing: true,

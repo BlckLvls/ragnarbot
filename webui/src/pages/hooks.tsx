@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, HookDef, StatusFull } from '../lib/api'
+import { relPast } from '../lib/format'
 import { Page } from '../app/shell'
 import {
   Button,
@@ -19,17 +20,6 @@ import {
 } from '../components/ui'
 
 const CHANNELS = ['web', 'telegram'] as const
-
-function relPast(iso: string): string {
-  const d = new Date(iso)
-  if (isNaN(d.getTime())) return iso
-  const t = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  const today = new Date()
-  const yst = new Date(Date.now() - 86_400_000)
-  if (d.toDateString() === today.toDateString()) return `today ${t}`
-  if (d.toDateString() === yst.toDateString()) return `yesterday ${t}`
-  return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${t}`
-}
 
 function relMs(ms: number): string {
   return relPast(new Date(ms).toISOString())

@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, AgentDefSummary, AgentTask } from '../lib/api'
+import { relPast } from '../lib/format'
 import { Page } from '../app/shell'
 import {
   Button,
@@ -40,17 +41,6 @@ interface TaskProgress {
   tool_counts?: Record<string, number>
   messages?: { role?: string; content?: string }[]
   [key: string]: unknown
-}
-
-function relPast(iso: string): string {
-  const d = new Date(iso)
-  if (isNaN(d.getTime())) return iso
-  const t = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  const today = new Date()
-  const yst = new Date(Date.now() - 86_400_000)
-  if (d.toDateString() === today.toDateString()) return `today ${t}`
-  if (d.toDateString() === yst.toDateString()) return `yesterday ${t}`
-  return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${t}`
 }
 
 // ── AGENT.md reconstruction ──────────────────────────────────

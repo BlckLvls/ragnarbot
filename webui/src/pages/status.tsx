@@ -3,30 +3,13 @@
 import { ReactNode, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { api, ApiError, StatusFull, UsageReport } from '../lib/api'
+import { fmtTokens, relFuture } from '../lib/format'
 import { Page } from '../app/shell'
 import { Button, Card, ConfirmDialog, Dot, SectionLabel, Segmented, Skeleton, Toggle } from '../components/ui'
 
 const RANGES = ['day', 'week', 'month'] as const
 const LEVELS = ['all', 'info', 'warning', 'error'] as const
 const PROVIDERS = ['anthropic', 'openai', 'gemini', 'openrouter'] as const
-
-function fmtTok(n: number): string {
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`
-  if (n >= 1e3) return `${Math.round(n / 1e3)}k`
-  return String(n)
-}
-
-function relFuture(ms: number | null | undefined): string {
-  if (ms == null) return '—'
-  const d = ms - Date.now()
-  if (d <= 0) return 'due'
-  const m = Math.floor(d / 60000)
-  const h = Math.floor(m / 60)
-  const days = Math.floor(h / 24)
-  if (days > 0) return `in ${days}d ${h % 24}h`
-  if (h > 0) return `in ${h}h ${m % 60}m`
-  return `in ${m}m`
-}
 
 // ── layout helpers ───────────────────────────────────────────
 
@@ -79,7 +62,7 @@ function BarRows({ data }: { data: Record<string, { input_tokens: number; output
           <span className="flex h-[6px] flex-1 bg-inset">
             <span className="h-[6px] bg-acc/70" style={{ width: `${(r.tok / max) * 100}%` }} />
           </span>
-          <span className="w-[36px] flex-none text-right font-mono text-[10px] text-faint">{fmtTok(r.tok)}</span>
+          <span className="w-[36px] flex-none text-right font-mono text-[10px] text-faint">{fmtTokens(r.tok)}</span>
         </div>
       ))}
     </div>
@@ -110,7 +93,7 @@ function UsagePanel() {
               ] as const
             ).map(([k, v]) => (
               <div key={k} className="flex flex-col gap-0.5">
-                <span className="font-mono text-[17px] font-semibold text-ink">{fmtTok(v)}</span>
+                <span className="font-mono text-[17px] font-semibold text-ink">{fmtTokens(v)}</span>
                 <span className="text-[10px] text-muted">{k}</span>
               </div>
             ))}

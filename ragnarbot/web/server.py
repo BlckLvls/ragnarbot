@@ -347,7 +347,10 @@ class WebServer:
         return session
 
     def _messages_response(self, session, request: web.Request) -> web.Response:
-        limit = int(request.query.get("limit", "200"))
+        try:
+            limit = max(1, min(1000, int(request.query.get("limit", "200"))))
+        except ValueError:
+            limit = 200
         before = request.query.get("before")
         messages = [
             m for m in session.messages
@@ -355,7 +358,10 @@ class WebServer:
         ]
         end = len(messages)
         if before is not None:
-            end = max(0, min(end, int(before)))
+            try:
+                end = max(0, min(end, int(before)))
+            except ValueError:
+                pass
         start = max(0, end - limit)
         page = [
             {
