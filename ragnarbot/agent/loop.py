@@ -1828,6 +1828,10 @@ class AgentLoop:
             await self.memory_flush.start_session_jobs(old_session.key)
             await self.index.start_chat_jobs(old_session)
 
+        await self._publish_web_event(msg.channel, msg.chat_id, "session_changed", {
+            "session_id": session.key,
+        })
+
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,

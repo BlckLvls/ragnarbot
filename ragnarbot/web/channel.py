@@ -91,6 +91,11 @@ class WebChannel(BaseChannel):
         if md.get("chat_action"):
             return {"type": "processing", "value": True}
 
+        # Telegram-formatted panels/confirmations (HTML + inline keyboards) —
+        # the web client has native controls for these, drop them.
+        if md.get("raw_html"):
+            return None
+
         if not msg.content and not msg.media:
             if md.get("stop_typing"):
                 return {"type": "processing", "value": False}

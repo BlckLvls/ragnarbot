@@ -129,8 +129,9 @@ export function connectWs(onNotification?: (n: Notification) => void) {
         })
         break
       case 'processing':
-        useChat.setState({ processing: !!ev.value })
-        if (!ev.value && !s.liveTurn) break
+        // value:false is the stop_typing signal — the turn produced no final
+        // message, so clear any lingering live turn as well
+        useChat.setState(ev.value ? { processing: true } : { processing: false, liveTurn: null })
         break
       case 'turn_started':
         seenSeq = 0
@@ -201,26 +202,24 @@ export function connectWs(onNotification?: (n: Notification) => void) {
       }
       case 'turn_ended':
         if (ev.status === 'stopped' && s.liveTurn?.text) {
-          // keep partial text as a message so the user sees what was generated
+          // keep partial text as a message so the user sees what was generated;
+          // the final event never comes for stopped turns, so usage attaches here
           useChat.setState({
             messages: [
               ...s.messages,
-              { role: 'assistant', content: s.liveTurn.text, metadata: { stopped: true, tools: s.liveTurn.tools } },
+              {
+                role: 'assistant',
+                content: s.liveTurn.text,
+                usage: ev.usage,
+                metadata: { stopped: true, tools: s.liveTurn.tools },
+              },
             ],
           })
         }
-        useChat.setState({ liveTurn: null, processing: false })
-        if (ev.usage) {
-          useChat.setState((st) => {
-            const msgs = [...st.messages]
-            for (let i = msgs.length - 1; i >= 0; i--) {
-              if (msgs[i].role === 'assistant') {
-                msgs[i] = { ...msgs[i], usage: ev.usage }
-                break
-              }
-            }
-            return { messages: msgs }
-          })
+        // NOTE: the final message arrives AFTER turn_ended (it carries its own
+        // usage), so keep liveTurn until final lands unless the turn was stopped.
+        if (ev.status === 'stopped') {
+          useChat.setState({ liveTurn: null, processing: false })
         }
         break
       case 'context_info':
