@@ -67,6 +67,7 @@ include = [
     "ragnarbot/skills/**/*.md",
     "ragnarbot/skills/**/*.sh",
     "ragnarbot/builtin/**/*.md",
+    "ragnarbot/web/static/**",
 ]
 
 [tool.hatch.build.targets.sdist]

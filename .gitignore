@@ -17,3 +17,5 @@ docs/
 .venv/
 __pycache__/
 todo/
+webui/node_modules/
+ragnarbot/web/static/
