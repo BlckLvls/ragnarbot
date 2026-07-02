@@ -375,7 +375,12 @@ class ApiRoutes:
         definition = self.agent.context.agents.load_agent(name)
         if definition is None:
             raise web.HTTPNotFound()
-        return web.json_response(asdict(definition))
+        data = asdict(definition)
+        try:
+            data["content"] = Path(definition.path).read_text(encoding="utf-8")
+        except OSError:
+            data["content"] = ""
+        return web.json_response(data)
 
     async def agents_def_put(self, request: web.Request) -> web.Response:
         name = _safe_name(request.match_info["name"])
