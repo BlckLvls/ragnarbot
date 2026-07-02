@@ -185,6 +185,13 @@ export function connectWs(onNotification?: (n: Notification) => void) {
           messages: [...s.messages, ev.message as ChatMessage],
         })
         break
+      case 'media':
+        // media sent mid-turn (send_photo/video/file) — append a bubble
+        // without touching processing/liveTurn state
+        useChat.setState({
+          messages: [...s.messages, ev.message as ChatMessage],
+        })
+        break
       case 'final': {
         const msg = ev.message as ChatMessage & { usage?: TurnUsage }
         const tools = s.liveTurn?.tools ?? []

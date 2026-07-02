@@ -308,12 +308,12 @@ class AgentLoop:
         self.tools.register(WebSearchTool(engine=self.search_engine, api_key=self.brave_api_key))
         self.tools.register(WebFetchTool())
 
-        # Telegram media & reaction tools
-        send_cb = self.bus.publish_outbound
+        # Channel media & reaction tools
+        send_cb = self._publish_media_outbound
         self.tools.register(SendPhotoTool(send_callback=send_cb))
         self.tools.register(SendVideoTool(send_callback=send_cb))
         self.tools.register(SendFileTool(send_callback=send_cb))
-        self.tools.register(SetReactionTool(send_callback=send_cb))
+        self.tools.register(SetReactionTool(send_callback=self.bus.publish_outbound))
 
         # Agent tools (for sub-agents)
         self.tools.register(AgentTool(manager=self.subagents))
@@ -511,6 +511,26 @@ class AgentLoop:
             )
         except Exception as e:
             logger.debug(f"System notification failed: {e}")
+
+    async def _publish_media_outbound(self, msg: OutboundMessage) -> None:
+        """Send-callback for media tools: publish, and persist for web history.
+
+        Telegram keeps sent media in its own history; the web console reloads
+        from the session, so media sends are recorded there as assistant
+        messages with media_items (invisible to the LLM context).
+        """
+        await self.bus.publish_outbound(msg)
+        md = msg.metadata or {}
+        if msg.channel == "web" and md.get("media_type"):
+            from ragnarbot.web.channel import media_item_info
+
+            session = self.sessions.get_or_create(f"{msg.channel}:{msg.chat_id}")
+            session.add_message(
+                "assistant",
+                msg.content or "",
+                media_items=[media_item_info(md["media_type"], md.get("media_path", ""))],
+            )
+            await self._save_session_locked(session)
 
     def _record_turn_usage(self, channel: str, usage: dict[str, Any]) -> None:
         """Append per-turn token usage to the usage log (best-effort)."""
@@ -3009,8 +3029,8 @@ class AgentLoop:
         reg.register(WebSearchTool(engine=self.search_engine, api_key=self.brave_api_key))
         reg.register(WebFetchTool())
 
-        # Telegram media & reaction
-        send_cb = self.bus.publish_outbound
+        # Channel media & reaction
+        send_cb = self._publish_media_outbound
         photo_tool = SendPhotoTool(send_callback=send_cb)
         photo_tool.set_context(channel, chat_id)
         reg.register(photo_tool)

@@ -11,6 +11,34 @@ from ragnarbot.bus.events import InboundMessage, MediaAttachment, OutboundMessag
 from ragnarbot.bus.queue import MessageBus
 from ragnarbot.channels.base import BaseChannel
 
+
+def media_item_info(media_type: str, path: str) -> dict[str, Any]:
+    """Describe an outbound media file for web rendering.
+
+    Kind semantics mirror Telegram: send_photo → inline photo, send_video →
+    video player, send_file → file card, except audio documents which get a
+    player. Photo sent as a document stays a file card (original quality).
+    """
+    import mimetypes
+    import os
+
+    mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
+    kind = {"photo": "photo", "video": "video"}.get(media_type, "file")
+    if kind == "file" and mime.startswith("audio/"):
+        kind = "audio"
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        size = None
+    return {
+        "path": path,
+        "kind": kind,
+        "filename": os.path.basename(path),
+        "size": size,
+        "mime": mime,
+    }
+
+
 # Events the agent loop emits for streaming-aware channels via metadata["event"].
 _PASSTHROUGH_EVENTS = {
     "turn_started",
@@ -92,6 +120,18 @@ class WebChannel(BaseChannel):
 
         if md.get("chat_action"):
             return {"type": "processing", "value": True}
+
+        # Media sends from send_photo/send_video/send_file tools — a separate
+        # event so the client appends a bubble without ending the live turn.
+        if md.get("media_type"):
+            return {
+                "type": "media",
+                "message": {
+                    "role": "assistant",
+                    "content": msg.content or "",
+                    "media_items": [media_item_info(md["media_type"], md.get("media_path", ""))],
+                },
+            }
 
         # Telegram-formatted panels/confirmations (HTML + inline keyboards) —
         # the web client has native controls for these, drop them.

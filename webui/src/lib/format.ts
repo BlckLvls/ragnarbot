@@ -18,6 +18,13 @@ export function relPast(iso: string | null | undefined): string {
   return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${t}`
 }
 
+export function fmtBytes(n: number | null | undefined): string {
+  if (n == null) return ''
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`
+  return `${n} B`
+}
+
 export function relFuture(ms: number | null | undefined): string {
   if (ms == null) return '—'
   const d = ms - Date.now()

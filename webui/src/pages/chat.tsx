@@ -2,9 +2,9 @@
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, ChatMessage, SessionInfo, UploadResult, mediaUrl } from '../lib/api'
+import { api, ChatMessage, MediaItem, SessionInfo, UploadResult, mediaUrl } from '../lib/api'
 import { LiveTurn, ToolEvent, useChat } from '../lib/ws'
-import { fmtTokens } from '../lib/format'
+import { fmtBytes, fmtTokens } from '../lib/format'
 import { Markdown } from '../components/markdown'
 import { Caret, ContextMeter, PixelWordmark, StreamDots, Waveform } from '../components/pixel'
 import {
@@ -26,15 +26,17 @@ const CTX_MODES = ['eco', 'normal', 'full'] as const
 function ConversationList({ onPick }: { onPick?: () => void }) {
   const qc = useQueryClient()
   const sessionId = useChat((s) => s.sessionId)
+  // Unified conversation list: real user chats from every channel (web + telegram),
+  // heartbeat/cli plumbing and empty sessions are filtered out server-side.
   const { data: sessions } = useQuery({
-    queryKey: ['sessions', 'web'],
-    queryFn: () => api.get<SessionInfo[]>('/api/sessions?channel=web'),
+    queryKey: ['sessions', 'user'],
+    queryFn: () => api.get<SessionInfo[]>('/api/sessions?user=1'),
   })
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
   const [renameVal, setRenameVal] = useState('')
 
-  const invalidate = () => qc.invalidateQueries({ queryKey: ['sessions', 'web'] })
+  const invalidate = () => qc.invalidateQueries({ queryKey: ['sessions', 'user'] })
 
   const newChat = useMutation({
     mutationFn: () => api.post<{ session_id: string }>('/api/sessions/new'),
@@ -99,7 +101,12 @@ function ConversationList({ onPick }: { onPick?: () => void }) {
                     <div className={`truncate text-[12.5px] font-medium ${active ? 'text-ink' : 'text-mist'}`}>
                       {s.title}
                     </div>
-                    <div className="font-mono text-[9.5px] text-faint">
+                    <div className="flex items-center gap-1.5 font-mono text-[9.5px] text-faint">
+                      {s.channel !== 'web' && (
+                        <span className="rounded-[2px] bg-raised2 px-[5px] py-[1px] text-[8.5px] uppercase text-soft">
+                          {s.channel === 'telegram' ? 'tg' : s.channel}
+                        </span>
+                      )}
                       {s.updated_at ? new Date(s.updated_at).toLocaleDateString() : ''}
                     </div>
                   </>
@@ -196,6 +203,51 @@ function UsageLine({ usage }: { usage: NonNullable<ChatMessage['usage']> }) {
   )
 }
 
+// Media rendering, telegram-style: photos inline (compressed view, click for
+// original), video/audio get players, everything else — a file card.
+function MediaItemView({ item }: { item: MediaItem }) {
+  const url = mediaUrl(item.path)
+  if (item.kind === 'photo') {
+    return (
+      <a href={url} target="_blank" rel="noreferrer" className="block w-fit">
+        <img src={url} alt={item.filename} className="mt-2 max-h-80 max-w-full rounded-[4px] cursor-zoom-in" />
+      </a>
+    )
+  }
+  if (item.kind === 'video') {
+    return <video controls preload="metadata" src={url} className="mt-2 max-h-80 max-w-full rounded-[4px]" />
+  }
+  if (item.kind === 'audio') {
+    return (
+      <div className="mt-2 w-fit max-w-full rounded-[4px] border border-line bg-raised px-3 py-2">
+        <div className="mb-1.5 flex items-center gap-2">
+          <span className="font-mono text-[10px] text-mist">{item.filename}</span>
+          <span className="font-mono text-[9px] text-faint">{fmtBytes(item.size)}</span>
+        </div>
+        <audio controls preload="metadata" src={url} className="h-9 max-w-full" />
+      </div>
+    )
+  }
+  const ext = (item.filename.split('.').pop() ?? 'f').slice(0, 4)
+  return (
+    <a
+      href={url}
+      download={item.filename}
+      className="mt-2 flex w-fit max-w-full items-center gap-2.5 rounded-[4px] border border-line bg-raised px-3 py-2.5 hover:bg-raised2"
+    >
+      <span className="flex h-[30px] w-[30px] items-center justify-center rounded-[3px] bg-raised2 font-mono text-[8.5px] uppercase text-soft">
+        {ext}
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate text-[12px] text-ink">{item.filename}</span>
+        <span className="font-mono text-[9.5px] text-faint">
+          {fmtBytes(item.size)}{item.size != null ? ' · ' : ''}download
+        </span>
+      </span>
+    </a>
+  )
+}
+
 const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMessage }) {
   const meta = (msg.metadata ?? {}) as Record<string, any>
   if (meta.type === 'compaction') {
@@ -248,6 +300,9 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMessage }) {
     <div className="my-3">
       {tools.length > 0 && <ActivityStrip tools={tools} />}
       <Markdown>{msg.content}</Markdown>
+      {(msg.media_items ?? []).map((m, i) => (
+        <MediaItemView key={i} item={m} />
+      ))}
       {(msg.media ?? []).map((m, i) => (
         <img key={i} src={mediaUrl(m)} className="mt-2 max-h-96 rounded-[4px]" />
       ))}
@@ -615,7 +670,7 @@ export default function ChatPage() {
   }, [history, s.sessionId])
 
   useEffect(() => {
-    qc.invalidateQueries({ queryKey: ['sessions', 'web'] })
+    qc.invalidateQueries({ queryKey: ['sessions', 'user'] })
   }, [s.sessionId, qc])
 
   // autoscroll on new content

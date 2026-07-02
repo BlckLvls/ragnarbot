@@ -72,12 +72,21 @@ export interface SessionInfo {
   active: boolean
 }
 
+export interface MediaItem {
+  path: string
+  kind: 'photo' | 'video' | 'audio' | 'file'
+  filename: string
+  size: number | null
+  mime: string
+}
+
 export interface ChatMessage {
   index?: number
   role: 'user' | 'assistant'
   content: string
   metadata?: Record<string, unknown>
   media_refs?: { path: string; mime?: string }[]
+  media_items?: MediaItem[]
   media?: string[]
   usage?: TurnUsage
   attachments?: { type: string; filename: string }[]

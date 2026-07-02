@@ -20,6 +20,37 @@ _TITLE_MAX = 60
 
 _IMAGE_MIMES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
+# Channels whose sessions are real user conversations (vs cli/system plumbing)
+_USER_CHANNELS = {"web", "telegram"}
+
+# Internal bookkeeping injected into sessions for the LLM's benefit — never shown in chat
+_MARKER_PREFIXES = (
+    "[Cron result:",
+    "[Cron task:",
+    "[Heartbeat check",
+    "[Heartbeat report]",
+    "[Hook triggered:",
+)
+_TECH_META_KEYS = ("heartbeat_result", "cron_job_id", "system_note")
+
+
+def _is_technical_message(m: dict) -> bool:
+    """True for marker/injection messages that exist for LLM context only."""
+    meta = m.get("metadata") or {}
+    if any(meta.get(k) for k in _TECH_META_KEYS):
+        return True
+    content = m.get("content")
+    return isinstance(content, str) and content.startswith(_MARKER_PREFIXES)
+
+
+def _is_real_user_message(m: dict) -> bool:
+    return (
+        m.get("role") == "user"
+        and isinstance(m.get("content"), str)
+        and bool(m["content"].strip())
+        and not _is_technical_message(m)
+    )
+
 
 class UploadStore:
     """Disk-backed store for browser uploads, resolvable as message attachments."""
@@ -268,10 +299,14 @@ class WebServer:
         raw = request.query.get("path", "")
         if not raw:
             raise web.HTTPBadRequest(reason="path required")
+        import tempfile
+
         path = Path(raw).resolve()
+        # tempdir included: media tools may send files the agent generated there
         allowed_roots = [p for p in (
             self.data_dir,
             getattr(self.config, "workspace_path", None),
+            tempfile.gettempdir(),
         ) if p]
         if not any(path.is_relative_to(Path(root).resolve()) for root in allowed_roots):
             raise web.HTTPForbidden(reason="path outside allowed roots")
@@ -283,6 +318,9 @@ class WebServer:
 
     async def _handle_sessions_list(self, request: web.Request) -> web.Response:
         channel_filter = request.query.get("channel")
+        # user mode: the unified chat list — real conversations from any user
+        # channel, no heartbeat/cli plumbing, no empty sessions
+        user_mode = request.query.get("user") in ("1", "true")
         sessions = self.agent.sessions.list_sessions()
         active_id = self.agent.sessions.get_active_id(WEB_USER_KEY)
         result = []
@@ -291,14 +329,20 @@ class WebServer:
             ch = user_key.split(":", 1)[0] if ":" in user_key else "unknown"
             if channel_filter and ch != channel_filter:
                 continue
+            if user_mode and ch not in _USER_CHANNELS:
+                continue
+            is_active = info["session_id"] == active_id
+            title, has_user = _scan_session_file(Path(info["path"]))
+            if user_mode and not has_user and not is_active:
+                continue
             result.append({
                 "session_id": info["session_id"],
                 "channel": ch,
                 "user_key": user_key,
                 "created_at": info.get("created_at"),
                 "updated_at": info.get("updated_at"),
-                "title": _title_from_file(Path(info["path"])),
-                "active": info["session_id"] == active_id,
+                "title": title,
+                "active": is_active,
             })
         return web.json_response(result)
 
@@ -316,9 +360,13 @@ class WebServer:
         return self._messages_response(session, request)
 
     async def _handle_session_activate(self, request: web.Request) -> web.Response:
+        # Any user conversation can become the web's active chat: activation is
+        # just repointing web:main's active pointer. The session keeps its own
+        # user_key, so e.g. Telegram keeps writing into the same conversation.
         session = self._get_session_or_404(request)
-        if session.user_key != WEB_USER_KEY:
-            raise web.HTTPBadRequest(reason="only web sessions can be activated")
+        ch = session.user_key.split(":", 1)[0]
+        if ch not in _USER_CHANNELS:
+            raise web.HTTPBadRequest(reason="only user conversations can be activated")
         self.agent.sessions.set_active(WEB_USER_KEY, session.key)
         await self.channel.broadcast({"type": "session_changed", "session_id": session.key})
         return web.json_response({"ok": True})
@@ -354,7 +402,7 @@ class WebServer:
         before = request.query.get("before")
         messages = [
             m for m in session.messages
-            if m.get("role") in ("user", "assistant")
+            if m.get("role") in ("user", "assistant") and not _is_technical_message(m)
         ]
         end = len(messages)
         if before is not None:
@@ -370,6 +418,7 @@ class WebServer:
                 "content": m.get("content") or "",
                 "metadata": m.get("metadata", {}),
                 "media_refs": m.get("media_refs", []),
+                "media_items": m.get("media_items", []),
             }
             for i, m in enumerate(messages[start:end])
         ]
@@ -398,21 +447,25 @@ def _session_title(metadata: dict, messages: list[dict]) -> str:
     if title:
         return title
     for m in messages:
-        if m.get("role") == "user" and isinstance(m.get("content"), str) and m["content"].strip():
+        if _is_real_user_message(m):
             return m["content"].strip()[:_TITLE_MAX]
     return "New chat"
 
 
-def _title_from_file(path: Path) -> str:
-    """Cheap title read: metadata line + first user message, without loading everything."""
+def _scan_session_file(path: Path, max_lines: int = 200) -> tuple[str, bool]:
+    """Cheap scan: (title, has real user message) without loading the whole session.
+
+    Title = stored metadata.title or the first genuine user message. Sessions
+    holding only technical plumbing (heartbeat/cron markers) report False.
+    """
+    title = None
+    has_user = False
     try:
         with open(path) as f:
             first = f.readline().strip()
             meta = json.loads(first) if first else {}
             title = (meta.get("metadata") or {}).get("title")
-            if title:
-                return title
-            for _ in range(50):
+            for _ in range(max_lines):
                 line = f.readline()
                 if not line:
                     break
@@ -420,8 +473,11 @@ def _title_from_file(path: Path) -> str:
                     m = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if m.get("role") == "user" and isinstance(m.get("content"), str) and m["content"].strip():
-                    return m["content"].strip()[:_TITLE_MAX]
+                if _is_real_user_message(m):
+                    has_user = True
+                    if title is None:
+                        title = m["content"].strip()[:_TITLE_MAX]
+                    break
     except Exception:
         pass
-    return "New chat"
+    return title or "New chat", has_user
