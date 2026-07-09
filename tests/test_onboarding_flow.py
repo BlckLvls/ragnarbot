@@ -167,7 +167,7 @@ class TestOnboardingFlow:
             (Key.ENTER, ""),        # Select API Key
             *[(Key.CHAR, c) for c in "sk-openai-key"],
             (Key.ENTER, ""),        # Confirm key
-            (Key.ENTER, ""),        # Select first model (GPT-5.5)
+            (Key.ENTER, ""),        # Select first model (GPT-5.6 Sol)
             *ENABLE_LIGHTNING,
             (Key.ENTER, ""),        # Skip telegram
             (Key.DOWN, ""),         # Voice: past OpenAI Transcribe
@@ -183,7 +183,7 @@ class TestOnboardingFlow:
         mock_save_config, mock_save_creds = self._run_with_keys(keys, tmp_path)
 
         config = mock_save_config.call_args[0][0]
-        assert config.agents.defaults.model == "openai/gpt-5.5"
+        assert config.agents.defaults.model == "openai/gpt-5.6-sol"
         assert config.agents.defaults.auth_method == "api_key"
         assert config.agents.defaults.lightning_mode is True
 
@@ -196,7 +196,7 @@ class TestOnboardingFlow:
             (Key.DOWN, ""),         # Navigate to OpenAI
             (Key.ENTER, ""),        # Select OpenAI
             (Key.ENTER, ""),        # Select OAuth
-            (Key.ENTER, ""),        # Select first model (GPT-5.5)
+            (Key.ENTER, ""),        # Select first model (GPT-5.6 Sol)
             *ENABLE_LIGHTNING,
             (Key.ENTER, ""),        # Acknowledge Codex CLI required
         ]
@@ -224,7 +224,7 @@ class TestOnboardingFlow:
             run_onboarding(con)
 
         config = mock_save_config.call_args[0][0]
-        assert config.agents.defaults.model == "openai/gpt-5.5"
+        assert config.agents.defaults.model == "openai/gpt-5.6-sol"
         assert config.agents.defaults.auth_method == "oauth"
         assert config.agents.defaults.lightning_mode is False
         assert mock_save_creds.called
@@ -543,7 +543,7 @@ class TestVoiceTranscriptionOnboarding:
             (Key.ENTER, ""),        # Select API Key
             *[(Key.CHAR, c) for c in "sk-openai-llm"],
             (Key.ENTER, ""),        # Confirm key
-            (Key.ENTER, ""),        # Select first model (GPT-5.5)
+            (Key.ENTER, ""),        # Select first model (GPT-5.6 Sol)
             *SKIP_LIGHTNING,
             (Key.ENTER, ""),        # Skip telegram
             (Key.DOWN, ""),         # Voice: to OpenAI GPT-4o Mini Transcribe

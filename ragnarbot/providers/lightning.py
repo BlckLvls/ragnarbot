@@ -5,6 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 LIGHTNING_SUPPORTED_MODELS = frozenset({
+    "openai/gpt-5.6",
+    "openai/gpt-5.6-sol",
+    "openai/gpt-5.6-terra",
+    "openai/gpt-5.6-luna",
     "openai/gpt-5.5",
     "openai/gpt-5.4",
 })

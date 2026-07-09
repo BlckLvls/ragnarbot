@@ -15,6 +15,13 @@ SUPPORTED_REASONING_LEVELS: tuple[ReasoningLevel, ...] = (
     "max",
 )
 
+GPT_5_6_MODELS = frozenset({
+    "openai/gpt-5.6",
+    "openai/gpt-5.6-sol",
+    "openai/gpt-5.6-terra",
+    "openai/gpt-5.6-luna",
+})
+
 
 @dataclass(frozen=True)
 class ReasoningResolution:
@@ -44,6 +51,8 @@ def resolve_reasoning(model: str, reasoning_level: str | None) -> ReasoningResol
     stored_level = normalize_reasoning_level(reasoning_level)
     normalized_model = _normalize_model_id(model)
 
+    if normalized_model in GPT_5_6_MODELS:
+        return _resolve_openai_56(normalized_model, stored_level)
     if normalized_model in {
         "openai/gpt-5.5",
         "openai/gpt-5.4",
@@ -85,6 +94,26 @@ def _normalize_model_id(model: str) -> str:
     if model.startswith("gemini-"):
         return f"gemini/{model}"
     return model
+
+
+def _resolve_openai_56(model: str, stored_level: ReasoningLevel) -> ReasoningResolution:
+    """Map the unified levels to the full GPT-5.6 reasoning-effort range."""
+    effort_map = {
+        "off": "none",
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "ultra": "xhigh",
+        "max": "max",
+    }
+    effort = effort_map[stored_level]
+    return ReasoningResolution(
+        model=model,
+        stored_level=stored_level,
+        effective_level=stored_level,
+        reasoning_effort=effort,
+        openai_reasoning={"effort": effort},
+    )
 
 
 def _resolve_openai_flagship(model: str, stored_level: ReasoningLevel) -> ReasoningResolution:
