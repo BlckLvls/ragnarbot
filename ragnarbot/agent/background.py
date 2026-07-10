@@ -28,6 +28,16 @@ OUTPUT_BUFFER_LINES = 1000
 AUTO_DISMISS_SECONDS = 300  # 5 minutes
 
 
+async def _cancel_and_await_lifecycle(lifecycle: asyncio.Future | None) -> None:
+    """Cancel and retrieve a job lifecycle future without leaking warnings."""
+    if lifecycle is None:
+        return
+    if not lifecycle.done():
+        lifecycle.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await lifecycle
+
+
 class JobState(str, Enum):
     running = "running"
     completed = "completed"
@@ -168,6 +178,7 @@ class BackgroundProcessManager:
 
     async def _run_job(self, job: BgJob) -> None:
         """Execute subprocess, capture output, announce result on completion."""
+        lifecycle: asyncio.Future | None = None
         try:
             process = await asyncio.create_subprocess_shell(
                 job.command,
@@ -198,7 +209,10 @@ class BackgroundProcessManager:
             try:
                 await asyncio.wait_for(lifecycle, timeout=MAX_RUNTIME)
             except asyncio.TimeoutError:
+                await _cancel_and_await_lifecycle(lifecycle)
                 await terminate_process_tree(process)
+                if job.status == JobState.killed:
+                    return
                 job.status = JobState.killed
                 job.exit_code = process.returncode
                 job.finished_at = time.time()
@@ -213,6 +227,7 @@ class BackgroundProcessManager:
             job.status = JobState.completed if process.returncode == 0 else JobState.error
 
         except asyncio.CancelledError:
+            await _cancel_and_await_lifecycle(lifecycle)
             if job.process is not None:
                 with contextlib.suppress(Exception):
                     await terminate_process_tree(job.process)
@@ -221,6 +236,7 @@ class BackgroundProcessManager:
             job.finished_at = time.time()
             raise
         except Exception as e:
+            await _cancel_and_await_lifecycle(lifecycle)
             if job.process is not None:
                 with contextlib.suppress(Exception):
                     await terminate_process_tree(job.process)

@@ -1,6 +1,8 @@
 """Tests for background process manager and tools."""
 
 import asyncio
+import contextlib
+import gc
 import os
 import re
 import shlex
@@ -34,6 +36,20 @@ from ragnarbot.agent.tools.background import (
 def _descendant_command(pid_path, sleep_seconds: int = 30) -> str:
     code = (
         "import os, pathlib, sys, time; "
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); "
+        f"time.sleep({sleep_seconds})"
+    )
+    child = (
+        f"{shlex.quote(sys.executable)} -c {shlex.quote(code)} "
+        f"{shlex.quote(str(pid_path))}"
+    )
+    return f"{child} & wait"
+
+
+def _sigterm_resistant_descendant_command(pid_path, sleep_seconds: int = 30) -> str:
+    code = (
+        "import os, pathlib, signal, sys, time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
         "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); "
         f"time.sleep({sleep_seconds})"
     )
@@ -319,6 +335,94 @@ class TestBackgroundProcessManager:
         assert job.status == JobState.killed
         announcement = bus.publish_inbound.await_args.args[0]
         assert "TIMED OUT" in announcement.content
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group regression")
+    @pytest.mark.asyncio
+    async def test_explicit_kill_wins_race_with_runtime_timeout(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(background_module, "MAX_RUNTIME", 0.3)
+        real_terminate = background_module.terminate_process_tree
+        first_cleanup_started = asyncio.Event()
+        timeout_cleanup_started = asyncio.Event()
+        release_cleanup = asyncio.Event()
+        cleanup_calls = 0
+
+        async def controlled_terminate(process):
+            nonlocal cleanup_calls
+            cleanup_calls += 1
+            if cleanup_calls == 1:
+                first_cleanup_started.set()
+            else:
+                timeout_cleanup_started.set()
+            await release_cleanup.wait()
+            await real_terminate(process, grace_period=0.05)
+
+        monkeypatch.setattr(background_module, "terminate_process_tree", controlled_terminate)
+        mgr, bus = _make_manager()
+        pid_path = tmp_path / "kill-timeout-race.pid"
+        pid = None
+        kill_task = None
+        result = await mgr.spawn(
+            _sigterm_resistant_descendant_command(pid_path), label="kill-timeout-race",
+        )
+        job_id = _extract_job_id(result)
+        job = mgr._jobs[job_id]
+        try:
+            await _wait_for_file(pid_path)
+            pid = int(pid_path.read_text())
+            kill_task = asyncio.create_task(mgr.kill(job_id))
+            await asyncio.wait_for(first_cleanup_started.wait(), timeout=1)
+            await asyncio.wait_for(timeout_cleanup_started.wait(), timeout=1)
+            release_cleanup.set()
+
+            kill_result = await asyncio.wait_for(kill_task, timeout=2)
+
+            assert "killed" in kill_result.lower()
+            assert job.status == JobState.killed
+            assert job.task.done()
+            assert await _wait_for_pid_exit(pid)
+            bus.publish_inbound.assert_not_awaited()
+        finally:
+            release_cleanup.set()
+            if kill_task is not None and not kill_task.done():
+                kill_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await kill_task
+            _force_kill(pid)
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group regression")
+    @pytest.mark.asyncio
+    async def test_direct_runner_cancellation_retrieves_lifecycle_future(self, tmp_path):
+        mgr, bus = _make_manager()
+        pid_path = tmp_path / "direct-cancel-child.pid"
+        pid = None
+        contexts = []
+        loop = asyncio.get_running_loop()
+        previous_handler = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, context: contexts.append(context))
+        result = await mgr.spawn(_descendant_command(pid_path), label="direct-cancel")
+        job_id = _extract_job_id(result)
+        job = mgr._jobs[job_id]
+        try:
+            await _wait_for_file(pid_path)
+            pid = int(pid_path.read_text())
+            job.task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await job.task
+
+            for _ in range(3):
+                gc.collect()
+                await asyncio.sleep(0)
+
+            assert job.status == JobState.killed
+            assert await _wait_for_pid_exit(pid)
+            bus.publish_inbound.assert_not_awaited()
+            assert not any(
+                "exception was never retrieved" in context.get("message", "").lower()
+                for context in contexts
+            )
+        finally:
+            loop.set_exception_handler(previous_handler)
+            _force_kill(pid)
 
     @pytest.mark.asyncio
     async def test_output_on_running_job(self):
