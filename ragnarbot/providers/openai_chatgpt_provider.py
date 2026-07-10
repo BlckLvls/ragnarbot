@@ -27,6 +27,7 @@ from ragnarbot.providers.base import (
     ToolCallHandler,
     ToolCallRequest,
     ToolRunner,
+    format_provider_exception,
 )
 from ragnarbot.providers.lightning import resolve_lightning
 from ragnarbot.providers.reasoning import resolve_reasoning
@@ -38,6 +39,8 @@ CODEX_FAST_MAX_ATTEMPTS = 2
 CODEX_FAST_RETRY_DELAY_SECONDS = 0.75
 CODEX_FAST_INITIAL_EVENT_TIMEOUT_SECONDS = 30.0
 CODEX_FAST_EVENT_POLL_INTERVAL_SECONDS = 0.25
+OPENAI_RAW_MAX_ATTEMPTS = 2
+OPENAI_RAW_RETRY_DELAY_SECONDS = 0.75
 CODEX_FAST_THREAD_REGISTRY = "thread_registry.json"
 CODEX_CLI_REQUIRED_NOTE = "OpenAI OAuth Lightning requires Codex CLI installed locally."
 CODEX_CLI_INSTALL_BUTTON_TEXT = "Install Codex CLI"
@@ -385,8 +388,10 @@ class OpenAIChatGPTProvider(LLMProvider):
                 account_id=account_id,
             )
         except Exception as e:
+            detail = format_provider_exception(e)
+            logger.error(f"OpenAI ChatGPT API call failed: {detail}")
             return LLMResponse(
-                content=f"Error calling OpenAI ChatGPT API: {e}",
+                content=f"Error calling OpenAI ChatGPT API: {detail}",
                 finish_reason="error",
             )
 
@@ -415,7 +420,23 @@ class OpenAIChatGPTProvider(LLMProvider):
             "originator": "ragnarbot",
             "accept": "text/event-stream",
         }
-        return await self._stream_request(request_body, headers)
+        for attempt in range(1, OPENAI_RAW_MAX_ATTEMPTS + 1):
+            try:
+                return await self._stream_request(request_body, headers)
+            except Exception as exc:
+                if (
+                    attempt >= OPENAI_RAW_MAX_ATTEMPTS
+                    or not _should_retry_openai_raw_exception(exc)
+                ):
+                    raise
+                logger.warning(
+                    "Retrying OpenAI raw transport after transient failure "
+                    f"(attempt {attempt}/{OPENAI_RAW_MAX_ATTEMPTS}): "
+                    f"{format_provider_exception(exc)}"
+                )
+                await asyncio.sleep(OPENAI_RAW_RETRY_DELAY_SECONDS)
+
+        raise AssertionError("OpenAI raw retry loop exhausted unexpectedly")
 
     async def _chat_codex_fast(
         self,
@@ -1341,6 +1362,21 @@ def _should_retry_codex_fast_response(response: LLMResponse) -> bool:
     return (
         "codex fast transport closed unexpectedly" in content
         or "codex fast transport startup timed out" in content
+    )
+
+
+def _should_retry_openai_raw_exception(exc: Exception) -> bool:
+    """Retry one raw request for network flakes or transient HTTP statuses."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        return status in {408, 409, 429} or status >= 500
+    return isinstance(
+        exc,
+        (
+            httpx.NetworkError,
+            httpx.TimeoutException,
+            httpx.RemoteProtocolError,
+        ),
     )
 
 

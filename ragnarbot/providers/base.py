@@ -1,5 +1,6 @@
 """Base LLM provider interface."""
 
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -10,6 +11,51 @@ DEFAULT_MAX_TOKENS = 32_000
 # models (both cap a single response at 128k tokens). Used as the default response
 # budget for those providers so long generations are not truncated early.
 MAX_OUTPUT_TOKENS = 128_000
+
+_AUTHORIZATION_VALUE_RE = re.compile(
+    r"(?i)(\bauthorization\b['\"]?\s*[:=]\s*['\"]?)"
+    r"(?:(?:bearer|basic|token)\s+)?[^\s,'\"}\]]+"
+)
+_BEARER_TOKEN_RE = re.compile(r"(?i)\bbearer\s+[^\s,'\"}\]]+")
+_SK_TOKEN_RE = re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b")
+
+
+def _redact_provider_secrets(message: str) -> str:
+    """Redact common provider credential shapes from diagnostic text."""
+    message = _AUTHORIZATION_VALUE_RE.sub(r"\1[REDACTED]", message)
+    message = _BEARER_TOKEN_RE.sub("Bearer [REDACTED]", message)
+    return _SK_TOKEN_RE.sub("sk-[REDACTED]", message)
+
+
+def format_provider_exception(exc: BaseException) -> str:
+    """Return a compact, non-empty exception summary including useful causes.
+
+    Some transport exceptions have an empty string representation, while SDKs
+    often wrap the actionable network detail in ``__cause__``. Keep the
+    user-facing error bounded and avoid ``repr()``, which may include verbose
+    request objects.
+    """
+    parts: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+
+    while current is not None and len(parts) < 4 and id(current) not in seen:
+        seen.add(id(current))
+        name = type(current).__name__
+        try:
+            message = _redact_provider_secrets(" ".join(str(current).split()))
+        except Exception:
+            message = ""
+        if len(message) > 300:
+            message = f"{message[:297]}..."
+        parts.append(f"{name}: {message}" if message else name)
+
+        cause = current.__cause__
+        if cause is None and not current.__suppress_context__:
+            cause = current.__context__
+        current = cause
+
+    return " <- ".join(parts) or type(exc).__name__
 
 
 @dataclass

@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 import ragnarbot.providers.openai_chatgpt_provider as openai_chatgpt_provider
@@ -338,6 +339,156 @@ async def test_provider_keeps_raw_path_for_non_gpt_5_4_models():
     assert response.content == "raw"
     raw.assert_awaited_once()
     fast.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_raw_transport_retries_once_after_empty_read_error():
+    with patch("ragnarbot.auth.openai_oauth.get_account_id", return_value="acct_test"):
+        provider = OpenAIChatGPTProvider()
+
+    request = httpx.Request("POST", openai_chatgpt_provider.RESPONSES_URL)
+    stream_request = AsyncMock(side_effect=[
+        httpx.ReadError("", request=request),
+        LLMResponse(content="ok"),
+    ])
+
+    with (
+        patch("ragnarbot.auth.openai_oauth.get_access_token", return_value="token"),
+        patch.object(provider, "_stream_request", stream_request),
+        patch("ragnarbot.providers.openai_chatgpt_provider.asyncio.sleep", AsyncMock()) as sleep,
+    ):
+        response = await provider.chat(
+            messages=[{"role": "user", "content": "hi"}],
+            model="openai/gpt-5.5",
+        )
+
+    assert response.content == "ok"
+    assert stream_request.await_count == 2
+    sleep.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_raw_transport_exhaustion_has_non_empty_exception_type():
+    with patch("ragnarbot.auth.openai_oauth.get_account_id", return_value="acct_test"):
+        provider = OpenAIChatGPTProvider()
+
+    request = httpx.Request("POST", openai_chatgpt_provider.RESPONSES_URL)
+    stream_request = AsyncMock(side_effect=[
+        httpx.ReadError("", request=request),
+        httpx.ReadError("", request=request),
+    ])
+
+    with (
+        patch("ragnarbot.auth.openai_oauth.get_access_token", return_value="token"),
+        patch.object(provider, "_stream_request", stream_request),
+        patch("ragnarbot.providers.openai_chatgpt_provider.asyncio.sleep", AsyncMock()),
+    ):
+        response = await provider.chat(
+            messages=[{"role": "user", "content": "hi"}],
+            model="openai/gpt-5.5",
+        )
+
+    assert response.finish_reason == "error"
+    assert response.content == "Error calling OpenAI ChatGPT API: ReadError"
+    assert stream_request.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_raw_transport_logs_never_include_bearer_token_or_traceback():
+    with patch("ragnarbot.auth.openai_oauth.get_account_id", return_value="acct_test"):
+        provider = OpenAIChatGPTProvider()
+
+    token = "oauth-sentinel.secret-token"
+    request = httpx.Request(
+        "POST",
+        openai_chatgpt_provider.RESPONSES_URL,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    error_message = f"Authorization: Bearer {token}"
+    stream_request = AsyncMock(side_effect=[
+        httpx.ReadError(error_message, request=request),
+        httpx.ReadError(error_message, request=request),
+    ])
+    log_records = []
+    sink_id = openai_chatgpt_provider.logger.add(
+        lambda message: log_records.append(message.record),
+    )
+
+    try:
+        with (
+            patch("ragnarbot.auth.openai_oauth.get_access_token", return_value=token),
+            patch.object(provider, "_stream_request", stream_request),
+            patch("ragnarbot.providers.openai_chatgpt_provider.asyncio.sleep", AsyncMock()),
+        ):
+            response = await provider.chat(
+                messages=[{"role": "user", "content": "hi"}],
+                model="openai/gpt-5.5",
+            )
+    finally:
+        openai_chatgpt_provider.logger.remove(sink_id)
+
+    rendered_logs = "\n".join(record["message"] for record in log_records)
+    assert token not in rendered_logs
+    assert token not in (response.content or "")
+    assert "[REDACTED]" in rendered_logs
+    assert all(record["exception"] is None for record in log_records)
+
+
+@pytest.mark.asyncio
+async def test_raw_transport_retries_transient_http_status_only():
+    with patch("ragnarbot.auth.openai_oauth.get_account_id", return_value="acct_test"):
+        provider = OpenAIChatGPTProvider()
+
+    request = httpx.Request("POST", openai_chatgpt_provider.RESPONSES_URL)
+    unavailable = httpx.Response(503, request=request)
+    transient = httpx.HTTPStatusError(
+        "Server error '503 Service Unavailable'",
+        request=request,
+        response=unavailable,
+    )
+    stream_request = AsyncMock(side_effect=[transient, LLMResponse(content="ok")])
+
+    with (
+        patch("ragnarbot.auth.openai_oauth.get_access_token", return_value="token"),
+        patch.object(provider, "_stream_request", stream_request),
+        patch("ragnarbot.providers.openai_chatgpt_provider.asyncio.sleep", AsyncMock()),
+    ):
+        response = await provider.chat(
+            messages=[{"role": "user", "content": "hi"}],
+            model="openai/gpt-5.5",
+        )
+
+    assert response.content == "ok"
+    assert stream_request.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_raw_transport_does_not_retry_auth_status():
+    with patch("ragnarbot.auth.openai_oauth.get_account_id", return_value="acct_test"):
+        provider = OpenAIChatGPTProvider()
+
+    request = httpx.Request("POST", openai_chatgpt_provider.RESPONSES_URL)
+    unauthorized = httpx.Response(401, request=request)
+    error = httpx.HTTPStatusError(
+        "Client error '401 Unauthorized'",
+        request=request,
+        response=unauthorized,
+    )
+    stream_request = AsyncMock(side_effect=error)
+
+    with (
+        patch("ragnarbot.auth.openai_oauth.get_access_token", return_value="token"),
+        patch.object(provider, "_stream_request", stream_request),
+    ):
+        response = await provider.chat(
+            messages=[{"role": "user", "content": "hi"}],
+            model="openai/gpt-5.5",
+        )
+
+    assert response.finish_reason == "error"
+    assert "HTTPStatusError" in (response.content or "")
+    assert "401 Unauthorized" in (response.content or "")
+    assert stream_request.await_count == 1
 
 
 @pytest.mark.asyncio
