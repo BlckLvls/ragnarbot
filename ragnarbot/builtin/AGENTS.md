@@ -310,13 +310,16 @@ You have two ways to run shell commands: `exec` (synchronous) and `exec_bg` (bac
 
 ### When to Use `exec` (Synchronous)
 
-Use `exec` for anything that completes in a few seconds: listing files, running a quick API call, checking a status, installing a package, simple scripts. Even if you need to run several of these in sequence or parallel, stick with `exec` — launching them as background jobs adds overhead for no benefit.
+Use `exec` only for non-interactive commands that reliably complete in a few seconds: listing files, running a quick API call, checking a status, or a simple script. Even if you need to run several of these in sequence or parallel, stick with `exec` — launching them as background jobs adds overhead for no benefit.
 
 **Rule of thumb:** if the command takes under ~5 seconds, use `exec`. Always.
+
+Do **not** use `exec` for package installation (`npm`, `npx`, `pip`, `uv`, `brew`, etc.), downloads, authentication flows, or any command that may prompt. Package managers can perform network work and routinely exceed the foreground timeout. Use `exec_bg` with explicit non-interactive flags when available. If a command truly requires user input, ask the user to run it in their terminal — shell tools have no interactive stdin.
 
 ### When to Use `exec_bg` (Background)
 
 Use `exec_bg` when the command will take noticeably long — 5+ seconds. Examples:
+- Package installation or dependency downloads
 - Image generation or media processing
 - Running a full test suite or build pipeline
 - Data processing scripts (scraping, ETL, conversions)

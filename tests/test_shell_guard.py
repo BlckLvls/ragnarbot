@@ -1,11 +1,61 @@
 """Tests for ExecTool safety guard."""
 
+import asyncio
+import os
 import shlex
+import signal
 import sys
 
 import pytest
 
 from ragnarbot.agent.tools.shell import ExecTool
+
+
+def _descendant_command(pid_path, sleep_seconds: int = 30) -> str:
+    code = (
+        "import os, pathlib, sys, time; "
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); "
+        f"time.sleep({sleep_seconds})"
+    )
+    child = (
+        f"{shlex.quote(sys.executable)} -c {shlex.quote(code)} "
+        f"{shlex.quote(str(pid_path))}"
+    )
+    return f"{child} & wait"
+
+
+async def _wait_for_file(path, timeout: float = 2.0) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not path.exists():
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError(f"Timed out waiting for {path}")
+        await asyncio.sleep(0.02)
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+async def _wait_for_pid_exit(pid: int, timeout: float = 2.0) -> bool:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while _pid_exists(pid):
+        if asyncio.get_running_loop().time() >= deadline:
+            return False
+        await asyncio.sleep(0.02)
+    return True
+
+
+def _force_kill(pid: int | None) -> None:
+    if pid is None or not _pid_exists(pid):
+        return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 class TestShellGuardPatterns:
@@ -136,3 +186,42 @@ class TestSafetyGuardToggle:
         )
 
         assert str(target.resolve()) in result
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-group regression")
+class TestShellProcessLifecycle:
+    @pytest.mark.asyncio
+    async def test_timeout_kills_descendant_process(self, tmp_path):
+        pid_path = tmp_path / "timeout-child.pid"
+        pid = None
+        try:
+            result = await ExecTool(timeout=0.5, safety_guard=False).execute(
+                _descendant_command(pid_path)
+            )
+            await _wait_for_file(pid_path)
+            pid = int(pid_path.read_text())
+
+            assert "timed out" in result.lower()
+            assert await _wait_for_pid_exit(pid), "timed-out command left a child process alive"
+        finally:
+            _force_kill(pid)
+
+    @pytest.mark.asyncio
+    async def test_cancellation_kills_descendant_process(self, tmp_path):
+        pid_path = tmp_path / "cancel-child.pid"
+        pid = None
+        task = asyncio.create_task(
+            ExecTool(timeout=30, safety_guard=False).execute(_descendant_command(pid_path))
+        )
+        try:
+            await _wait_for_file(pid_path)
+            pid = int(pid_path.read_text())
+            task.cancel()
+
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=3)
+            assert await _wait_for_pid_exit(pid), "cancelled command left a child process alive"
+        finally:
+            if not task.done():
+                task.cancel()
+            _force_kill(pid)

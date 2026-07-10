@@ -25,11 +25,12 @@ List directory contents. Use to explore project structure or check what files ex
 ## Shell
 
 ### exec
-Execute a shell command. Returns stdout, stderr, and exit code.
+Execute a short, non-interactive shell command. Returns stdout, stderr, and exit code.
 - Has a timeout (commands that run too long are killed).
 - Destructive commands (rm -rf, format, dd, etc.) are blocked by safety guards (can be disabled via `tools.exec.safetyGuard: false` in config).
 - Provide `working_dir` when the command must run in a specific directory.
-- For long-running processes, warn the user about potential timeout.
+- Use `exec_bg` for package installs, downloads, builds, or anything likely to take more than a few seconds.
+- Shell tools have no interactive stdin. Use non-interactive flags or ask the user to run commands that require prompts/authentication.
 
 ## Search
 
@@ -85,7 +86,7 @@ If any of 2–4 is yes and 1 is no, call recall **before** answering — and bef
 
 ## Background Execution
 
-For tasks that take more than a few seconds — image generation, data processing, long scripts, batch operations. Do NOT use these for quick commands; use `exec` instead.
+For tasks that take more than a few seconds — package installs, downloads, image generation, data processing, long scripts, batch operations. Do NOT use these for quick commands; use `exec` instead. Commands must be non-interactive because stdin is unavailable.
 
 ### exec_bg
 Launch a shell command in the background. Returns a `job_id` immediately. The system notifies you automatically when the job finishes — no need to poll or check manually in most cases.

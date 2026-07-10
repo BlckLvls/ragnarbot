@@ -1,6 +1,7 @@
 """Background process manager for async command execution."""
 
 import asyncio
+import contextlib
 import re
 import time
 import uuid
@@ -13,6 +14,7 @@ from typing import TYPE_CHECKING
 from loguru import logger
 
 from ragnarbot.agent.pathing import resolve_working_dir
+from ragnarbot.agent.processes import isolated_process_kwargs, terminate_process_tree
 from ragnarbot.bus.events import InboundMessage
 
 if TYPE_CHECKING:
@@ -169,11 +171,19 @@ class BackgroundProcessManager:
         try:
             process = await asyncio.create_subprocess_shell(
                 job.command,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=job.working_dir,
+                **isolated_process_kwargs(),
             )
             job.process = process
+
+            # ``kill`` can race with subprocess creation. Do not let a job that
+            # was cancelled before assignment escape as an untracked process.
+            if job.status == JobState.killed:
+                await terminate_process_tree(process)
+                return
 
             async def _read_stream(stream: asyncio.StreamReader, buf: deque):
                 async for line in stream:
@@ -188,19 +198,34 @@ class BackgroundProcessManager:
                 await asyncio.wait_for(readers, timeout=MAX_RUNTIME)
                 await process.wait()
             except asyncio.TimeoutError:
-                process.kill()
-                await process.wait()
+                await terminate_process_tree(process)
                 job.status = JobState.killed
                 job.exit_code = process.returncode
                 job.finished_at = time.time()
                 await self._announce_completion(job, timed_out=True)
                 return
 
+            if job.status == JobState.killed:
+                return
+
             job.exit_code = process.returncode
             job.finished_at = time.time()
             job.status = JobState.completed if process.returncode == 0 else JobState.error
 
+        except asyncio.CancelledError:
+            if job.process is not None:
+                with contextlib.suppress(Exception):
+                    await terminate_process_tree(job.process)
+            job.status = JobState.killed
+            job.exit_code = job.process.returncode if job.process else None
+            job.finished_at = time.time()
+            raise
         except Exception as e:
+            if job.process is not None:
+                with contextlib.suppress(Exception):
+                    await terminate_process_tree(job.process)
+            if job.status == JobState.killed:
+                return
             logger.error(f"Background job [{job.job_id}] failed: {e}")
             job.status = JobState.error
             job.finished_at = time.time()
@@ -358,20 +383,25 @@ Report this status to the user naturally."""
             return f"Poll {job_id} cancelled."
 
         # Real process
-        if job.process:
-            try:
-                job.process.terminate()
-                try:
-                    await asyncio.wait_for(job.process.wait(), timeout=3)
-                except asyncio.TimeoutError:
-                    job.process.kill()
-                    await job.process.wait()
-            except ProcessLookupError:
-                pass
-
         job.status = JobState.killed
-        job.exit_code = job.process.returncode if job.process else None
         job.finished_at = time.time()
+
+        if job.process:
+            await terminate_process_tree(job.process)
+            job.exit_code = job.process.returncode
+            if job.task and job.task is not asyncio.current_task() and not job.task.done():
+                try:
+                    await asyncio.wait_for(job.task, timeout=2)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    if not job.task.done():
+                        job.task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError, Exception):
+                            await job.task
+        elif job.task:
+            job.task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await job.task
+
         return f"Job {job_id} killed."
 
     def dismiss(self, job_id: str) -> str:

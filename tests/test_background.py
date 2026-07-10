@@ -1,13 +1,18 @@
 """Tests for background process manager and tools."""
 
 import asyncio
+import os
 import re
+import shlex
+import signal
+import sys
 import time
 from collections import deque
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import ragnarbot.agent.background as background_module
 from ragnarbot.agent.background import (
     AUTO_DISMISS_SECONDS,
     MAX_CONCURRENT,
@@ -24,6 +29,53 @@ from ragnarbot.agent.tools.background import (
     OutputTool,
     PollTool,
 )
+
+
+def _descendant_command(pid_path, sleep_seconds: int = 30) -> str:
+    code = (
+        "import os, pathlib, sys, time; "
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); "
+        f"time.sleep({sleep_seconds})"
+    )
+    child = (
+        f"{shlex.quote(sys.executable)} -c {shlex.quote(code)} "
+        f"{shlex.quote(str(pid_path))}"
+    )
+    return f"{child} & wait"
+
+
+async def _wait_for_file(path, timeout: float = 2.0) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not path.exists():
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError(f"Timed out waiting for {path}")
+        await asyncio.sleep(0.02)
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+async def _wait_for_pid_exit(pid: int, timeout: float = 2.0) -> bool:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while _pid_exists(pid):
+        if asyncio.get_running_loop().time() >= deadline:
+            return False
+        await asyncio.sleep(0.02)
+    return True
+
+
+def _force_kill(pid: int | None) -> None:
+    if pid is None or not _pid_exists(pid):
+        return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -203,6 +255,51 @@ class TestBackgroundProcessManager:
         kill_result = await mgr.kill(job_id)
         assert "killed" in kill_result.lower()
         await asyncio.sleep(0.2)  # let cleanup settle
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group regression")
+    @pytest.mark.asyncio
+    async def test_kill_terminates_descendant_and_finishes_runner(self, tmp_path):
+        mgr, bus = _make_manager()
+        pid_path = tmp_path / "background-child.pid"
+        pid = None
+        result = await mgr.spawn(_descendant_command(pid_path), label="tree")
+        job_id = _extract_job_id(result)
+        job = mgr._jobs[job_id]
+        try:
+            await _wait_for_file(pid_path)
+            pid = int(pid_path.read_text())
+
+            kill_result = await asyncio.wait_for(mgr.kill(job_id), timeout=4)
+
+            assert "killed" in kill_result.lower()
+            assert job.status == JobState.killed
+            assert job.task.done()
+            assert await _wait_for_pid_exit(pid), "kill left a background child alive"
+            bus.publish_inbound.assert_not_awaited()
+        finally:
+            _force_kill(pid)
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group regression")
+    @pytest.mark.asyncio
+    async def test_runtime_timeout_terminates_descendant(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(background_module, "MAX_RUNTIME", 0.5)
+        mgr, bus = _make_manager()
+        pid_path = tmp_path / "timed-background-child.pid"
+        pid = None
+        result = await mgr.spawn(_descendant_command(pid_path), label="tree-timeout")
+        job_id = _extract_job_id(result)
+        job = mgr._jobs[job_id]
+        try:
+            await _wait_for_file(pid_path)
+            pid = int(pid_path.read_text())
+            await asyncio.wait_for(job.task, timeout=4)
+
+            assert job.status == JobState.killed
+            assert await _wait_for_pid_exit(pid), "runtime timeout left a child alive"
+            announcement = bus.publish_inbound.await_args.args[0]
+            assert "TIMED OUT" in announcement.content
+        finally:
+            _force_kill(pid)
 
     @pytest.mark.asyncio
     async def test_output_on_running_job(self):
