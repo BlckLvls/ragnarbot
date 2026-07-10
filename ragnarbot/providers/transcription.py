@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -15,6 +16,9 @@ OPENAI_TRANSCRIPTION_MODELS = {
     "openai-gpt-4o-transcribe": "gpt-4o-transcribe",
     "openai-gpt-4o-mini-transcribe": "gpt-4o-mini-transcribe",
 }
+
+OPENAI_TRANSCRIPTION_MAX_ATTEMPTS = 2
+OPENAI_TRANSCRIPTION_RETRY_DELAY_SECONDS = 1.0
 
 
 class TranscriptionError(Exception):
@@ -125,19 +129,33 @@ class OpenAITranscriptionProvider(TranscriptionProvider):
 
         try:
             async with httpx.AsyncClient() as client:
-                with open(path, "rb") as f:
-                    response = await client.post(
-                        self.api_url,
-                        headers={"Authorization": f"Bearer {self.api_key}"},
-                        files={"file": (path.name, f), "model": (None, self.model)},
-                        data={"response_format": "json"},
-                        timeout=60.0,
-                    )
-                response.raise_for_status()
-                text = response.json().get("text", "").strip()
-                if not text:
-                    raise TranscriptionError("empty response", "OpenAI returned empty text")
-                return text
+                for attempt in range(1, OPENAI_TRANSCRIPTION_MAX_ATTEMPTS + 1):
+                    try:
+                        with open(path, "rb") as f:
+                            response = await client.post(
+                                self.api_url,
+                                headers={"Authorization": f"Bearer {self.api_key}"},
+                                files={"file": (path.name, f), "model": (None, self.model)},
+                                data={"response_format": "json"},
+                                timeout=60.0,
+                            )
+                    except httpx.TransportError as exc:
+                        if attempt >= OPENAI_TRANSCRIPTION_MAX_ATTEMPTS:
+                            raise
+                        logger.warning(
+                            "OpenAI transcription transport failed "
+                            f"({type(exc).__name__}: {exc}); retrying once"
+                        )
+                        await asyncio.sleep(OPENAI_TRANSCRIPTION_RETRY_DELAY_SECONDS)
+                        continue
+
+                    response.raise_for_status()
+                    text = response.json().get("text", "").strip()
+                    if not text:
+                        raise TranscriptionError("empty response", "OpenAI returned empty text")
+                    return text
+
+                raise AssertionError("OpenAI transcription retry loop exhausted unexpectedly")
         except TranscriptionError:
             raise
         except httpx.HTTPStatusError as e:

@@ -1,5 +1,8 @@
 """Tests for transcription providers and factory."""
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
 import pytest
 
 from ragnarbot.auth.credentials import Credentials
@@ -64,6 +67,54 @@ class TestOpenAIProvider:
         provider = OpenAITranscriptionProvider(api_key="sk-test")
         with pytest.raises(TranscriptionError, match="file not found"):
             await provider.transcribe(tmp_path / "nonexistent.ogg")
+
+    @pytest.mark.asyncio
+    async def test_retries_transient_transport_disconnect_once(self, tmp_path):
+        audio_path = tmp_path / "voice.ogg"
+        audio_path.write_bytes(b"audio")
+        provider = OpenAITranscriptionProvider(api_key="sk-test")
+
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json.return_value = {"text": "hello"}
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=None)
+        client.post = AsyncMock(side_effect=[
+            httpx.RemoteProtocolError("Server disconnected without sending a response"),
+            response,
+        ])
+
+        with (
+            patch("ragnarbot.providers.transcription.httpx.AsyncClient", return_value=client),
+            patch("ragnarbot.providers.transcription.asyncio.sleep", new_callable=AsyncMock) as sleep,
+        ):
+            assert await provider.transcribe(audio_path) == "hello"
+
+        assert client.post.await_count == 2
+        sleep.assert_awaited_once_with(1.0)
+
+    @pytest.mark.asyncio
+    async def test_does_not_retry_http_status_errors(self, tmp_path):
+        audio_path = tmp_path / "voice.ogg"
+        audio_path.write_bytes(b"audio")
+        provider = OpenAITranscriptionProvider(api_key="sk-test")
+
+        request = httpx.Request("POST", provider.api_url)
+        response = httpx.Response(401, request=request, text="unauthorized")
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=None)
+        client.post = AsyncMock(return_value=response)
+
+        with patch(
+            "ragnarbot.providers.transcription.httpx.AsyncClient",
+            return_value=client,
+        ):
+            with pytest.raises(TranscriptionError, match="OpenAI API 401"):
+                await provider.transcribe(audio_path)
+
+        client.post.assert_awaited_once()
 
 
 class TestFactory:
