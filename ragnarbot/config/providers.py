@@ -46,6 +46,9 @@ PROVIDERS = [
                 "id": "openai/gpt-5.6-luna",
                 "name": "GPT-5.6 Luna",
                 "description": "Fastest & most affordable GPT-5.6 model",
+                # The public API supports Luna, but ChatGPT OAuth's raw
+                # Responses transport currently returns `Model not found`.
+                "oauth": False,
             },
             {
                 "id": "openai/gpt-5.5",
@@ -173,11 +176,14 @@ def get_provider(provider_id: str) -> dict | None:
     return None
 
 
-def get_models(provider_id: str) -> list[dict]:
-    """Get models for a provider."""
+def get_models(provider_id: str, auth_method: str | None = None) -> list[dict]:
+    """Get models for a provider, optionally filtered by auth method."""
     provider = get_provider(provider_id)
     if provider:
-        return provider["models"]
+        models = provider["models"]
+        if auth_method == "oauth":
+            return [model for model in models if model.get("oauth", True)]
+        return models
     return []
 
 
