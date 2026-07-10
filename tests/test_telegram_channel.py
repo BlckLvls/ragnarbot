@@ -1,7 +1,8 @@
-"""Tests for Telegram channel edit and callback behavior."""
+"""Tests for Telegram channel lifecycle, edit, and callback behavior."""
 
+import asyncio
 import re
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import telegram
@@ -24,7 +25,61 @@ def _make_channel() -> tuple[TelegramChannel, MagicMock]:
     app = MagicMock()
     app.bot = bot
     channel._app = app
+    channel._ready.set()
     return channel, bot
+
+
+@pytest.mark.asyncio
+async def test_start_retries_after_startup_timeout():
+    """A stuck Telegram handshake should be cancelled and retried."""
+    channel = TelegramChannel(
+        config=TelegramConfig(enabled=True),
+        bus=MagicMock(),
+        bot_token="test-token",
+    )
+    attempts = 0
+
+    async def connect_once() -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            await asyncio.Event().wait()
+        return "test_bot"
+
+    channel._connect_once = connect_once
+    channel._shutdown_app = AsyncMock()
+
+    with (
+        patch("ragnarbot.channels.telegram.TELEGRAM_START_TIMEOUT_SECONDS", 0.01),
+        patch("ragnarbot.channels.telegram.TELEGRAM_RETRY_DELAY_SECONDS", 0.0),
+    ):
+        start_task = asyncio.create_task(channel.start())
+        await asyncio.wait_for(channel._ready.wait(), timeout=1)
+        assert attempts == 2
+        channel._shutdown_app.assert_awaited_once()
+
+        await channel.stop()
+        await asyncio.wait_for(start_task, timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_send_waits_for_connect_instead_of_dropping_message():
+    """Post-restart messages should remain buffered until Telegram is ready."""
+    channel, bot = _make_channel()
+    channel._ready.clear()
+
+    send_task = asyncio.create_task(channel.send(OutboundMessage(
+        channel="telegram",
+        chat_id="123",
+        content="gateway restarted",
+    )))
+    await asyncio.sleep(0)
+    bot.send_message.assert_not_awaited()
+
+    channel._ready.set()
+    await asyncio.wait_for(send_task, timeout=1)
+
+    bot.send_message.assert_awaited_once()
 
 
 def test_callback_query_pattern_matches_install_and_toggle_callbacks():

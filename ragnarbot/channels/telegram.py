@@ -32,6 +32,9 @@ CALLBACK_QUERY_PATTERN = (
     r"^(ctx_mode|reasoning_level|lightning_mode|trace_mode|steering_mode|soul_mode):|^install_codex_cli$"
 )
 
+TELEGRAM_START_TIMEOUT_SECONDS = 30.0
+TELEGRAM_RETRY_DELAY_SECONDS = 5.0
+
 
 async def set_bot_commands(bot, chat_ids: list[int] | None = None) -> None:
     """Ensure bot command menu is up to date across all relevant scopes.
@@ -298,6 +301,8 @@ class TelegramChannel(BaseChannel):
         self._transcription_semaphore = asyncio.Semaphore(2)
         self.media_manager = media_manager
         self._app: Application | None = None
+        self._ready = asyncio.Event()
+        self._stop_event = asyncio.Event()
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
         self._typing_tasks: dict[int, asyncio.Task] = {}
         self._grants = PendingGrantStore()
@@ -309,6 +314,45 @@ class TelegramChannel(BaseChannel):
             return
 
         self._running = True
+        self._stop_event.clear()
+
+        while self._running:
+            logger.info("Starting Telegram bot (polling mode)...")
+            try:
+                username = await asyncio.wait_for(
+                    self._connect_once(),
+                    timeout=TELEGRAM_START_TIMEOUT_SECONDS,
+                )
+            except asyncio.CancelledError:
+                raise
+            except TimeoutError:
+                logger.warning(
+                    "Telegram startup timed out after "
+                    f"{TELEGRAM_START_TIMEOUT_SECONDS:.0f}s; retrying"
+                )
+                await self._shutdown_app()
+            except Exception as exc:
+                logger.warning(
+                    f"Telegram startup failed ({type(exc).__name__}: {exc}); retrying"
+                )
+                await self._shutdown_app()
+            else:
+                self._ready.set()
+                logger.info(f"Telegram bot @{username} connected")
+                await self._stop_event.wait()
+                break
+
+            if self._running:
+                try:
+                    await asyncio.wait_for(
+                        self._stop_event.wait(),
+                        timeout=TELEGRAM_RETRY_DELAY_SECONDS,
+                    )
+                except TimeoutError:
+                    pass
+
+    async def _connect_once(self) -> str:
+        """Build one Telegram application and start its polling loop."""
 
         # Build the application
         self._app = (
@@ -344,15 +388,12 @@ class TelegramChannel(BaseChannel):
             pattern=CALLBACK_QUERY_PATTERN,
         ))
 
-        logger.info("Starting Telegram bot (polling mode)...")
-
         # Initialize and start polling
         await self._app.initialize()
         await self._app.start()
 
         # Get bot info and set commands
         bot_info = await self._app.bot.get_me()
-        logger.info(f"Telegram bot @{bot_info.username} connected")
 
         # Pass known chat IDs (from allow_from) to clear per-chat command overrides
         chat_ids = []
@@ -381,25 +422,51 @@ class TelegramChannel(BaseChannel):
             drop_pending_updates=True  # Ignore old messages on startup
         )
 
-        # Keep running until stopped
-        while self._running:
-            await asyncio.sleep(1)
+        return bot_info.username
 
     async def stop(self) -> None:
         """Stop the Telegram bot."""
         self._running = False
+        self._stop_event.set()
+        await self._shutdown_app()
 
-        if self._app:
-            logger.info("Stopping Telegram bot...")
-            await self._app.updater.stop()
-            await self._app.stop()
-            await self._app.shutdown()
-            self._app = None
+    async def _shutdown_app(self) -> None:
+        """Best-effort cleanup for fully or partially initialized applications."""
+        self._ready.clear()
+        app = self._app
+        self._app = None
+
+        if not app:
+            return
+
+        logger.info("Stopping Telegram bot...")
+        try:
+            if app.updater.running:
+                await app.updater.stop()
+        except Exception as exc:
+            logger.debug(f"Telegram updater cleanup skipped: {exc}")
+        try:
+            if app.running:
+                await app.stop()
+        except Exception as exc:
+            logger.debug(f"Telegram application stop skipped: {exc}")
+        try:
+            await app.shutdown()
+        except Exception as exc:
+            logger.debug(f"Telegram application shutdown skipped: {exc}")
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through Telegram."""
+        if not self.bot_token:
+            logger.warning("Telegram bot token not configured")
+            return
+
+        if not self._ready.is_set():
+            logger.info("Telegram bot is connecting; buffering outbound message")
+            await self._ready.wait()
+
         if not self._app:
-            logger.warning("Telegram bot not running")
+            logger.warning("Telegram bot stopped before outbound message could be sent")
             return
 
         try:
