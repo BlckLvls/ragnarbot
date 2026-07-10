@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
+from ragnarbot.agent.processes import isolated_process_kwargs, terminate_process_tree
 from ragnarbot.providers.base import (
     ConsumedSteeringMessage,
     ExecutedToolCall,
@@ -45,6 +46,7 @@ CODEX_FAST_THREAD_REGISTRY = "thread_registry.json"
 CODEX_CLI_REQUIRED_NOTE = "OpenAI OAuth Lightning requires Codex CLI installed locally."
 CODEX_CLI_INSTALL_BUTTON_TEXT = "Install Codex CLI"
 CODEX_CLI_MANUAL_INSTALL = "npm install -g @openai/codex"
+CODEX_CLI_INSTALL_TIMEOUT_SECONDS = 900
 _DEFAULT_CODEX_CLI_PATHS = (
     "/opt/homebrew/bin/codex",
     "/usr/local/bin/codex",
@@ -1370,10 +1372,28 @@ async def install_codex_cli() -> tuple[bool, str]:
     command, display = install
     proc = await asyncio.create_subprocess_exec(
         *command,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **isolated_process_kwargs(),
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=CODEX_CLI_INSTALL_TIMEOUT_SECONDS,
+        )
+    except asyncio.CancelledError:
+        await terminate_process_tree(proc)
+        raise
+    except asyncio.TimeoutError:
+        await terminate_process_tree(proc)
+        return (
+            False,
+            f"Installation timed out after {CODEX_CLI_INSTALL_TIMEOUT_SECONDS} seconds. "
+            f"Run manually: {display}",
+        )
+    except Exception as exc:
+        await terminate_process_tree(proc)
+        return False, f"Installation failed: {exc}. Run manually: {display}"
     if proc.returncode == 0:
         if is_codex_cli_available():
             return True, display

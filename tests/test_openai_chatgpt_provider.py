@@ -2,6 +2,9 @@
 
 import asyncio
 import json
+import os
+import signal
+import sys
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -21,6 +24,32 @@ from ragnarbot.providers.openai_chatgpt_provider import (
     get_codex_cli_install_command,
     install_codex_cli,
 )
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+async def _wait_for_pid_exit(pid: int, timeout: float = 2.0) -> bool:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while _pid_exists(pid):
+        if asyncio.get_running_loop().time() >= deadline:
+            return False
+        await asyncio.sleep(0.02)
+    return True
+
+
+def _force_kill(pid: int | None) -> None:
+    if pid is None or not _pid_exists(pid):
+        return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 class _FakeSSEStream:
@@ -315,6 +344,9 @@ async def test_install_codex_cli_runs_detected_installer():
     assert ok is True
     assert detail == CODEX_CLI_MANUAL_INSTALL
     spawn.assert_awaited_once()
+    assert spawn.await_args.kwargs["stdin"] == asyncio.subprocess.DEVNULL
+    if os.name == "posix":
+        assert spawn.await_args.kwargs["start_new_session"] is True
 
 
 @pytest.mark.asyncio
@@ -338,6 +370,109 @@ async def test_install_codex_cli_reports_path_issue_after_successful_install():
     assert ok is False
     assert "still not on PATH" in detail
     assert CODEX_CLI_MANUAL_INSTALL in detail
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-group regression")
+@pytest.mark.asyncio
+async def test_install_codex_cli_timeout_kills_installer_descendants(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        openai_chatgpt_provider, "CODEX_CLI_INSTALL_TIMEOUT_SECONDS", 0.5,
+    )
+    pid_path = tmp_path / "codex-installer-child.pid"
+    parent_code = (
+        "import pathlib, subprocess, sys, time; "
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time; time.sleep(30)']); "
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid)); "
+        "time.sleep(30)"
+    )
+    child_pid = None
+    with (
+        patch(
+            "ragnarbot.providers.openai_chatgpt_provider.is_codex_cli_available",
+            return_value=False,
+        ),
+        patch(
+            "ragnarbot.providers.openai_chatgpt_provider.get_codex_cli_install_command",
+            return_value=(
+                [sys.executable, "-c", parent_code, str(pid_path)],
+                CODEX_CLI_MANUAL_INSTALL,
+            ),
+        ),
+    ):
+        try:
+            ok, detail = await install_codex_cli()
+
+            child_pid = int(pid_path.read_text())
+            assert ok is False
+            assert "timed out" in detail
+            assert await _wait_for_pid_exit(child_pid), "timeout left installer child alive"
+        finally:
+            _force_kill(child_pid)
+
+
+@pytest.mark.asyncio
+async def test_install_codex_cli_cancellation_cleans_process_tree():
+    class FakeProc:
+        pid = 1234
+        returncode = None
+
+        async def communicate(self):
+            raise asyncio.CancelledError
+
+    terminate = AsyncMock()
+    proc = FakeProc()
+    with (
+        patch(
+            "ragnarbot.providers.openai_chatgpt_provider.is_codex_cli_available",
+            return_value=False,
+        ),
+        patch(
+            "ragnarbot.providers.openai_chatgpt_provider.get_codex_cli_install_command",
+            return_value=(["installer"], "manual installer"),
+        ),
+        patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
+        patch(
+            "ragnarbot.providers.openai_chatgpt_provider.terminate_process_tree", terminate,
+        ),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await install_codex_cli()
+
+    terminate.assert_awaited_once_with(proc)
+
+
+@pytest.mark.asyncio
+async def test_install_codex_cli_error_cleans_process_tree_and_reports_manual_step():
+    class FakeProc:
+        pid = 1234
+        returncode = None
+
+        async def communicate(self):
+            raise RuntimeError("installer transport failed")
+
+    terminate = AsyncMock()
+    proc = FakeProc()
+    with (
+        patch(
+            "ragnarbot.providers.openai_chatgpt_provider.is_codex_cli_available",
+            return_value=False,
+        ),
+        patch(
+            "ragnarbot.providers.openai_chatgpt_provider.get_codex_cli_install_command",
+            return_value=(["installer"], "manual installer"),
+        ),
+        patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
+        patch(
+            "ragnarbot.providers.openai_chatgpt_provider.terminate_process_tree", terminate,
+        ),
+    ):
+        ok, detail = await install_codex_cli()
+
+    assert ok is False
+    assert "installer transport failed" in detail
+    assert "manual installer" in detail
+    terminate.assert_awaited_once_with(proc)
 
 
 @pytest.mark.asyncio
