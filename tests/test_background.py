@@ -301,6 +301,25 @@ class TestBackgroundProcessManager:
         finally:
             _force_kill(pid)
 
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX shell redirection regression")
+    @pytest.mark.asyncio
+    async def test_runtime_timeout_includes_wait_after_streams_close(self, monkeypatch):
+        deadline = 0.25
+        monkeypatch.setattr(background_module, "MAX_RUNTIME", deadline)
+        mgr, bus = _make_manager()
+        started = time.monotonic()
+        result = await mgr.spawn("exec 1>&- 2>&-; sleep 30", label="closed-streams")
+        job_id = _extract_job_id(result)
+        job = mgr._jobs[job_id]
+
+        await asyncio.wait_for(job.task, timeout=2)
+        elapsed = time.monotonic() - started
+
+        assert deadline * 0.75 <= elapsed < 1.5
+        assert job.status == JobState.killed
+        announcement = bus.publish_inbound.await_args.args[0]
+        assert "TIMED OUT" in announcement.content
+
     @pytest.mark.asyncio
     async def test_output_on_running_job(self):
         mgr, bus = _make_manager()

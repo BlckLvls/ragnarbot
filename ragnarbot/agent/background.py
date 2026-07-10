@@ -189,14 +189,14 @@ class BackgroundProcessManager:
                 async for line in stream:
                     buf.append(line.decode("utf-8", errors="replace").rstrip("\n"))
 
-            readers = asyncio.gather(
+            lifecycle = asyncio.gather(
                 _read_stream(process.stdout, job.stdout_buffer),
                 _read_stream(process.stderr, job.stderr_buffer),
+                process.wait(),
             )
 
             try:
-                await asyncio.wait_for(readers, timeout=MAX_RUNTIME)
-                await process.wait()
+                await asyncio.wait_for(lifecycle, timeout=MAX_RUNTIME)
             except asyncio.TimeoutError:
                 await terminate_process_tree(process)
                 job.status = JobState.killed
