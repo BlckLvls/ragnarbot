@@ -1,6 +1,7 @@
 """Tests for the OpenAI ChatGPT OAuth provider."""
 
 import asyncio
+import json
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -20,6 +21,56 @@ from ragnarbot.providers.openai_chatgpt_provider import (
     get_codex_cli_install_command,
     install_codex_cli,
 )
+
+
+class _FakeSSEStream:
+    def __init__(self, lines):
+        self._lines = lines
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+    def raise_for_status(self):
+        return None
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+
+class _FakeAsyncClient:
+    def __init__(self, lines):
+        self._lines = lines
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+    def stream(self, *args, **kwargs):
+        return _FakeSSEStream(self._lines)
+
+
+def _sse_lines(events, *, include_done=False):
+    lines = [f"data: {json.dumps(event)}" for event in events]
+    if include_done:
+        lines.append("data: [DONE]")
+    return lines
+
+
+async def _parse_raw_sse(events, *, include_done=False):
+    with patch("ragnarbot.auth.openai_oauth.get_account_id", return_value="acct_test"):
+        provider = OpenAIChatGPTProvider()
+    client = _FakeAsyncClient(_sse_lines(events, include_done=include_done))
+    with patch(
+        "ragnarbot.providers.openai_chatgpt_provider.httpx.AsyncClient",
+        return_value=client,
+    ):
+        return await provider._stream_request({}, {})
 
 
 def test_openai_chatgpt_provider_defaults_to_gpt_5_4():
@@ -489,6 +540,231 @@ async def test_raw_transport_does_not_retry_auth_status():
     assert "HTTPStatusError" in (response.content or "")
     assert "401 Unauthorized" in (response.content or "")
     assert stream_request.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_raw_sse_completed_preserves_text_tools_and_usage_without_done_marker():
+    response = await _parse_raw_sse([
+        {"type": "response.output_text.delta", "delta": "Hello"},
+        {
+            "type": "response.output_item.added",
+            "item": {"type": "function_call", "id": "item_1", "name": "lookup"},
+        },
+        {
+            "type": "response.function_call_arguments.delta",
+            "item_id": "item_1",
+            "delta": '{"query":"Oslo"}',
+        },
+        {"type": "response.function_call_arguments.done", "item_id": "item_1"},
+        {
+            "type": "response.completed",
+            "response": {
+                "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            },
+        },
+    ])
+
+    assert response.content == "Hello"
+    assert response.finish_reason == "tool_calls"
+    assert len(response.tool_calls) == 1
+    assert response.tool_calls[0].id == "item_1"
+    assert response.tool_calls[0].name == "lookup"
+    assert response.tool_calls[0].arguments == {"query": "Oslo"}
+    assert response.usage == {
+        "prompt_tokens": 10,
+        "completion_tokens": 5,
+        "total_tokens": 15,
+    }
+
+
+@pytest.mark.asyncio
+async def test_raw_sse_failed_returns_safe_error_and_discards_partial_output():
+    token = "sk-proj-sentinel-secret-token"
+    response = await _parse_raw_sse([
+        {"type": "response.output_text.delta", "delta": "partial answer"},
+        {
+            "type": "response.output_item.added",
+            "item": {"type": "function_call", "id": "item_1", "name": "dangerous_tool"},
+        },
+        {
+            "type": "response.function_call_arguments.delta",
+            "item_id": "item_1",
+            "delta": '{"partial":true',
+        },
+        {
+            "type": "response.failed",
+            "response": {
+                "error": {
+                    "code": "server_error",
+                    "message": f"Authorization: Bearer {token}",
+                },
+                "usage": {"input_tokens": 8, "output_tokens": 2, "total_tokens": 10},
+            },
+        },
+    ])
+
+    assert response.finish_reason == "error"
+    assert response.tool_calls == []
+    assert "response.failed" in (response.content or "")
+    assert "server_error" in (response.content or "")
+    assert "partial answer" not in (response.content or "")
+    assert token not in (response.content or "")
+    assert "[REDACTED]" in (response.content or "")
+    assert response.usage["total_tokens"] == 10
+
+
+@pytest.mark.asyncio
+async def test_raw_sse_max_tokens_preserves_partial_text_but_drops_tools():
+    response = await _parse_raw_sse([
+        {"type": "response.output_text.delta", "delta": "useful partial answer"},
+        {
+            "type": "response.output_item.added",
+            "item": {"type": "function_call", "id": "item_1", "name": "do_not_run"},
+        },
+        {
+            "type": "response.function_call_arguments.delta",
+            "item_id": "item_1",
+            "delta": "{}",
+        },
+        {"type": "response.function_call_arguments.done", "item_id": "item_1"},
+        {
+            "type": "response.incomplete",
+            "response": {
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "usage": {"input_tokens": 12, "output_tokens": 20, "total_tokens": 32},
+            },
+        },
+    ])
+
+    assert response.finish_reason == "length"
+    assert response.content == "useful partial answer"
+    assert response.tool_calls == []
+    assert response.usage["total_tokens"] == 32
+
+
+@pytest.mark.asyncio
+async def test_raw_sse_max_tokens_without_text_is_error_for_fallback():
+    response = await _parse_raw_sse([
+        {"type": "response.output_text.delta", "delta": "   "},
+        {
+            "type": "response.incomplete",
+            "response": {
+                "incomplete_details": {"reason": "max_output_tokens"},
+            },
+        },
+    ])
+
+    assert response.finish_reason == "error"
+    assert response.tool_calls == []
+    assert "reason=max_output_tokens" in (response.content or "")
+
+
+@pytest.mark.asyncio
+async def test_raw_sse_other_incomplete_reason_is_error_and_discards_partial_output():
+    response = await _parse_raw_sse([
+        {"type": "response.output_text.delta", "delta": "filtered partial"},
+        {
+            "type": "response.incomplete",
+            "response": {
+                "incomplete_details": {"reason": "content_filter"},
+            },
+        },
+    ])
+
+    assert response.finish_reason == "error"
+    assert response.tool_calls == []
+    assert "reason=content_filter" in (response.content or "")
+    assert "filtered partial" not in (response.content or "")
+
+
+@pytest.mark.asyncio
+async def test_raw_sse_completed_with_pending_tool_retries_then_errors_safely():
+    with patch("ragnarbot.auth.openai_oauth.get_account_id", return_value="acct_test"):
+        provider = OpenAIChatGPTProvider()
+
+    token = "sk-proj-pending-argument-secret"
+    events = [
+        {
+            "type": "response.output_item.added",
+            "item": {"type": "function_call", "id": "item_1", "name": "do_not_run"},
+        },
+        {
+            "type": "response.function_call_arguments.delta",
+            "item_id": "item_1",
+            "delta": f'{{"token":"{token}"',
+        },
+        {"type": "response.completed", "response": {"usage": {"total_tokens": 4}}},
+    ]
+    client = _FakeAsyncClient(_sse_lines(events))
+
+    with (
+        patch("ragnarbot.auth.openai_oauth.get_access_token", return_value="token"),
+        patch(
+            "ragnarbot.providers.openai_chatgpt_provider.httpx.AsyncClient",
+            return_value=client,
+        ) as client_constructor,
+        patch("ragnarbot.providers.openai_chatgpt_provider.asyncio.sleep", AsyncMock()),
+    ):
+        response = await provider.chat(
+            messages=[{"role": "user", "content": "hi"}],
+            model="openai/gpt-5.5",
+        )
+
+    assert response.finish_reason == "error"
+    assert response.tool_calls == []
+    assert "OpenAIIncompleteStreamError" in (response.content or "")
+    assert "incomplete function-call arguments" in (response.content or "")
+    assert token not in (response.content or "")
+    assert client_constructor.call_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("include_done", "ending"),
+    [(False, "EOF"), (True, "[DONE]")],
+)
+async def test_raw_sse_without_terminal_event_retries_then_errors_without_partial_data(
+    include_done,
+    ending,
+):
+    with patch("ragnarbot.auth.openai_oauth.get_account_id", return_value="acct_test"):
+        provider = OpenAIChatGPTProvider()
+
+    token = "sk-proj-buffered-sentinel-token"
+    events = [
+        {"type": "response.output_text.delta", "delta": f"partial {token}"},
+        {
+            "type": "response.output_item.added",
+            "item": {"type": "function_call", "id": "item_1", "name": "do_not_run"},
+        },
+        {
+            "type": "response.function_call_arguments.delta",
+            "item_id": "item_1",
+            "delta": "{}",
+        },
+        {"type": "response.function_call_arguments.done", "item_id": "item_1"},
+    ]
+    client = _FakeAsyncClient(_sse_lines(events, include_done=include_done))
+
+    with (
+        patch("ragnarbot.auth.openai_oauth.get_access_token", return_value="token"),
+        patch(
+            "ragnarbot.providers.openai_chatgpt_provider.httpx.AsyncClient",
+            return_value=client,
+        ) as client_constructor,
+        patch("ragnarbot.providers.openai_chatgpt_provider.asyncio.sleep", AsyncMock()),
+    ):
+        response = await provider.chat(
+            messages=[{"role": "user", "content": "hi"}],
+            model="openai/gpt-5.5",
+        )
+
+    assert response.finish_reason == "error"
+    assert response.tool_calls == []
+    assert "OpenAIIncompleteStreamError" in (response.content or "")
+    assert ending in (response.content or "")
+    assert token not in (response.content or "")
+    assert client_constructor.call_count == 2
 
 
 @pytest.mark.asyncio

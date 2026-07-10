@@ -69,6 +69,14 @@ class _JSONRPCError(RuntimeError):
         self.data = data
 
 
+class OpenAIResponseEventError(RuntimeError):
+    """A terminal Responses API event reported a failed response."""
+
+
+class OpenAIIncompleteStreamError(RuntimeError):
+    """A raw Responses API stream ended without a terminal response event."""
+
+
 class _CodexAppServerProcess:
     """Small JSON-RPC client for `codex app-server --listen stdio://`."""
 
@@ -926,6 +934,9 @@ class OpenAIChatGPTProvider(LLMProvider):
         tool_calls: list[ToolCallRequest] = []
         finish_reason = "stop"
         usage: dict[str, int] = {}
+        terminal_response: LLMResponse | None = None
+        completed = False
+        ended_with_done = False
 
         pending_calls: dict[str, dict] = {}
 
@@ -944,6 +955,7 @@ class OpenAIChatGPTProvider(LLMProvider):
 
                     raw = line[len("data: "):]
                     if raw.strip() == "[DONE]":
+                        ended_with_done = True
                         break
 
                     try:
@@ -991,13 +1003,60 @@ class OpenAIChatGPTProvider(LLMProvider):
 
                     elif event_type == "response.completed":
                         response = event.get("response", {})
-                        resp_usage = response.get("usage", {})
-                        if resp_usage:
-                            usage = {
-                                "prompt_tokens": resp_usage.get("input_tokens", 0),
-                                "completion_tokens": resp_usage.get("output_tokens", 0),
-                                "total_tokens": resp_usage.get("total_tokens", 0),
-                            }
+                        if pending_calls:
+                            raise OpenAIIncompleteStreamError(
+                                "OpenAI response.completed arrived with incomplete "
+                                "function-call arguments"
+                            )
+                        usage = _extract_openai_response_usage(response)
+                        completed = True
+                        break
+
+                    elif event_type == "response.failed":
+                        response = event.get("response", {})
+                        terminal_response = _openai_event_error_response(
+                            event_type,
+                            response,
+                        )
+                        break
+
+                    elif event_type == "response.incomplete":
+                        response = event.get("response", {})
+                        response_usage = _extract_openai_response_usage(response)
+                        reason = _openai_incomplete_reason(response)
+                        partial_text = "".join(text_parts)
+                        if reason == "max_output_tokens" and partial_text.strip():
+                            # Preserve useful partial prose, but never surface
+                            # tool calls from a truncated response.
+                            terminal_response = LLMResponse(
+                                content=partial_text,
+                                finish_reason="length",
+                                usage=response_usage,
+                            )
+                        else:
+                            terminal_response = _openai_event_error_response(
+                                event_type,
+                                response,
+                            )
+                        break
+
+        if terminal_response is not None:
+            # Failed/incomplete responses must not leak buffered tool calls to
+            # the agent loop. Only max_output_tokens preserves partial prose.
+            return terminal_response
+
+        if not completed:
+            ending = "[DONE]" if ended_with_done else "EOF"
+            buffered: list[str] = []
+            if text_parts:
+                buffered.append("partial text")
+            if tool_calls or pending_calls:
+                buffered.append("partial tool data")
+            discarded = f"; discarded {', '.join(buffered)}" if buffered else ""
+            raise OpenAIIncompleteStreamError(
+                "OpenAI raw stream ended without response.completed, "
+                f"response.failed, or response.incomplete ({ending}{discarded})"
+            )
 
         if tool_calls:
             finish_reason = "tool_calls"
@@ -1367,6 +1426,8 @@ def _should_retry_codex_fast_response(response: LLMResponse) -> bool:
 
 def _should_retry_openai_raw_exception(exc: Exception) -> bool:
     """Retry one raw request for network flakes or transient HTTP statuses."""
+    if isinstance(exc, OpenAIIncompleteStreamError):
+        return True
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
         return status in {408, 409, 429} or status >= 500
@@ -1377,6 +1438,63 @@ def _should_retry_openai_raw_exception(exc: Exception) -> bool:
             httpx.TimeoutException,
             httpx.RemoteProtocolError,
         ),
+    )
+
+
+def _extract_openai_response_usage(response: Any) -> dict[str, int]:
+    """Extract normalized token usage from a terminal Responses API event."""
+    if not isinstance(response, dict):
+        return {}
+    raw_usage = response.get("usage")
+    if not isinstance(raw_usage, dict) or not raw_usage:
+        return {}
+    return {
+        "prompt_tokens": raw_usage.get("input_tokens", 0),
+        "completion_tokens": raw_usage.get("output_tokens", 0),
+        "total_tokens": raw_usage.get("total_tokens", 0),
+    }
+
+
+def _openai_incomplete_reason(response: Any) -> str | None:
+    """Return the documented incomplete reason when present."""
+    if not isinstance(response, dict):
+        return None
+    details = response.get("incomplete_details")
+    if not isinstance(details, dict):
+        return None
+    reason = details.get("reason")
+    return str(reason).strip() if reason is not None else None
+
+
+def _openai_event_error_response(
+    event_type: str,
+    response: Any,
+) -> LLMResponse:
+    """Build a safe error response from failed or incomplete terminal events."""
+    details: list[str] = []
+    if isinstance(response, dict):
+        if event_type == "response.failed":
+            error = response.get("error")
+            if isinstance(error, dict):
+                for key in ("code", "message"):
+                    value = error.get(key)
+                    if value is not None and str(value).strip():
+                        details.append(f"{key}={value}")
+            elif error is not None and str(error).strip():
+                details.append(str(error))
+        else:
+            reason = _openai_incomplete_reason(response)
+            if reason:
+                details.append(f"reason={reason}")
+
+    suffix = "; ".join(details) if details else "no error details"
+    detail = format_provider_exception(
+        OpenAIResponseEventError(f"{event_type}: {suffix}")
+    )
+    return LLMResponse(
+        content=f"Error calling OpenAI ChatGPT API: {detail}",
+        finish_reason="error",
+        usage=_extract_openai_response_usage(response),
     )
 
 
