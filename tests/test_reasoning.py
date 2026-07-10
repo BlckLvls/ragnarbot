@@ -117,6 +117,31 @@ def test_resolve_reasoning_opus_47_plus_exposes_xhigh_and_max():
         assert off.anthropic_output_config is None
 
 
+@pytest.mark.parametrize(
+    "model",
+    (
+        "openai/gpt-5.6-sol",
+        "openai/gpt-5.6-terra",
+        "openai/gpt-5.6-luna",
+        "gpt-5.6",
+    ),
+)
+def test_resolve_reasoning_gpt_56_exposes_xhigh_and_max(model):
+    ultra = resolve_reasoning(model, "ultra")
+    assert ultra.effective_level == "ultra"
+    assert ultra.reasoning_effort == "xhigh"
+    assert ultra.openai_reasoning == {"effort": "xhigh"}
+
+    maximum = resolve_reasoning(model, "max")
+    assert maximum.effective_level == "max"
+    assert maximum.reasoning_effort == "max"
+    assert maximum.openai_reasoning == {"effort": "max"}
+
+    off = resolve_reasoning(model, "off")
+    assert off.reasoning_effort == "none"
+    assert off.openai_reasoning == {"effort": "none"}
+
+
 def test_resolve_reasoning_max_level_across_families():
     # GPT-5.5 flagship: ultra -> xhigh, max clamps to xhigh (OpenAI has no max).
     gpt_ultra = resolve_reasoning("openai/gpt-5.5", "ultra")
@@ -155,6 +180,19 @@ def test_reasoning_level_max_roundtrips(tmp_path):
 
 
 def test_resolve_lightning_support_matrix():
+    for model in (
+        "gpt-5.6",
+        "openai/gpt-5.6",
+        "openai/gpt-5.6-sol",
+        "openai/gpt-5.6-terra",
+        "openai/gpt-5.6-luna",
+    ):
+        for auth_method in ("api_key", "oauth"):
+            gpt_56 = resolve_lightning(model, auth_method, True)
+            assert gpt_56.supported is True
+            assert gpt_56.applies is True
+            assert gpt_56.service_tier == "priority"
+
     supported = resolve_lightning("openai/gpt-5.4", "api_key", True)
     assert supported.supported is True
     assert supported.applies is True
@@ -193,6 +231,20 @@ def test_openai_build_request_includes_reasoning():
     )
 
     assert body["reasoning"] == {"effort": "xhigh"}
+
+
+def test_openai_build_request_uses_max_reasoning_for_gpt_56():
+    with patch("ragnarbot.auth.openai_oauth.get_account_id", return_value="acct_test"):
+        provider = OpenAIChatGPTProvider(default_model="openai/gpt-5.6-sol")
+
+    body = provider._build_request(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=None,
+        model="gpt-5.6-terra",
+        reasoning_level="max",
+    )
+
+    assert body["reasoning"] == {"effort": "max"}
 
 
 def test_openai_build_request_skips_priority_service_tier_for_raw_oauth_lightning():
@@ -293,6 +345,24 @@ async def test_litellm_passes_reasoning_effort():
         )
 
     assert mock_acompletion.await_args.kwargs["reasoning_effort"] == "xhigh"
+    assert mock_acompletion.await_args.kwargs["max_tokens"] == 128_000
+
+
+@pytest.mark.asyncio
+async def test_litellm_passes_max_reasoning_effort_for_gpt_56():
+    provider = LiteLLMProvider(api_key="sk-openai", default_model="openai/gpt-5.6-luna")
+    mock_acompletion = AsyncMock(return_value=_mock_litellm_response())
+
+    with (
+        patch("ragnarbot.providers.litellm_provider.acompletion", mock_acompletion),
+        patch("ragnarbot.config.providers.model_supports_vision", return_value=True),
+    ):
+        await provider.chat(
+            messages=[{"role": "user", "content": "hi"}],
+            reasoning_level="max",
+        )
+
+    assert mock_acompletion.await_args.kwargs["reasoning_effort"] == "max"
     assert mock_acompletion.await_args.kwargs["max_tokens"] == 128_000
 
 

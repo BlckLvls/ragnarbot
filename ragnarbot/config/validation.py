@@ -29,6 +29,21 @@ def validate_model_auth(model: str, auth_method: str, creds=None) -> str | None:
                 f"OAuth is not supported for provider '{provider_name}'. "
                 f"Supported: {', '.join(sorted(OAUTH_SUPPORTED_PROVIDERS))}"
             )
+        if model == "openai/gpt-5.6":
+            return (
+                "OpenAI OAuth does not support the 'openai/gpt-5.6' alias. "
+                "Use 'openai/gpt-5.6-sol' explicitly."
+            )
+        if provider_name == "openai":
+            from ragnarbot.config.providers import get_model_info
+
+            model_info = get_model_info(model)
+            if model_info is not None and not model_info.get("oauth", True):
+                return (
+                    f"OpenAI OAuth does not support '{model}' in Ragnarbot. "
+                    "Use GPT-5.6 Sol or Terra, or use API key authentication "
+                    "for this model."
+                )
         if provider_name == "gemini":
             from ragnarbot.auth.gemini_oauth import is_authenticated
             if not is_authenticated():

@@ -5,9 +5,16 @@ import logging
 import os
 from typing import Any
 
+import httpx
 from anthropic import APIStatusError, AsyncAnthropic
 
-from ragnarbot.providers.base import MAX_OUTPUT_TOKENS, LLMProvider, LLMResponse, ToolCallRequest
+from ragnarbot.providers.base import (
+    MAX_OUTPUT_TOKENS,
+    LLMProvider,
+    LLMResponse,
+    ToolCallRequest,
+    format_provider_exception,
+)
 from ragnarbot.providers.reasoning import resolve_reasoning
 
 # Anthropic streams every request (see chat()), so it is not bound by the SDK's
@@ -33,6 +40,8 @@ _CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claud
 # Application-level retry delays (seconds) for 529 Overloaded errors.
 # Each retry is a fresh SDK-level attempt set (the SDK itself retries twice internally).
 _OVERLOADED_RETRY_DELAYS = [0, 1, 2]
+_MAX_APP_ATTEMPTS = 1 + len(_OVERLOADED_RETRY_DELAYS)
+_OPEN_STREAM_RETRY_DELAY_SECONDS = 0.75
 
 logger = logging.getLogger(__name__)
 
@@ -130,35 +139,68 @@ class AnthropicProvider(LLMProvider):
         if reasoning.anthropic_output_config is not None:
             kwargs["output_config"] = reasoning.anthropic_output_config
 
-        last_error: Exception | None = None
-        for attempt, delay in enumerate(
-            [None, *_OVERLOADED_RETRY_DELAYS], start=1,
-        ):
-            if delay is not None:
-                if delay > 0:
-                    await asyncio.sleep(delay)
-                logger.info("Retrying after 529 Overloaded (attempt %d)", attempt)
+        overloaded_retry_index = 0
+        open_stream_retry_used = False
+        for attempt in range(1, _MAX_APP_ATTEMPTS + 1):
+            stream_opened = False
+            final_message_received = False
             try:
                 # Use streaming to avoid Anthropic SDK ValueError for max_tokens > ~21k
                 async with self.client.messages.stream(**kwargs) as stream:
+                    stream_opened = True
                     response = await stream.get_final_message()
+                    final_message_received = True
                 return self._parse_response(response)
             except APIStatusError as e:
-                if e.status_code == 529:
-                    last_error = e
+                if (
+                    e.status_code == 529
+                    and attempt < _MAX_APP_ATTEMPTS
+                    and overloaded_retry_index < len(_OVERLOADED_RETRY_DELAYS)
+                ):
+                    delay = _OVERLOADED_RETRY_DELAYS[overloaded_retry_index]
+                    overloaded_retry_index += 1
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                    logger.info(
+                        "Retrying after 529 Overloaded (attempt %d/%d)",
+                        attempt + 1,
+                        _MAX_APP_ATTEMPTS,
+                    )
                     continue
-                return LLMResponse(
-                    content=f"Error calling LLM: {e}",
-                    finish_reason="error",
-                )
+                return self._error_response(e)
+            except httpx.TransportError as e:
+                # The Anthropic SDK already retries connection failures while
+                # opening the request. It cannot retry a body-read failure once
+                # the streaming response is open, so allow exactly one such
+                # provider-level retry before any final message was received.
+                if (
+                    stream_opened
+                    and not final_message_received
+                    and not open_stream_retry_used
+                    and attempt < _MAX_APP_ATTEMPTS
+                ):
+                    open_stream_retry_used = True
+                    logger.warning(
+                        "Retrying Anthropic stream after transient read failure "
+                        "(attempt %d/%d): %s",
+                        attempt + 1,
+                        _MAX_APP_ATTEMPTS,
+                        format_provider_exception(e),
+                    )
+                    await asyncio.sleep(_OPEN_STREAM_RETRY_DELAY_SECONDS)
+                    continue
+                return self._error_response(e)
             except Exception as e:
-                return LLMResponse(
-                    content=f"Error calling LLM: {e}",
-                    finish_reason="error",
-                )
+                return self._error_response(e)
 
+        raise AssertionError("Anthropic retry loop exhausted unexpectedly")
+
+    @staticmethod
+    def _error_response(exc: Exception) -> LLMResponse:
+        detail = format_provider_exception(exc)
+        logger.error("Anthropic API call failed: %s", detail)
         return LLMResponse(
-            content=f"Error calling LLM: {last_error}",
+            content=f"Error calling LLM: {detail}",
             finish_reason="error",
         )
 

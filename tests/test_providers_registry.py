@@ -60,14 +60,32 @@ def test_anthropic_registry_drops_older_models():
     assert "anthropic/claude-opus-4-7" in model_ids
 
 
-def test_openai_models_include_gpt_5_5_first():
+def test_openai_models_include_gpt_5_6_family_first():
     models = get_models("openai")
     model_ids = [m["id"] for m in models]
 
-    assert models[0]["id"] == "openai/gpt-5.5"
+    assert models[0]["id"] == "openai/gpt-5.6-sol"
+    assert model_ids[:3] == [
+        "openai/gpt-5.6-sol",
+        "openai/gpt-5.6-terra",
+        "openai/gpt-5.6-luna",
+    ]
+    assert "openai/gpt-5.5" in model_ids
     assert "openai/gpt-5.4" in model_ids
     assert "openai/gpt-5.2" not in model_ids
     assert "openai/gpt-5.4-mini" in model_ids
+
+
+def test_openai_oauth_models_exclude_raw_transport_incompatible_luna():
+    oauth_model_ids = [model["id"] for model in get_models("openai", "oauth")]
+    api_key_model_ids = [model["id"] for model in get_models("openai", "api_key")]
+
+    assert "openai/gpt-5.6-luna" not in oauth_model_ids
+    assert "openai/gpt-5.6-luna" in api_key_model_ids
+    assert oauth_model_ids[:2] == [
+        "openai/gpt-5.6-sol",
+        "openai/gpt-5.6-terra",
+    ]
 
 
 def test_openrouter_models_include_gpt_5_5():

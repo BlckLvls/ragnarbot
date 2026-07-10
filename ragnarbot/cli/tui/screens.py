@@ -72,9 +72,13 @@ def token_input_screen(
     )
 
 
-def model_screen(console: Console, provider_id: str) -> int | None:
+def model_screen(
+    console: Console,
+    provider_id: str,
+    auth_method: str | None = None,
+) -> int | None:
     """Select model. Returns index or None (back)."""
-    models = get_models(provider_id)
+    models = get_models(provider_id, auth_method)
     options = [(m["name"], m["description"]) for m in models]
     provider = get_provider(provider_id)
     return select_menu(

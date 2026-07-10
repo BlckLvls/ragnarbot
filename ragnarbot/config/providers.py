@@ -29,18 +29,36 @@ PROVIDERS = [
     {
         "id": "openai",
         "name": "OpenAI",
-        "description": "GPT models (GPT-5.5, GPT-5.4, GPT-5.4 Mini)",
+        "description": "GPT models (GPT-5.6 Sol, Terra, Luna, and earlier)",
         "api_key_url": "https://platform.openai.com/api-keys",
         "models": [
             {
+                "id": "openai/gpt-5.6-sol",
+                "name": "GPT-5.6 Sol",
+                "description": "Flagship — most capable GPT-5.6 model",
+            },
+            {
+                "id": "openai/gpt-5.6-terra",
+                "name": "GPT-5.6 Terra",
+                "description": "Balanced — strong lower-cost GPT-5.6 option",
+            },
+            {
+                "id": "openai/gpt-5.6-luna",
+                "name": "GPT-5.6 Luna",
+                "description": "Fastest & most affordable GPT-5.6 model",
+                # The public API supports Luna, but ChatGPT OAuth's raw
+                # Responses transport currently returns `Model not found`.
+                "oauth": False,
+            },
+            {
                 "id": "openai/gpt-5.5",
                 "name": "GPT-5.5",
-                "description": "Latest flagship — best reasoning & coding",
+                "description": "Previous flagship — strong reasoning & coding",
             },
             {
                 "id": "openai/gpt-5.4",
                 "name": "GPT-5.4",
-                "description": "Previous flagship — strong reasoning & coding",
+                "description": "Earlier flagship — strong reasoning & coding",
             },
             {
                 "id": "openai/gpt-5.4-mini",
@@ -158,11 +176,14 @@ def get_provider(provider_id: str) -> dict | None:
     return None
 
 
-def get_models(provider_id: str) -> list[dict]:
-    """Get models for a provider."""
+def get_models(provider_id: str, auth_method: str | None = None) -> list[dict]:
+    """Get models for a provider, optionally filtered by auth method."""
     provider = get_provider(provider_id)
     if provider:
-        return provider["models"]
+        models = provider["models"]
+        if auth_method == "oauth":
+            return [model for model in models if model.get("oauth", True)]
+        return models
     return []
 
 
