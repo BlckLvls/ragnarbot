@@ -975,29 +975,35 @@ class OpenAIChatGPTProvider(LLMProvider):
                     elif event_type == "response.output_item.added":
                         item = event.get("item", {})
                         if item.get("type") == "function_call":
-                            item_id = item.get("id", "")
+                            item_id = item.get("id") or item.get("call_id", "")
                             pending_calls[item_id] = {
                                 "name": item.get("name", ""),
                                 "arguments": "",
+                                "call_id": item.get("call_id") or item_id,
                             }
 
                     elif event_type == "response.function_call_arguments.delta":
-                        call_id = event.get("item_id", "")
-                        if call_id in pending_calls:
-                            pending_calls[call_id]["arguments"] += event.get("delta", "")
+                        item_id = event.get("item_id", "")
+                        if item_id in pending_calls:
+                            pending_calls[item_id]["arguments"] += event.get("delta", "")
 
                     elif event_type == "response.function_call_arguments.done":
-                        call_id = event.get("item_id", "")
-                        if call_id in pending_calls:
-                            call_data = pending_calls.pop(call_id)
-                            args = call_data["arguments"]
+                        item_id = event.get("item_id", "")
+                        if item_id in pending_calls:
+                            call_data = pending_calls.pop(item_id)
+                            args = event.get("arguments", call_data["arguments"])
                             try:
                                 args = json.loads(args)
                             except (json.JSONDecodeError, ValueError):
                                 args = {"raw": args}
+                            protocol_call_id = (
+                                event.get("call_id")
+                                or call_data.get("call_id")
+                                or item_id
+                            )
                             tool_calls.append(
                                 ToolCallRequest(
-                                    id=call_id,
+                                    id=protocol_call_id,
                                     name=call_data["name"],
                                     arguments=args,
                                 )

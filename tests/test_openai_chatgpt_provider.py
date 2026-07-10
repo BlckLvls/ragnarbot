@@ -713,6 +713,83 @@ async def test_raw_sse_completed_preserves_text_tools_and_usage_without_done_mar
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("added_call_id", "done_call_id", "expected_call_id"),
+    [
+        ("call_from_added", None, "call_from_added"),
+        (None, "call_from_done", "call_from_done"),
+    ],
+)
+async def test_raw_sse_preserves_protocol_call_id_through_tool_output_round_trip(
+    added_call_id,
+    done_call_id,
+    expected_call_id,
+):
+    added_item = {
+        "type": "function_call",
+        "id": "fc_transport_item",
+        "name": "lookup",
+    }
+    if added_call_id:
+        added_item["call_id"] = added_call_id
+    done_event = {
+        "type": "response.function_call_arguments.done",
+        "item_id": "fc_transport_item",
+    }
+    if done_call_id:
+        done_event["call_id"] = done_call_id
+
+    response = await _parse_raw_sse([
+        {"type": "response.output_item.added", "item": added_item},
+        {
+            "type": "response.function_call_arguments.delta",
+            "item_id": "fc_transport_item",
+            "delta": '{"query":"Oslo"}',
+        },
+        done_event,
+        {"type": "response.completed", "response": {}},
+    ])
+
+    tool_call = response.tool_calls[0]
+    assert tool_call.id == expected_call_id
+
+    with patch("ragnarbot.auth.openai_oauth.get_account_id", return_value="acct_test"):
+        provider = OpenAIChatGPTProvider()
+    body = provider._build_request(
+        messages=[
+            {"role": "user", "content": "Look it up"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": tool_call.id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_call.name,
+                        "arguments": tool_call.arguments,
+                    },
+                }],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": "Oslo result",
+            },
+        ],
+        tools=None,
+        model="gpt-5.5",
+        reasoning_level=None,
+    )
+
+    function_call = next(item for item in body["input"] if item.get("type") == "function_call")
+    function_output = next(
+        item for item in body["input"] if item.get("type") == "function_call_output"
+    )
+    assert function_call["call_id"] == expected_call_id
+    assert function_output["call_id"] == expected_call_id
+
+
+@pytest.mark.asyncio
 async def test_raw_sse_failed_returns_safe_error_and_discards_partial_output():
     token = "sk-proj-sentinel-secret-token"
     response = await _parse_raw_sse([
