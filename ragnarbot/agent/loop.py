@@ -3057,6 +3057,7 @@ class AgentLoop:
             chat_kwargs["tools"] = tools_defs
             response, used_fallback, _ = await self._chat_with_fallback(
                 None,
+                force_fallback=batch_used_fallback,
                 **chat_kwargs,
             )
             if used_fallback:
@@ -3151,6 +3152,7 @@ class AgentLoop:
             chat_kwargs["tools"] = tools_defs
             response, used_fallback, _ = await self._chat_with_fallback(
                 None,
+                force_fallback=batch_used_fallback,
                 **chat_kwargs,
             )
             if used_fallback:
@@ -3281,6 +3283,7 @@ class AgentLoop:
             ]
             response, used_fallback, _ = await self._chat_with_fallback(
                 None,
+                force_fallback=batch_used_fallback,
                 messages=api_messages, tools=tools_defs,
             )
             if used_fallback:
