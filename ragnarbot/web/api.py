@@ -1,6 +1,7 @@
 """REST API for the web console modules: config, cron, hooks, agents, files, status."""
 
 import json
+import os
 import re
 from dataclasses import asdict
 from pathlib import Path
@@ -16,9 +17,14 @@ _WORKSPACE_TEXT_SUFFIXES = frozenset({
     ".jsx", ".md", ".py", ".sh", ".skill", ".sql", ".toml", ".ts",
     ".tsx", ".txt", ".xml", ".yaml", ".yml",
 })
+_WORKSPACE_IMAGE_SUFFIXES = frozenset({
+    ".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp",
+})
+_WORKSPACE_VIDEO_SUFFIXES = frozenset({".m4v", ".mov", ".mp4", ".ogv", ".webm"})
 _WORKSPACE_HIDDEN_DIRS = frozenset({"agents", "__pycache__", "node_modules"})
 _WORKSPACE_SENSITIVE_STEMS = ("auth", "credential", "secret", "token", "private-key", "private_key")
 _WORKSPACE_MAX_EDIT_BYTES = 2 * 1024 * 1024
+_WORKSPACE_MAX_PREVIEW_BYTES = 100 * 1024 * 1024
 
 
 def _json_error(message: str, status: int = 400) -> web.Response:
@@ -75,6 +81,7 @@ class ApiRoutes:
         r.add_get("/api/workspace/tree", self.workspace_tree)
         r.add_get("/api/workspace/file", self.workspace_file_get)
         r.add_put("/api/workspace/file", self.workspace_file_put)
+        r.add_get("/api/workspace/preview", self.workspace_file_preview)
         r.add_get("/api/workspace/download", self.workspace_file_download)
         r.add_get("/api/skills", self.skills_list)
         r.add_get("/api/skills/{name}", self.skills_get)
@@ -317,21 +324,39 @@ class ApiRoutes:
         return Path(self.agent.workspace)
 
     @staticmethod
-    def _workspace_file_is_exposed(rel: Path) -> bool:
-        """Keep Files focused on safe text documents and source files."""
+    def _workspace_file_kind(rel: Path) -> str | None:
+        """Return the safe viewer kind for a workspace-relative path."""
         if not rel.parts or any(part.startswith(".") for part in rel.parts):
-            return False
+            return None
         if any(part in _WORKSPACE_HIDDEN_DIRS for part in rel.parts[:-1]):
-            return False
+            return None
         stem = rel.stem.lower()
         if "sanitized" not in stem and any(
             stem == prefix or stem.startswith(f"{prefix}-") or stem.startswith(f"{prefix}_")
             for prefix in _WORKSPACE_SENSITIVE_STEMS
         ):
-            return False
-        return rel.suffix.lower() in _WORKSPACE_TEXT_SUFFIXES
+            return None
+        suffix = rel.suffix.lower()
+        if suffix in _WORKSPACE_TEXT_SUFFIXES:
+            return "text"
+        if suffix in _WORKSPACE_IMAGE_SUFFIXES:
+            return "image"
+        if suffix in _WORKSPACE_VIDEO_SUFFIXES:
+            return "video"
+        return None
 
-    def _workspace_path(self, raw: str, *, exposed_file: bool = False) -> Path:
+    @classmethod
+    def _workspace_file_is_exposed(cls, rel: Path) -> bool:
+        """Keep Files focused on safe text documents, source files, and browser media."""
+        return cls._workspace_file_kind(rel) is not None
+
+    def _workspace_path(
+        self,
+        raw: str,
+        *,
+        exposed_file: bool = False,
+        editable_file: bool = False,
+    ) -> Path:
         path = (self.workspace / raw).resolve()
         if not path.is_relative_to(self.workspace.resolve()):
             raise web.HTTPForbidden(reason="path outside workspace")
@@ -340,43 +365,74 @@ class ApiRoutes:
             raise web.HTTPForbidden(reason="agent definitions are not exposed in the web console")
         if exposed_file and not self._workspace_file_is_exposed(rel):
             raise web.HTTPForbidden(reason="file is not exposed in the web console")
+        if editable_file and self._workspace_file_kind(rel) != "text":
+            raise web.HTTPUnsupportedMediaType(reason="file is not editable text")
         return path
 
     async def workspace_tree(self, request: web.Request) -> web.Response:
         root = self.workspace.resolve()
-        files: list[Path] = []
-        for path in sorted(root.rglob("*")):
-            rel = path.relative_to(root)
-            if (
-                not path.is_file()
-                or path.is_symlink()
-                or len(rel.parts) > 6
-                or not self._workspace_file_is_exposed(rel)
-                or path.stat().st_size > _WORKSPACE_MAX_EDIT_BYTES
-            ):
-                continue
-            files.append(path)
+        files: list[tuple[Path, str, os.stat_result, bool]] = []
+        for current, dirnames, filenames in os.walk(root, followlinks=False):
+            current_path = Path(current)
+            dirnames[:] = sorted(
+                dirname
+                for dirname in dirnames
+                if not dirname.startswith(".")
+                and dirname not in _WORKSPACE_HIDDEN_DIRS
+                and not (current_path / dirname).is_symlink()
+            )
+            for filename in sorted(filenames):
+                path = current_path / filename
+                if path.is_symlink():
+                    continue
+                rel = path.relative_to(root)
+                kind = self._workspace_file_kind(rel)
+                if kind is None:
+                    continue
+                stat = path.stat()
+                if kind == "text" and stat.st_size > _WORKSPACE_MAX_EDIT_BYTES:
+                    continue
+                previewable = kind == "text" or stat.st_size <= _WORKSPACE_MAX_PREVIEW_BYTES
+                files.append((path, kind, stat, previewable))
+
+        if not files:
+            return web.json_response([])
 
         directories = {
             parent
-            for path in files
+            for path, _kind, _stat, _previewable in files
             for parent in path.relative_to(root).parents
             if parent != Path(".")
         }
         entries = [
-            {"path": str(rel), "dir": True, "size": None}
+            {
+                "path": str(rel),
+                "dir": True,
+                "kind": "directory",
+                "size": None,
+                "modified": None,
+                "previewable": False,
+            }
             for rel in sorted(directories, key=str)
         ]
-        entries.extend({
-            "path": str(path.relative_to(root)),
-            "dir": False,
-            "size": path.stat().st_size,
-        } for path in files)
+        entries.extend(
+            {
+                "path": str(path.relative_to(root)),
+                "dir": False,
+                "kind": kind,
+                "size": stat.st_size,
+                "modified": round(stat.st_mtime * 1000),
+                "previewable": previewable,
+            }
+            for path, kind, stat, previewable in files
+        )
         entries.sort(key=lambda entry: entry["path"])
         return web.json_response(entries)
 
     async def workspace_file_get(self, request: web.Request) -> web.Response:
-        path = self._workspace_path(request.query.get("path", ""), exposed_file=True)
+        path = self._workspace_path(
+            request.query.get("path", ""), exposed_file=True, editable_file=True
+        )
         if not path.is_file():
             raise web.HTTPNotFound()
         if path.stat().st_size > _WORKSPACE_MAX_EDIT_BYTES:
@@ -392,7 +448,7 @@ class ApiRoutes:
         raw = body.get("path", "")
         if not raw:
             return _json_error("path is required")
-        path = self._workspace_path(raw, exposed_file=True)
+        path = self._workspace_path(raw, exposed_file=True, editable_file=True)
         if not path.is_file():
             raise web.HTTPNotFound()
         content = body.get("content", "")
@@ -402,6 +458,26 @@ class ApiRoutes:
             return _json_error("file too large to edit", 413)
         path.write_text(content, encoding="utf-8")
         return web.json_response({"ok": True})
+
+    async def workspace_file_preview(self, request: web.Request) -> web.StreamResponse:
+        raw = request.query.get("path", "")
+        path = self._workspace_path(raw, exposed_file=True)
+        if not path.is_file():
+            raise web.HTTPNotFound()
+        rel = path.relative_to(self.workspace.resolve())
+        if self._workspace_file_kind(rel) not in {"image", "video"}:
+            raise web.HTTPUnsupportedMediaType(reason="preview is only available for media files")
+        if path.stat().st_size > _WORKSPACE_MAX_PREVIEW_BYTES:
+            return _json_error("media file is larger than the 100 MB preview limit", 413)
+        filename = path.name.replace('"', "") or "preview"
+        return web.FileResponse(
+            path,
+            headers={
+                "Content-Disposition": f'inline; filename="{filename}"',
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     async def workspace_file_download(self, request: web.Request) -> web.StreamResponse:
         path = self._workspace_path(request.query.get("path", ""), exposed_file=True)

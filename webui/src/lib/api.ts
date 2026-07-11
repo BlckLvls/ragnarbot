@@ -191,7 +191,10 @@ export interface StatusFull {
 export interface WorkspaceEntry {
   path: string
   dir: boolean
+  kind: 'directory' | 'text' | 'image' | 'video'
   size: number | null
+  modified: number | null
+  previewable: boolean
 }
 
 export interface SkillSummary {

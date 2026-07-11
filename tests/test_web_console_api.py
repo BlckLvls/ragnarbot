@@ -78,7 +78,7 @@ async def test_workspace_tree_omits_agent_directory(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_workspace_tree_only_exposes_safe_editable_files(tmp_path):
+async def test_workspace_tree_exposes_safe_text_and_image_files(tmp_path):
     (tmp_path / "skills" / "image").mkdir(parents=True)
     (tmp_path / "skills" / "image" / "SKILL.md").write_text("visible")
     (tmp_path / "skills" / "image" / "helper.py").write_text("print('visible')")
@@ -90,16 +90,36 @@ async def test_workspace_tree_only_exposes_safe_editable_files(tmp_path):
     routes = make_routes(tmp_path)
 
     response = await routes.workspace_tree(SimpleNamespace())
-    paths = {entry["path"] for entry in json.loads(response.text)}
+    entries = json.loads(response.text)
+    paths = {entry["path"] for entry in entries}
+    kinds = {entry["path"]: entry["kind"] for entry in entries}
 
     assert "skills/image/SKILL.md" in paths
     assert "skills/image/helper.py" in paths
+    assert kinds["skills/image/SKILL.md"] == "text"
+    assert kinds["skills/image/helper.py"] == "text"
     assert "skills/image/auth.json" not in paths
-    assert "media/photo.png" not in paths
+    assert kinds["media"] == "directory"
+    assert kinds["media/photo.png"] == "image"
     assert not any("__pycache__" in path for path in paths)
 
 
-@pytest.mark.parametrize("path", ["skills/image/auth.json", "photo.png", ".env"])
+@pytest.mark.asyncio
+async def test_workspace_tree_preserves_deep_folder_hierarchies(tmp_path):
+    deep_file = tmp_path / "one" / "two" / "three" / "four" / "five" / "six" / "seven" / "note.md"
+    deep_file.parent.mkdir(parents=True)
+    deep_file.write_text("deep workspace")
+    routes = make_routes(tmp_path)
+
+    response = await routes.workspace_tree(SimpleNamespace())
+    entries = json.loads(response.text)
+    paths = {entry["path"] for entry in entries}
+
+    assert "one/two/three/four/five/six/seven" in paths
+    assert "one/two/three/four/five/six/seven/note.md" in paths
+
+
+@pytest.mark.parametrize("path", ["skills/image/auth.json", "archive.zip", ".env"])
 def test_workspace_file_api_rejects_unexposed_files(tmp_path, path):
     target = tmp_path / path
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -108,6 +128,80 @@ def test_workspace_file_api_rejects_unexposed_files(tmp_path, path):
 
     with pytest.raises(web.HTTPForbidden, match="not exposed"):
         routes._workspace_path(path, exposed_file=True)
+
+
+def test_workspace_file_api_does_not_edit_images(tmp_path):
+    target = tmp_path / "media" / "photo.png"
+    target.parent.mkdir()
+    target.write_bytes(b"image")
+    routes = make_routes(tmp_path)
+
+    with pytest.raises(web.HTTPUnsupportedMediaType, match="not editable text"):
+        routes._workspace_path("media/photo.png", exposed_file=True, editable_file=True)
+
+
+@pytest.mark.asyncio
+async def test_workspace_image_preview_is_inline_and_not_cached(tmp_path):
+    target = tmp_path / "media" / "photo.png"
+    target.parent.mkdir()
+    target.write_bytes(b"image")
+    routes = make_routes(tmp_path)
+
+    response = await routes.workspace_file_preview(
+        SimpleNamespace(query={"path": "media/photo.png"}),
+    )
+
+    assert isinstance(response, web.FileResponse)
+    assert response.headers["Content-Disposition"] == 'inline; filename="photo.png"'
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+
+
+@pytest.mark.asyncio
+async def test_workspace_image_preview_rejects_text_files(tmp_path):
+    (tmp_path / "note.md").write_text("hello")
+    routes = make_routes(tmp_path)
+
+    with pytest.raises(web.HTTPUnsupportedMediaType, match="only available for media files"):
+        await routes.workspace_file_preview(SimpleNamespace(query={"path": "note.md"}))
+
+
+@pytest.mark.asyncio
+async def test_workspace_tree_and_preview_support_video_files(tmp_path):
+    target = tmp_path / "media" / "clip.mp4"
+    target.parent.mkdir()
+    target.write_bytes(b"video")
+    routes = make_routes(tmp_path)
+
+    tree_response = await routes.workspace_tree(SimpleNamespace())
+    entries = {entry["path"]: entry for entry in json.loads(tree_response.text)}
+    preview_response = await routes.workspace_file_preview(
+        SimpleNamespace(query={"path": "media/clip.mp4"}),
+    )
+
+    assert entries["media/clip.mp4"]["kind"] == "video"
+    assert entries["media/clip.mp4"]["previewable"] is True
+    assert preview_response.headers["Content-Disposition"] == 'inline; filename="clip.mp4"'
+
+
+@pytest.mark.asyncio
+async def test_large_media_stays_visible_with_download_fallback(tmp_path):
+    target = tmp_path / "media" / "large.mp4"
+    target.parent.mkdir()
+    with target.open("wb") as handle:
+        handle.truncate(101 * 1024 * 1024)
+    routes = make_routes(tmp_path)
+
+    tree_response = await routes.workspace_tree(SimpleNamespace())
+    entries = {entry["path"]: entry for entry in json.loads(tree_response.text)}
+    preview_response = await routes.workspace_file_preview(
+        SimpleNamespace(query={"path": "media/large.mp4"}),
+    )
+
+    assert entries["media/large.mp4"]["kind"] == "video"
+    assert entries["media/large.mp4"]["previewable"] is False
+    assert preview_response.status == 413
+    assert "100 MB preview limit" in json.loads(preview_response.text)["error"]
 
 
 @pytest.mark.asyncio
