@@ -1,0 +1,168 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── ragnarbot design tokens (dark default) ─────────────────── */
+:root {
+  --rb-page: 8 9 11;        /* #08090B */
+  --rb-surface: 14 15 18;   /* #0E0F12 */
+  --rb-panel: 16 17 22;     /* #101116 */
+  --rb-inset: 17 19 24;     /* #111318 */
+  --rb-deep: 10 11 13;      /* #0A0B0D */
+  --rb-raised: 20 22 27;    /* #14161B */
+  --rb-raised2: 26 29 35;   /* #1A1D23 */
+  --rb-ink: 236 234 228;    /* #ECEAE4 */
+  --rb-body: 214 212 206;   /* #D6D4CE */
+  --rb-mist: 201 199 193;   /* #C9C7C1 */
+  --rb-soft: 154 156 161;   /* #9A9CA1 */
+  --rb-muted: 99 101 107;   /* #63656B */
+  --rb-faint: 74 76 82;     /* #4A4C52 */
+  --rb-acc: 111 195 212;    /* #6FC3D4 — cyan default */
+  --rb-onacc: 10 22 25;     /* #0A1619 */
+  --rb-ok: 124 201 143;     /* #7CC98F */
+  --rb-warn: 227 195 91;    /* #E3C35B */
+  --rb-err: 224 100 86;     /* #E06456 */
+  --rb-line: rgba(255, 255, 255, 0.07);
+  --rb-line2: rgba(255, 255, 255, 0.12);
+}
+
+html.light {
+  --rb-page: 243 241 236;   /* #F3F1EC */
+  --rb-surface: 246 244 239;/* #F6F4EF */
+  --rb-panel: 236 233 226;  /* #ECE9E2 */
+  --rb-inset: 239 237 230;  /* #EFEDE6 */
+  --rb-deep: 233 229 220;   /* #E9E5DC */
+  --rb-raised: 233 229 220; /* #E9E5DC */
+  --rb-raised2: 227 223 213;/* #E3DFD5 */
+  --rb-ink: 28 29 31;       /* #1C1D1F */
+  --rb-body: 58 59 63;      /* #3A3B3F */
+  --rb-mist: 74 75 80;
+  --rb-soft: 91 93 99;      /* #5B5D63 */
+  --rb-muted: 139 141 146;  /* #8B8D92 */
+  --rb-faint: 166 168 173;
+  --rb-acc: 58 145 163;     /* #3A91A3 — cyan default */
+  --rb-onacc: 245 250 251;  /* #F5FAFB */
+  --rb-ok: 95 168 113;      /* #5FA871 */
+  --rb-warn: 168 132 43;
+  --rb-err: 199 87 74;
+  --rb-line: rgba(25, 26, 30, 0.08);
+  --rb-line2: rgba(25, 26, 30, 0.14);
+}
+
+html {
+  background-color: rgb(var(--rb-panel));
+  color-scheme: dark;
+}
+
+html.light {
+  color-scheme: light;
+}
+
+/* Accent variants. Cyan is the un-attributed default. */
+html[data-accent='violet'] { --rb-acc: 171 132 255; --rb-onacc: 18 10 34; }
+html[data-accent='lime'] { --rb-acc: 166 232 95; --rb-onacc: 13 25 5; }
+html[data-accent='amber'] { --rb-acc: 255 178 72; --rb-onacc: 23 19 10; }
+html[data-accent='bone'] { --rb-acc: 236 234 228; --rb-onacc: 23 19 10; }
+html[data-accent='ember'] { --rb-acc: 224 100 86; --rb-onacc: 26 9 7; }
+html.light[data-accent='violet'] { --rb-acc: 121 79 207; --rb-onacc: 250 247 255; }
+html.light[data-accent='lime'] { --rb-acc: 92 153 45; --rb-onacc: 249 253 245; }
+html.light[data-accent='amber'] { --rb-acc: 232 163 61; --rb-onacc: 36 26 8; }
+html.light[data-accent='bone'] { --rb-acc: 90 88 82; --rb-onacc: 245 244 240; }
+html.light[data-accent='ember'] { --rb-acc: 194 79 66; --rb-onacc: 250 240 238; }
+
+body {
+  @apply text-body font-sans antialiased;
+  background-color: rgb(var(--rb-panel));
+  overscroll-behavior-y: none;
+}
+
+#root {
+  min-height: 100%;
+  background-color: rgb(var(--rb-page));
+}
+
+/* mono section label — the recurring uppercase mono heading */
+.rb-label {
+  @apply font-mono uppercase text-faint;
+  font-size: 9.5px;
+  letter-spacing: 1.2px;
+}
+
+/* hairline borders */
+.rb-hairline { border-color: var(--rb-line); }
+
+/* markdown body inside chat */
+.rb-md { @apply text-[13px] leading-relaxed text-body; }
+.rb-md p { @apply my-2; }
+.rb-md h1, .rb-md h2, .rb-md h3 { @apply text-ink font-semibold mt-4 mb-2; }
+.rb-md h1 { @apply text-[15px]; }
+.rb-md h2 { @apply text-[14px]; }
+.rb-md h3 { @apply text-[13px]; }
+.rb-md ul { @apply list-disc pl-5 my-2; }
+.rb-md ol { @apply list-decimal pl-5 my-2; }
+.rb-md li { @apply my-0.5; }
+.rb-md a { @apply text-acc underline decoration-acc/40 underline-offset-2; }
+.rb-md blockquote { @apply border-l-2 pl-3 my-2 text-soft; border-color: var(--rb-line2); }
+.rb-md code { @apply font-mono text-[11.5px] bg-raised2 text-mist rounded-[2px] px-[5px] py-[1px]; }
+.rb-md pre { @apply bg-deep rounded-[4px] p-3 my-2 overflow-x-auto; }
+.rb-md pre code { @apply bg-transparent p-0 text-[11px] leading-[1.6]; }
+.rb-md table { @apply w-full my-2 text-[12px]; }
+.rb-md th { @apply text-left font-mono text-[10px] text-soft border-b pb-1; border-color: var(--rb-line2); }
+.rb-md td { @apply py-1 border-b; border-color: var(--rb-line); }
+.rb-md hr { @apply my-3; border-color: var(--rb-line); }
+.rb-md img { @apply rounded-[4px] max-w-full; }
+
+/* Agent definitions contain long inline paths that must wrap on narrow screens. */
+.agent-definition .rb-md :not(pre) > code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+@keyframes rb-inline-caret {
+  0%, 54% { opacity: 1; }
+  55%, 100% { opacity: 0.12; }
+}
+
+@keyframes rb-flip-swap {
+  from { transform: translateY(var(--rb-flip-y)); }
+  to { transform: translateY(0); }
+}
+
+.rb-flip-swap {
+  animation: rb-flip-swap 420ms cubic-bezier(.22, .8, .25, 1) both;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rb-flip-swap {
+    animation: none;
+  }
+}
+
+.rb-md-streaming > :last-child::after,
+.rb-md-streaming > ul:last-child > li:last-child::after,
+.rb-md-streaming > ol:last-child > li:last-child::after {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 14px;
+  margin-left: 2px;
+  vertical-align: -2px;
+  background: rgb(var(--rb-acc));
+  animation: rb-inline-caret 1s steps(1, end) infinite;
+}
+
+.rb-md-streaming > ul:last-child::after,
+.rb-md-streaming > ol:last-child::after {
+  display: none;
+}
+
+/* thin scrollbars everywhere */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(128, 128, 128, 0.25) transparent;
+}
+
+/* iOS safe areas */
+.pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+.pt-safe { padding-top: env(safe-area-inset-top); }

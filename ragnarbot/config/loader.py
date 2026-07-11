@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from ragnarbot.config.schema import Config
-from ragnarbot.instance import ensure_instance_root
+from ragnarbot.instance import DEFAULT_PROFILE, ensure_instance_root
 
 
 def get_config_path() -> Path:
@@ -41,7 +41,14 @@ def load_config(config_path: Path | None = None) -> Config:
             print(f"Warning: Failed to load config from {path}: {e}")
             print("Using default configuration.")
 
-    return Config()
+    config = Config()
+    if config_path is None:
+        from ragnarbot.config.ports import assign_profile_ports
+
+        config = assign_profile_ports(config)
+        if ensure_instance_root().profile != DEFAULT_PROFILE:
+            save_config(config, path)
+    return config
 
 
 def save_config(config: Config, config_path: Path | None = None) -> None:

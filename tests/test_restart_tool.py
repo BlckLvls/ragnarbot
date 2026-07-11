@@ -21,7 +21,10 @@ def mock_agent():
 
 
 @pytest.fixture
-def restart_tool(mock_agent):
+def restart_tool(mock_agent, monkeypatch):
+    # Pre-flight config validation reads the profile's config/credentials —
+    # isolated test profiles have none, so stub it to exercise the happy path.
+    monkeypatch.setattr(RestartTool, "_validate_config", staticmethod(lambda: None))
     return RestartTool(agent=mock_agent)
 
 

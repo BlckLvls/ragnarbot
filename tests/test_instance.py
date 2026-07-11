@@ -176,7 +176,7 @@ def _load_script_module(path: Path, name: str):
 
 def test_skill_creator_default_path_is_lazy(tmp_path, monkeypatch):
     module = _load_script_module(
-        Path("/Users/lvls/ragnarbot/ragnarbot/skills/skill-creator/scripts/init_skill.py"),
+        Path(__file__).parents[1] / "ragnarbot/skills/skill-creator/scripts/init_skill.py",
         "test_init_skill",
     )
     monkeypatch.setenv("RAGNARBOT_PROFILE", "vodichezka")
@@ -186,7 +186,7 @@ def test_skill_creator_default_path_is_lazy(tmp_path, monkeypatch):
 
 def test_agent_creator_default_path_is_lazy(tmp_path, monkeypatch):
     module = _load_script_module(
-        Path("/Users/lvls/ragnarbot/ragnarbot/skills/agent-creator/scripts/init_agent.py"),
+        Path(__file__).parents[1] / "ragnarbot/skills/agent-creator/scripts/init_agent.py",
         "test_init_agent",
     )
     monkeypatch.setenv("RAGNARBOT_PROFILE", "vodichezka")
