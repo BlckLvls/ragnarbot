@@ -325,7 +325,7 @@ class WebConfig(BaseModel):
         json_schema_extra={"reload": "warm", "label": "Enable web console"},
     )
     host: str = Field(
-        default="127.0.0.1",
+        default="0.0.0.0",
         json_schema_extra={"reload": "warm", "label": "Web console bind address"},
     )
     port: int = Field(

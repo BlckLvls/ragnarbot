@@ -197,13 +197,25 @@ class WebChannel(BaseChannel):
             attachments = self._resolve_attachments(data.get("attachment_ids") or [])
             if not text and not attachments:
                 return
-            metadata: dict[str, Any] = {}
+            attachment_info = [
+                {"type": a.type, "filename": a.filename} for a in attachments
+            ]
+            file_markers = [
+                f"[file available: {a.filename or 'file'} (file_id: {a.file_id})]"
+                for a in attachments
+                if a.type != "photo"
+            ]
+            agent_text = "\n".join(part for part in [text, *file_markers] if part)
+            metadata: dict[str, Any] = {
+                "display_content": text,
+                "attachments": attachment_info,
+            }
             if data.get("reply_to"):
                 metadata["reply_to"] = data["reply_to"]
             await self._handle_message(
                 sender_id=self.SENDER_ID,
                 chat_id=self.DEFAULT_CHAT_ID,
-                content=text,
+                content=agent_text,
                 attachments=attachments,
                 metadata=metadata,
             )
@@ -213,9 +225,7 @@ class WebChannel(BaseChannel):
                 "message": {
                     "role": "user",
                     "content": text,
-                    "attachments": [
-                        {"type": a.type, "filename": a.filename} for a in attachments
-                    ],
+                    "attachments": attachment_info,
                 },
             })
             return

@@ -152,19 +152,35 @@ export function FieldError({ children }: { children: ReactNode }) {
 
 // ── toggle / stepper / segmented ─────────────────────────────
 
-export function Toggle({ value, onChange, disabled }: { value: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
+export function Toggle({
+  value,
+  onChange,
+  disabled,
+  label,
+  size = 'default',
+}: {
+  value: boolean
+  onChange: (v: boolean) => void
+  disabled?: boolean
+  label: string
+  size?: 'default' | 'large'
+}) {
+  const large = size === 'large'
   return (
     <button
       type="button"
+      role="switch"
+      aria-checked={value}
+      aria-label={label}
       onClick={() => onChange(!value)}
       disabled={disabled}
-      className={`relative h-[20px] w-[34px] rounded-[2px] border transition-colors disabled:opacity-40 ${
+      className={`relative rounded-[3px] border transition-colors disabled:opacity-40 ${large ? 'h-6 w-[42px]' : 'h-5 w-[34px]'} ${
         value ? 'bg-acc/[.13] border-acc/50' : 'bg-surface border-line2'
       }`}
     >
       <span
-        className={`absolute top-[2px] h-[14px] w-[14px] transition-all ${
-          value ? 'right-[2px] bg-acc' : 'left-[2px] bg-faint'
+        className={`absolute transition-all ${large ? 'top-[3px] h-4 w-4' : 'top-[2px] h-[14px] w-[14px]'} ${
+          value ? `${large ? 'right-[3px]' : 'right-[2px]'} bg-acc` : `${large ? 'left-[3px]' : 'left-[2px]'} bg-faint`
         }`}
       />
     </button>
@@ -211,20 +227,23 @@ export function Segmented<T extends string>({
   value,
   onChange,
   labels,
+  size = 'default',
 }: {
   options: readonly T[]
   value: T
   onChange: (v: T) => void
   labels?: Partial<Record<T, string>>
+  size?: 'default' | 'large'
 }) {
+  const large = size === 'large'
   return (
-    <span className="inline-flex rounded-[3px] bg-surface p-[2px] border border-line">
+    <span className={`inline-flex rounded-[4px] border border-line bg-surface ${large ? 'p-1' : 'p-[2px]'}`}>
       {options.map((o) => (
         <button
           key={o}
           type="button"
           onClick={() => onChange(o)}
-          className={`rounded-[2px] px-2.5 py-1 text-[11px] font-medium transition-colors ${
+          className={`rounded-[3px] font-medium transition-colors ${large ? 'min-h-9 px-3 py-1.5 text-[12px]' : 'px-2.5 py-1 text-[11px]'} ${
             o === value ? 'bg-acc text-onacc' : 'text-soft hover:text-ink'
           }`}
         >
@@ -348,14 +367,18 @@ export function Sheet({
         className={
           side
             ? 'ml-auto h-full w-full max-w-md overflow-y-auto bg-panel border-l border-line p-4'
-            : 'mt-auto max-h-[85vh] w-full overflow-y-auto rounded-t-[10px] bg-panel border-t border-line p-4 pb-safe lg:m-auto lg:max-w-lg lg:rounded-[10px] lg:border'
+            : 'mt-auto max-h-[85vh] w-full overflow-y-auto rounded-t-[12px] border-t border-line bg-panel p-5 pb-[calc(22px+env(safe-area-inset-bottom))] lg:m-auto lg:max-w-lg lg:rounded-[10px] lg:border lg:pb-5'
         }
         onClick={(e) => e.stopPropagation()}
       >
         {title && (
-          <div className="mb-3 flex items-center justify-between">
-            <div className="text-[13.5px] font-semibold text-ink">{title}</div>
-            <button onClick={onClose} className="text-muted hover:text-ink text-[16px] leading-none px-1">
+          <div className="mb-5 flex items-center justify-between">
+            <div className="text-[15px] font-semibold text-ink">{title}</div>
+            <button
+              onClick={onClose}
+              aria-label="Close"
+              className="flex h-9 w-9 items-center justify-center rounded-[4px] bg-raised2 text-[18px] leading-none text-muted hover:text-ink"
+            >
               ×
             </button>
           </div>

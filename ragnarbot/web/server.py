@@ -25,6 +25,7 @@ _USER_CHANNELS = {"web", "telegram"}
 
 # Internal bookkeeping injected into sessions for the LLM's benefit — never shown in chat
 _MARKER_PREFIXES = (
+    "[System:",
     "[Cron result:",
     "[Cron task:",
     "[Heartbeat check",
@@ -50,6 +51,22 @@ def _is_real_user_message(m: dict) -> bool:
         and bool(m["content"].strip())
         and not _is_technical_message(m)
     )
+
+
+def _tool_arguments_preview(arguments: Any, limit: int = 160) -> str:
+    """Render stored tool arguments as a compact, stable one-line summary."""
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except (json.JSONDecodeError, TypeError):
+            return arguments.replace("\n", " ")[:limit]
+    if not isinstance(arguments, dict):
+        return str(arguments).replace("\n", " ")[:limit]
+    parts = []
+    for key, value in arguments.items():
+        rendered = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
+        parts.append(f"{key}={rendered.replace(chr(10), ' ')}")
+    return " · ".join(parts)[:limit]
 
 
 class UploadStore:
@@ -186,7 +203,6 @@ class WebServer:
         r.add_get("/api/sessions", self._handle_sessions_list)
         r.add_post("/api/sessions/new", self._handle_session_new)
         r.add_get("/api/sessions/active/messages", self._handle_active_messages)
-        r.add_get("/api/sessions/{session_id}/messages", self._handle_session_messages)
         r.add_post("/api/sessions/{session_id}/activate", self._handle_session_activate)
         r.add_patch("/api/sessions/{session_id}", self._handle_session_patch)
         r.add_delete("/api/sessions/{session_id}", self._handle_session_delete)
@@ -207,16 +223,40 @@ class WebServer:
     def _build_state(self) -> dict[str, Any]:
         agent = self.agent
         session = agent.sessions.get_or_create(WEB_USER_KEY)
+        context = self._web_context_state(session)
         return {
             "session_id": session.key,
             "session_title": _session_title(session.metadata, session.messages),
             "model": agent.model,
             "reasoning_level": agent.reasoning_level,
             "context_mode": agent.context_mode,
+            "context_used": context["used_tokens"],
+            "context_max": context["max_tokens"],
+            "context_compactions": context["compactions"],
             "lightning": agent.lightning_mode,
             "trace": agent.trace_mode,
             "steering": agent.steering_enabled,
             "version": __version__,
+        }
+
+    def _web_context_state(self, session: Any | None = None) -> dict[str, int]:
+        """Return live context usage for the conversation active in Web Chat."""
+        try:
+            used = self.agent.get_context_tokens(WEB_USER_KEY, "web", "main")
+        except Exception:
+            logger.exception("Failed to estimate web context usage")
+            used = 0
+        if session is None:
+            session = self.agent.sessions.get_or_create(WEB_USER_KEY)
+        compactions = sum(
+            1
+            for message in session.messages
+            if (message.get("metadata") or {}).get("type") == "compaction"
+        )
+        return {
+            "used_tokens": used,
+            "max_tokens": self.agent.max_context_tokens,
+            "compactions": compactions,
         }
 
     # ── REST: status ─────────────────────────────────────────────
@@ -348,15 +388,15 @@ class WebServer:
 
     async def _handle_session_new(self, request: web.Request) -> web.Response:
         session = self.agent.sessions.create_new(WEB_USER_KEY)
-        await self.channel.broadcast({"type": "session_changed", "session_id": session.key})
+        await self.channel.broadcast({
+            "type": "session_changed",
+            "session_id": session.key,
+            **self._web_context_state(session),
+        })
         return web.json_response({"session_id": session.key})
 
     async def _handle_active_messages(self, request: web.Request) -> web.Response:
         session = self.agent.sessions.get_or_create(WEB_USER_KEY)
-        return self._messages_response(session, request)
-
-    async def _handle_session_messages(self, request: web.Request) -> web.Response:
-        session = self._get_session_or_404(request)
         return self._messages_response(session, request)
 
     async def _handle_session_activate(self, request: web.Request) -> web.Response:
@@ -368,7 +408,11 @@ class WebServer:
         if ch not in _USER_CHANNELS:
             raise web.HTTPBadRequest(reason="only user conversations can be activated")
         self.agent.sessions.set_active(WEB_USER_KEY, session.key)
-        await self.channel.broadcast({"type": "session_changed", "session_id": session.key})
+        await self.channel.broadcast({
+            "type": "session_changed",
+            "session_id": session.key,
+            **self._web_context_state(session),
+        })
         return web.json_response({"ok": True})
 
     async def _handle_session_patch(self, request: web.Request) -> web.Response:
@@ -400,10 +444,7 @@ class WebServer:
         except ValueError:
             limit = 200
         before = request.query.get("before")
-        messages = [
-            m for m in session.messages
-            if m.get("role") in ("user", "assistant") and not _is_technical_message(m)
-        ]
+        messages = self._display_messages(session)
         end = len(messages)
         if before is not None:
             try:
@@ -411,17 +452,7 @@ class WebServer:
             except ValueError:
                 pass
         start = max(0, end - limit)
-        page = [
-            {
-                "index": start + i,
-                "role": m["role"],
-                "content": m.get("content") or "",
-                "metadata": m.get("metadata", {}),
-                "media_refs": m.get("media_refs", []),
-                "media_items": m.get("media_items", []),
-            }
-            for i, m in enumerate(messages[start:end])
-        ]
+        page = [dict(m, index=start + i) for i, m in enumerate(messages[start:end])]
         return web.json_response({
             "session_id": session.key,
             "title": _session_title(session.metadata, session.messages),
@@ -429,6 +460,163 @@ class WebServer:
             "start": start,
             "messages": page,
         })
+
+    def _display_message(self, session, message: dict) -> dict[str, Any]:
+        """Convert one stored message into the stable web transcript shape."""
+        payload: dict[str, Any] = {
+            "role": message["role"],
+            "content": message.get("content") or "",
+            "metadata": dict(message.get("metadata") or {}),
+        }
+        for key in ("media_items", "media", "usage", "attachments"):
+            if message.get(key):
+                payload[key] = message[key]
+
+        refs = []
+        for ref in message.get("media_refs") or []:
+            path = ref.get("path")
+            if not path and ref.get("filename") and self.media_manager is not None:
+                path = str(self.media_manager.get_photo_path(session.key, ref["filename"]))
+            if path:
+                refs.append({
+                    "path": path,
+                    "mime": ref.get("mime") or ref.get("mime_type"),
+                    "kind": ref.get("type") or "photo",
+                    "filename": ref.get("filename") or Path(path).name,
+                })
+        if refs:
+            payload["media_refs"] = refs
+        return payload
+
+    def _display_messages(self, session) -> list[dict[str, Any]]:
+        """Rebuild user-visible turns from the canonical LLM transcript.
+
+        Raw sessions preserve assistant tool-call messages and tool results for
+        future model context. The web transcript rebuilds them as a chronological
+        segment stream so text, tools, and media never move after reload.
+        """
+        display: list[dict[str, Any]] = []
+        intermediate: list[str] = []
+        tools: list[dict[str, Any]] = []
+        tool_by_id: dict[str, dict[str, Any]] = {}
+        media_events: list[dict[str, Any]] = []
+        pending_media: list[dict[str, Any]] = []
+        segments: list[dict[str, Any]] = []
+        turn_open = False
+
+        def reset_turn() -> None:
+            nonlocal intermediate, tools, tool_by_id, media_events, segments, turn_open
+            intermediate = []
+            tools = []
+            tool_by_id = {}
+            media_events = []
+            segments = []
+            turn_open = False
+
+        def append_assistant(message: dict) -> None:
+            payload = self._display_message(session, message)
+            metadata = payload["metadata"]
+            if segments:
+                metadata["segments"] = list(segments)
+            # Keep the older grouped fields for API compatibility. New clients
+            # prefer `segments`; the final content intentionally stays separate
+            # so it always renders below the tool activity card.
+            if intermediate:
+                metadata["intermediate"] = list(intermediate)
+            if tools:
+                metadata["tools"] = list(tools)
+            if media_events:
+                metadata["media_events"] = list(media_events)
+            display.append(payload)
+            reset_turn()
+
+        for message in session.messages:
+            role = message.get("role")
+            if role not in ("user", "assistant", "tool") or _is_technical_message(message):
+                continue
+
+            metadata = message.get("metadata") or {}
+            if role == "user":
+                if metadata.get("type") == "compaction":
+                    display.append(self._display_message(session, message))
+                    continue
+                if not turn_open:
+                    reset_turn()
+                    media_events.extend(pending_media)
+                    segments.extend(
+                        {"type": "media", **event} for event in pending_media
+                    )
+                    pending_media = []
+                turn_open = True
+                display.append(self._display_message(session, message))
+                continue
+
+            if role == "assistant" and message.get("media_items"):
+                media_event = {
+                    "content": message.get("content") or "",
+                    "media_items": message.get("media_items") or [],
+                }
+                if turn_open:
+                    media_events.append(media_event)
+                    segments.append({"type": "media", **media_event})
+                else:
+                    pending_media.append(media_event)
+                continue
+
+            if role == "assistant" and message.get("tool_calls"):
+                content = (message.get("content") or "").strip()
+                if content:
+                    intermediate.append(content)
+                    segments.append({"type": "text", "content": content})
+                for tool_call in message.get("tool_calls") or []:
+                    fn = tool_call.get("function") or {}
+                    step = {
+                        "tool_call_id": tool_call.get("id"),
+                        "tool": fn.get("name") or "tool",
+                        "args_preview": _tool_arguments_preview(fn.get("arguments") or {}),
+                        "status": "running",
+                        "done": False,
+                    }
+                    tools.append(step)
+                    if step["tool_call_id"]:
+                        tool_by_id[step["tool_call_id"]] = step
+                continue
+
+            if role == "tool":
+                step = tool_by_id.get(message.get("tool_call_id"))
+                if step is not None:
+                    result = message.get("content") or ""
+                    step["done"] = True
+                    step["status"] = "error" if result.startswith("Error") else "ok"
+                continue
+
+            # A normal assistant message closes the visible turn.
+            if pending_media and not turn_open:
+                media_events.extend(pending_media)
+                segments.extend(
+                    {"type": "media", **event} for event in pending_media
+                )
+                pending_media = []
+            append_assistant(message)
+
+        # Preserve incomplete/stopped turns and standalone media sends.
+        if turn_open and (intermediate or tools or media_events):
+            append_assistant({
+                "role": "assistant",
+                "content": "",
+                "metadata": {"stopped": True},
+            })
+        for event in pending_media:
+            display.append({
+                "role": "assistant",
+                "content": "",
+                "metadata": {
+                    "media_events": [event],
+                    "segments": [{"type": "media", **event}],
+                },
+            })
+
+        return display
 
     # ── static SPA ───────────────────────────────────────────────
 

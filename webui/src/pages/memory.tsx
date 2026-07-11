@@ -1,36 +1,22 @@
-// Memory & Files: recall search + memory/daily-note pins + workspace file tree + split editor.
+// Files: editable workspace documents with pinned memory files and downloads.
 
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, ApiError, RecallResult, WorkspaceEntry } from '../lib/api'
+import { useSearchParams } from 'react-router-dom'
+import { api, ApiError, WorkspaceEntry } from '../lib/api'
 import { Page } from '../app/shell'
 import { Markdown } from '../components/markdown'
-import {
-  Button,
-  Card,
-  EmptyState,
-  SectionLabel,
-  Segmented,
-  Skeleton,
-  TextInput,
-  Toast,
-} from '../components/ui'
+import { Button, ConfirmDialog, EmptyState, SectionLabel, Segmented, Skeleton, Toast } from '../components/ui'
 
-const SCOPES = ['memory', 'chats', 'both'] as const
-const TABS = ['memory', 'files'] as const
 const EDIT_MODES = ['edit', 'preview'] as const
 
-const PINS: { label: string; path: string; heartbeat?: boolean }[] = [
+const PINS: { label: string; path: string }[] = [
   { label: 'MEMORY.md', path: 'memory/MEMORY.md' },
   { label: 'IDENTITY.md', path: 'IDENTITY.md' },
   { label: 'USER.md', path: 'USER.md' },
   { label: 'TOOLS.md', path: 'TOOLS.md' },
-  { label: 'HEARTBEAT.md', path: 'HEARTBEAT.md', heartbeat: true },
+  { label: 'HEARTBEAT.md', path: 'HEARTBEAT.md' },
 ]
-
-const DAILY_RE = /^memory\/\d{4}-\d{2}-\d{2}\.md$/
-
-type SearchOutcome = { notReady: string } | { results: RecallResult[] }
 
 function fmtSize(n: number | null): string {
   if (n == null) return ''
@@ -39,128 +25,31 @@ function fmtSize(n: number | null): string {
   return `${n} B`
 }
 
-// ── recall search ────────────────────────────────────────────
-
-function ResultCard({ r }: { r: RecallResult }) {
-  const label = String(r.source ?? r.path ?? r.title ?? r.id ?? '')
-  const text = String(r.text ?? r.snippet ?? r.content ?? r.body ?? '')
-  const score = typeof r.score === 'number' ? r.score : null
-  const date = r.date ?? r.timestamp ?? r.created_at
-  return (
-    <Card>
-      {(label || score != null) && (
-        <div className="flex items-baseline gap-2">
-          {label && <span className="truncate font-mono text-[10px] text-acc">{label}</span>}
-          {score != null && (
-            <span className="ml-auto font-mono text-[9.5px] text-faint">score {score.toFixed(2)}</span>
-          )}
-        </div>
-      )}
-      {text && (
-        <div className="mt-1.5 line-clamp-4 whitespace-pre-wrap text-[11.5px] leading-relaxed text-soft">
-          {text}
-        </div>
-      )}
-      {date != null && String(date) !== '' && (
-        <div className="mt-1 font-mono text-[9px] text-faint">{String(date)}</div>
-      )}
-    </Card>
-  )
+function downloadUrl(path: string): string {
+  return `/api/workspace/download?path=${encodeURIComponent(path)}`
 }
-
-function RecallSearch() {
-  const [query, setQuery] = useState('')
-  const [scope, setScope] = useState<(typeof SCOPES)[number]>('both')
-  const [results, setResults] = useState<RecallResult[] | null>(null)
-  const [notReady, setNotReady] = useState<string | null>(null)
-
-  const search = useMutation<SearchOutcome>({
-    mutationFn: async () => {
-      const res = await fetch('/api/recall/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, scope, top_k: 8 }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (res.status === 503) return { notReady: String(data.status ?? data.error ?? 'building') }
-      if (!res.ok) throw new ApiError(data?.error || `HTTP ${res.status}`, res.status)
-      return { results: (data.results ?? []) as RecallResult[] }
-    },
-    onSuccess: (d) => {
-      if ('notReady' in d) {
-        setNotReady(d.notReady)
-        setResults(null)
-      } else {
-        setNotReady(null)
-        setResults(d.results)
-      }
-    },
-  })
-
-  const run = () => {
-    if (query.trim()) search.mutate()
-  }
-
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-        <div className="flex-1">
-          <TextInput
-            value={query}
-            placeholder="Search memory & chats…"
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && run()}
-          />
-        </div>
-        <div className="flex items-center gap-2">
-          <Segmented options={SCOPES} value={scope} onChange={setScope} />
-          <Button variant="primary" onClick={run} loading={search.isPending} className="min-h-[38px]">
-            Search
-          </Button>
-        </div>
-      </div>
-
-      {notReady && (
-        <div className="rounded-[4px] border border-warn/30 bg-warn/10 px-3 py-2 text-[11.5px] text-warn">
-          recall index not ready: {notReady}
-        </div>
-      )}
-      {search.isError && !notReady && (
-        <div className="rounded-[4px] border border-err/30 bg-err/10 px-3 py-2 text-[11.5px] text-err">
-          {(search.error as ApiError)?.message ?? 'search failed'}
-        </div>
-      )}
-      {results && (
-        <div className="grid grid-cols-1 gap-2 lg:grid-cols-3">
-          {results.length === 0 ? (
-            <div className="lg:col-span-3">
-              <EmptyState title="No matches" />
-            </div>
-          ) : (
-            results.map((r, i) => <ResultCard key={i} r={r} />)
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ── file editor ──────────────────────────────────────────────
 
 function Editor({
   path,
   onClose,
   onSaved,
+  onDirtyChange,
   mobile,
 }: {
   path: string
   onClose: () => void
   onSaved: () => void
+  onDirtyChange: (dirty: boolean) => void
   mobile?: boolean
 }) {
   const [mode, setMode] = useState<(typeof EDIT_MODES)[number]>('edit')
   const [content, setContent] = useState('')
   const [dirty, setDirty] = useState(false)
+
+  const setDirtyState = (next: boolean) => {
+    setDirty(next)
+    onDirtyChange(next)
+  }
 
   const fileQuery = useQuery({
     queryKey: ['wsfile', path],
@@ -173,14 +62,25 @@ function Editor({
   useEffect(() => {
     if (fileQuery.data) {
       setContent(fileQuery.data.content)
-      setDirty(false)
+      setDirtyState(false)
     }
+    // onDirtyChange is stable for the lifetime of this keyed editor.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fileQuery.data])
+
+  useEffect(() => {
+    const guard = (event: BeforeUnloadEvent) => {
+      if (!dirty) return
+      event.preventDefault()
+    }
+    window.addEventListener('beforeunload', guard)
+    return () => window.removeEventListener('beforeunload', guard)
+  }, [dirty])
 
   const save = useMutation({
     mutationFn: () => api.put('/api/workspace/file', { path, content }),
     onSuccess: () => {
-      setDirty(false)
+      setDirtyState(false)
       onSaved()
     },
   })
@@ -188,16 +88,23 @@ function Editor({
   const err = fileQuery.error as ApiError | null
 
   return (
-    <div className={`flex min-h-0 flex-col ${mobile ? 'h-full' : 'lg:h-[70vh]'}`}>
+    <div className={`flex min-h-0 flex-col ${mobile ? 'h-full' : 'lg:h-[calc(100dvh-150px)]'}`}>
       <div className="flex items-center gap-2 border-b border-line pb-2">
         {mobile && (
-          <button onClick={onClose} className="text-[13px] text-muted hover:text-ink">
+          <button onClick={onClose} className="min-h-10 px-1 text-[13px] text-muted hover:text-ink" aria-label="Back to files">
             ‹
           </button>
         )}
         <span className="truncate font-mono text-[11px] text-mist">{path}</span>
         {dirty && <span className="h-[5px] w-[5px] flex-none bg-acc" title="unsaved" />}
         <div className="ml-auto flex items-center gap-2">
+          <a
+            href={downloadUrl(path)}
+            download
+            className="rounded-[3px] border border-line bg-raised2 px-2.5 py-1.5 text-[11px] text-soft hover:text-ink"
+          >
+            Download
+          </a>
           <Segmented options={EDIT_MODES} value={mode} onChange={setMode} />
           <Button
             variant="primary"
@@ -228,7 +135,7 @@ function Editor({
             value={content}
             onChange={(e) => {
               setContent(e.target.value)
-              setDirty(true)
+              if (!dirty) setDirtyState(true)
             }}
             spellCheck={false}
             className="min-h-[400px] w-full flex-1 resize-none rounded-[3px] border border-line2 bg-raised px-3 py-2.5 font-mono text-[11.5px] leading-relaxed text-ink outline-none focus:border-acc/50 lg:min-h-full"
@@ -242,40 +149,49 @@ function Editor({
   )
 }
 
-// ── pins & files list ────────────────────────────────────────
-
-function PinRow({
-  label,
+function FileRow({
+  entry,
   active,
   onClick,
-  right,
 }: {
-  label: string
+  entry: WorkspaceEntry
   active: boolean
   onClick: () => void
-  right?: React.ReactNode
 }) {
+  const depth = entry.path.split('/').length - 1
+  const name = entry.path.split('/').pop() ?? entry.path
+  if (entry.dir) {
+    return (
+      <div
+        className="flex min-h-[36px] items-center font-mono text-[11.5px] font-semibold text-mist"
+        style={{ paddingLeft: 10 + depth * 14 }}
+      >
+        {name}/
+      </div>
+    )
+  }
   return (
-    <div
+    <button
       onClick={onClick}
-      className={`flex min-h-[44px] cursor-pointer items-center gap-2 rounded-[3px] px-2.5 ${
+      style={{ paddingLeft: 10 + depth * 14 }}
+      className={`flex min-h-[44px] w-full items-center gap-2 rounded-[3px] pr-2.5 text-left ${
         active ? 'bg-raised2' : 'hover:bg-raised2/50'
       }`}
     >
       <span className={`flex-1 truncate font-mono text-[11.5px] ${active ? 'text-ink' : 'text-soft'}`}>
-        {label}
+        {name}
       </span>
-      {right}
-    </div>
+      <span className="font-mono text-[9.5px] text-faint">{fmtSize(entry.size)}</span>
+    </button>
   )
 }
 
-// ── page ─────────────────────────────────────────────────────
-
-export default function MemoryPage() {
+export default function FilesPage() {
   const qc = useQueryClient()
-  const [tab, setTab] = useState<(typeof TABS)[number]>('memory')
-  const [selected, setSelected] = useState<string | null>(null)
+  const [searchParams] = useSearchParams()
+  const [selected, setSelected] = useState<string | null>(() => searchParams.get('path'))
+  const [dirty, setDirty] = useState(false)
+  const [pendingSelection, setPendingSelection] = useState<string | null | undefined>(undefined)
   const [toast, setToast] = useState<string | null>(null)
 
   const tree = useQuery({
@@ -283,155 +199,112 @@ export default function MemoryPage() {
     queryFn: () => api.get<WorkspaceEntry[]>('/api/workspace/tree'),
   })
 
-  const heartbeat = useMutation({
-    mutationFn: () => api.post('/api/heartbeat/trigger'),
-    onSuccess: () => setToast('Heartbeat triggered'),
-  })
+  const files = useMemo(
+    () => (tree.data ?? []).slice().sort((a, b) => a.path.localeCompare(b.path)),
+    [tree.data],
+  )
+  const existingPaths = useMemo(() => new Set(files.filter((e) => !e.dir).map((e) => e.path)), [files])
+  const pins = PINS.filter((p) => existingPaths.has(p.path))
 
-  const dailyNotes = useMemo(() => {
-    return (tree.data ?? [])
-      .filter((e) => !e.dir && DAILY_RE.test(e.path))
-      .sort((a, b) => b.path.localeCompare(a.path))
-  }, [tree.data])
-
-  const files = useMemo(() => {
-    return (tree.data ?? []).slice().sort((a, b) => a.path.localeCompare(b.path))
-  }, [tree.data])
+  const choose = (next: string | null) => {
+    if (next === selected) return
+    if (dirty) {
+      setPendingSelection(next)
+      return
+    }
+    setSelected(next)
+  }
 
   const onSaved = () => {
     setToast('Saved')
     qc.invalidateQueries({ queryKey: ['workspace-tree'] })
   }
 
+  const editor = selected ? (
+    <Editor
+      key={selected}
+      path={selected}
+      onClose={() => choose(null)}
+      onSaved={onSaved}
+      onDirtyChange={setDirty}
+    />
+  ) : (
+    <EmptyState title="Pick a file to edit" />
+  )
+
   return (
-    <Page title="Memory">
-      <div className="p-4 lg:p-6">
-        <div className="mb-4">
-          <RecallSearch />
+    <Page title="Files">
+      <div className="flex h-full min-h-0">
+        <div className="w-full min-h-0 overflow-y-auto border-line bg-panel p-3 lg:w-[330px] lg:min-w-[330px] lg:border-r">
+          {pins.length > 0 && (
+            <div className="mb-4">
+              <SectionLabel className="mb-1 px-1">Pinned</SectionLabel>
+              {pins.map((pin) => (
+                <button
+                  key={pin.path}
+                  onClick={() => choose(pin.path)}
+                  className={`flex min-h-[44px] w-full items-center rounded-[3px] px-2.5 text-left font-mono text-[11.5px] ${
+                    selected === pin.path ? 'bg-raised2 text-ink' : 'text-soft hover:bg-raised2/50'
+                  }`}
+                >
+                  {pin.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <SectionLabel className="mb-1 px-1">Workspace</SectionLabel>
+          {tree.isLoading ? (
+            <div className="space-y-2 p-2">
+              <Skeleton className="w-2/3" />
+              <Skeleton className="w-1/2" />
+              <Skeleton className="w-3/4" />
+            </div>
+          ) : files.length === 0 ? (
+            <EmptyState title="Workspace is empty" />
+          ) : (
+            files.map((entry) => (
+              <FileRow
+                key={entry.path}
+                entry={entry}
+                active={selected === entry.path}
+                onClick={() => !entry.dir && choose(entry.path)}
+              />
+            ))
+          )}
         </div>
 
-        <div className="lg:flex lg:gap-5">
-          {/* left column: tabs + list */}
-          <div className="lg:w-[320px] lg:flex-none">
-            <div className="mb-3">
-              <Segmented
-                options={TABS}
-                value={tab}
-                onChange={setTab}
-                labels={{ memory: 'Memory', files: 'Files' }}
-              />
-            </div>
-
-            {tab === 'memory' ? (
-              <div className="space-y-4">
-                <div>
-                  <SectionLabel className="mb-1 px-1">Pinned</SectionLabel>
-                  {PINS.map((p) => (
-                    <PinRow
-                      key={p.path}
-                      label={p.label}
-                      active={selected === p.path}
-                      onClick={() => setSelected(p.path)}
-                      right={
-                        p.heartbeat ? (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              heartbeat.mutate()
-                            }}
-                            disabled={heartbeat.isPending}
-                            className="rounded-[2px] bg-acc/[.13] px-2 py-1 font-mono text-[9.5px] font-semibold text-acc hover:bg-acc/20 disabled:opacity-40"
-                          >
-                            Trigger now
-                          </button>
-                        ) : undefined
-                      }
-                    />
-                  ))}
-                </div>
-                <div>
-                  <SectionLabel className="mb-1 px-1">Daily notes</SectionLabel>
-                  {dailyNotes.length === 0 ? (
-                    <div className="px-2.5 py-2 text-[11px] text-muted">No daily notes yet</div>
-                  ) : (
-                    dailyNotes.map((e) => (
-                      <PinRow
-                        key={e.path}
-                        label={e.path.replace(/^memory\//, '')}
-                        active={selected === e.path}
-                        onClick={() => setSelected(e.path)}
-                      />
-                    ))
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div className="max-h-[60vh] overflow-y-auto">
-                {tree.isLoading ? (
-                  <div className="space-y-2 p-2">
-                    <Skeleton className="w-2/3" />
-                    <Skeleton className="w-1/2" />
-                    <Skeleton className="w-3/4" />
-                  </div>
-                ) : files.length === 0 ? (
-                  <EmptyState title="Workspace is empty" />
-                ) : (
-                  files.map((e) => {
-                    const depth = e.path.split('/').length - 1
-                    const name = e.path.split('/').pop() ?? e.path
-                    if (e.dir) {
-                      return (
-                        <div
-                          key={e.path}
-                          className="flex min-h-[36px] items-center font-mono text-[11.5px] font-semibold text-mist"
-                          style={{ paddingLeft: 10 + depth * 14 }}
-                        >
-                          {name}/
-                        </div>
-                      )
-                    }
-                    return (
-                      <div
-                        key={e.path}
-                        onClick={() => setSelected(e.path)}
-                        style={{ paddingLeft: 10 + depth * 14 }}
-                        className={`flex min-h-[44px] cursor-pointer items-center gap-2 rounded-[3px] pr-2.5 ${
-                          selected === e.path ? 'bg-raised2' : 'hover:bg-raised2/50'
-                        }`}
-                      >
-                        <span
-                          className={`flex-1 truncate font-mono text-[11.5px] ${
-                            selected === e.path ? 'text-ink' : 'text-soft'
-                          }`}
-                        >
-                          {name}
-                        </span>
-                        <span className="font-mono text-[9.5px] text-faint">{fmtSize(e.size)}</span>
-                      </div>
-                    )
-                  })
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* desktop editor pane */}
-          <div className="mt-4 hidden min-w-0 flex-1 rounded-[4px] border border-line bg-raised p-3 lg:mt-0 lg:block">
-            {selected ? (
-              <Editor key={selected} path={selected} onClose={() => setSelected(null)} onSaved={onSaved} />
-            ) : (
-              <EmptyState title="Pick a file to edit" />
-            )}
-          </div>
+        <div className="hidden min-w-0 flex-1 p-4 lg:block">
+          <div className="h-full rounded-[4px] border border-line bg-raised p-3">{editor}</div>
         </div>
       </div>
 
-      {/* mobile editor overlay */}
       {selected && (
         <div className="fixed inset-0 z-40 flex flex-col bg-page p-4 pt-safe lg:hidden">
-          <Editor key={selected} path={selected} onClose={() => setSelected(null)} onSaved={onSaved} mobile />
+          <Editor
+            key={selected}
+            path={selected}
+            onClose={() => choose(null)}
+            onSaved={onSaved}
+            onDirtyChange={setDirty}
+            mobile
+          />
         </div>
       )}
+
+      <ConfirmDialog
+        open={pendingSelection !== undefined}
+        title="Discard unsaved changes?"
+        body="Your edits to the current file have not been saved."
+        confirmLabel="Discard"
+        destructive
+        onConfirm={() => {
+          setDirty(false)
+          setSelected(pendingSelection ?? null)
+          setPendingSelection(undefined)
+        }}
+        onCancel={() => setPendingSelection(undefined)}
+      />
 
       {toast && <Toast text={toast} onDone={() => setToast(null)} />}
     </Page>

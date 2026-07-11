@@ -49,6 +49,15 @@ html.light {
   --rb-line2: rgba(25, 26, 30, 0.14);
 }
 
+html {
+  background-color: rgb(var(--rb-panel));
+  color-scheme: dark;
+}
+
+html.light {
+  color-scheme: light;
+}
+
 /* Accent variants (user-switchable, from the design's accent options) */
 html[data-accent='cyan'] { --rb-acc: 111 195 212; --rb-onacc: 10 22 25; }
 html[data-accent='bone'] { --rb-acc: 236 234 228; --rb-onacc: 23 19 10; }
@@ -58,8 +67,14 @@ html.light[data-accent='bone'] { --rb-acc: 90 88 82; --rb-onacc: 245 244 240; }
 html.light[data-accent='ember'] { --rb-acc: 194 79 66; --rb-onacc: 250 240 238; }
 
 body {
-  @apply bg-page text-body font-sans antialiased;
+  @apply text-body font-sans antialiased;
+  background-color: rgb(var(--rb-panel));
   overscroll-behavior-y: none;
+}
+
+#root {
+  min-height: 100%;
+  background-color: rgb(var(--rb-page));
 }
 
 /* mono section label — the recurring uppercase mono heading */
@@ -92,6 +107,45 @@ body {
 .rb-md td { @apply py-1 border-b; border-color: var(--rb-line); }
 .rb-md hr { @apply my-3; border-color: var(--rb-line); }
 .rb-md img { @apply rounded-[4px] max-w-full; }
+
+@keyframes rb-inline-caret {
+  0%, 54% { opacity: 1; }
+  55%, 100% { opacity: 0.12; }
+}
+
+@keyframes rb-flip-swap {
+  from { transform: translateY(var(--rb-flip-y)); }
+  to { transform: translateY(0); }
+}
+
+.rb-flip-swap {
+  animation: rb-flip-swap 420ms cubic-bezier(.22, .8, .25, 1) both;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rb-flip-swap {
+    animation: none;
+  }
+}
+
+.rb-md-streaming > :last-child::after,
+.rb-md-streaming > ul:last-child > li:last-child::after,
+.rb-md-streaming > ol:last-child > li:last-child::after {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 14px;
+  margin-left: 2px;
+  vertical-align: -2px;
+  background: rgb(var(--rb-acc));
+  animation: rb-inline-caret 1s steps(1, end) infinite;
+}
+
+.rb-md-streaming > ul:last-child::after,
+.rb-md-streaming > ol:last-child::after {
+  display: none;
+}
 
 /* thin scrollbars everywhere */
 * {

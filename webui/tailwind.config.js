@@ -36,11 +36,21 @@ export default {
       keyframes: {
         'rb-blink': { '0%,55%': { opacity: '1' }, '56%,100%': { opacity: '.12' } },
         'rb-pulse': { '0%,100%': { opacity: '1' }, '50%': { opacity: '.3' } },
+        'rb-slide-in-left': {
+          '0%': { transform: 'translateX(-100%)' },
+          '100%': { transform: 'translateX(0)' },
+        },
+        'rb-message-in': {
+          '0%': { opacity: '0', transform: 'translateY(6px) scale(.995)' },
+          '100%': { opacity: '1', transform: 'translateY(0) scale(1)' },
+        },
       },
       animation: {
         'rb-blink': 'rb-blink 1s steps(1) infinite',
         'rb-pulse': 'rb-pulse 1s infinite',
         'rb-skeleton': 'rb-pulse 1.6s infinite',
+        'rb-slide-in-left': 'rb-slide-in-left 160ms ease-out both',
+        'rb-message-in': 'rb-message-in 180ms cubic-bezier(.2,.8,.2,1) both',
       },
     },
   },

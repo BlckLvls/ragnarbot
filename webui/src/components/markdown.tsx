@@ -27,9 +27,15 @@ function CodeBlock({ className, children }: { className?: string; children?: Rea
   )
 }
 
-export const Markdown = memo(function Markdown({ children }: { children: string }) {
+export const Markdown = memo(function Markdown({
+  children,
+  streaming = false,
+}: {
+  children: string
+  streaming?: boolean
+}) {
   return (
-    <div className="rb-md">
+    <div className={`rb-md ${streaming ? 'rb-md-streaming' : ''}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{

@@ -6,6 +6,10 @@ export type Accent = 'amber' | 'cyan' | 'bone' | 'ember'
 export function applyTheme(theme: Theme, accent: Accent) {
   const root = document.documentElement
   root.classList.toggle('light', theme === 'light')
+  root.style.colorScheme = theme
+  document
+    .querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+    ?.setAttribute('content', theme === 'light' ? '#ECE9E2' : '#101116')
   if (accent === 'amber') root.removeAttribute('data-accent')
   else root.setAttribute('data-accent', accent)
   localStorage.setItem('rb-theme', theme)

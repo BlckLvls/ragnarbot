@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect, useState } from 'react'
-import { Route, Routes, useLocation } from 'react-router-dom'
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { connectWs, useChat } from './lib/ws'
 import { initTheme } from './app/theme'
@@ -16,14 +16,12 @@ import { Skeleton, Toast } from './components/ui'
 import { api } from './lib/api'
 
 const ChatPage = lazy(() => import('./pages/chat'))
-const SessionsPage = lazy(() => import('./pages/sessions'))
+const FilesPage = lazy(() => import('./pages/memory'))
 const SettingsPage = lazy(() => import('./pages/settings'))
 const CronPage = lazy(() => import('./pages/cron'))
 const HooksPage = lazy(() => import('./pages/hooks'))
 const AgentsPage = lazy(() => import('./pages/agents'))
-const MemoryPage = lazy(() => import('./pages/memory'))
 const SkillsPage = lazy(() => import('./pages/skills'))
-const StatusPage = lazy(() => import('./pages/status'))
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 5000 } },
@@ -42,6 +40,7 @@ function Fallback() {
 export default function App() {
   const [more, setMore] = useState(false)
   const [bell, setBell] = useState(false)
+  const [chats, setChats] = useState(false)
   const location = useLocation()
   const toast = useChat((s) => s.toast)
   const setToast = useChat((s) => s.setToast)
@@ -50,7 +49,7 @@ export default function App() {
 
   useEffect(() => {
     initTheme()
-    connectWs()
+    const disconnect = connectWs()
     api
       .get<{ version: string }>('/api/status')
       .then((d) => setVersion(d.version))
@@ -59,33 +58,49 @@ export default function App() {
       .get<{ unread: number }>('/api/notifications?limit=1')
       .then((d) => setUnread(d.unread))
       .catch(() => {})
+    return disconnect
   }, [setUnread])
 
   const current =
     NAV_ITEMS.find((i) =>
       i.path === '/' ? location.pathname === '/' : location.pathname.startsWith(i.path),
-    )?.label ?? 'ragnarbot'
+    )?.label ?? (location.pathname.startsWith('/hooks') ? 'Hooks' : 'ragnarbot')
 
   return (
     <QueryClientProvider client={queryClient}>
-      <div className="flex h-dvh flex-col lg:flex-row">
+      <div className="flex h-dvh flex-col bg-page lg:flex-row">
         <Sidebar version={version} />
-        <MobileHeader title={current} onBell={() => setBell(true)} />
+        <MobileHeader
+          title={current}
+          onBell={() => setBell(true)}
+          onMenu={current === 'Chat' ? () => setChats(true) : undefined}
+        />
         <div className="relative flex min-h-0 flex-1 flex-col">
-          <div className="absolute right-4 top-3 z-10 hidden lg:block">
+          <div className="absolute right-3 top-2 z-10 hidden lg:block">
             <DesktopBell onBell={() => setBell(true)} />
           </div>
           <Suspense fallback={<Fallback />}>
             <Routes>
-              <Route path="/" element={<ChatPage />} />
-              <Route path="/sessions" element={<SessionsPage />} />
+              <Route
+                path="/"
+                element={
+                  <ChatPage
+                    conversationsOpen={chats}
+                    onConversationsOpen={() => setChats(true)}
+                    onConversationsClose={() => setChats(false)}
+                  />
+                }
+              />
+              <Route path="/files" element={<FilesPage />} />
               <Route path="/settings/*" element={<SettingsPage />} />
               <Route path="/cron" element={<CronPage />} />
               <Route path="/hooks" element={<HooksPage />} />
               <Route path="/agents" element={<AgentsPage />} />
-              <Route path="/memory" element={<MemoryPage />} />
               <Route path="/skills" element={<SkillsPage />} />
-              <Route path="/status" element={<StatusPage />} />
+              <Route path="/sessions" element={<Navigate to="/" replace />} />
+              <Route path="/memory" element={<Navigate to="/files" replace />} />
+              <Route path="/status" element={<Navigate to="/settings" replace />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </Suspense>
         </div>

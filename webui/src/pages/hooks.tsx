@@ -180,7 +180,13 @@ function HookDetail({
           ‹ Back
         </button>
         <span className="truncate text-[14px] font-semibold text-ink">{hook ? hook.name : 'New hook'}</span>
-        {hook && <Toggle value={hook.enabled} onChange={(v) => toggle.mutate(v)} />}
+        {hook && (
+          <Toggle
+            label={`${hook.name}: ${hook.enabled ? 'disable' : 'enable'}`}
+            value={hook.enabled}
+            onChange={(v) => toggle.mutate(v)}
+          />
+        )}
         {hook && (
           <Button variant="destructive" className="ml-auto" onClick={() => setConfirmDel(true)}>
             Delete

@@ -1,10 +1,8 @@
 """REST API for the web console modules: config, cron, hooks, agents, files, status."""
 
-import asyncio
 import json
 import re
 from dataclasses import asdict
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +10,15 @@ from aiohttp import web
 
 from ragnarbot import __version__
 
-_ENUM_PATTERN = re.compile(r"^\^\(([^)]+)\)\$$")
+_WEB_CONFIG_PATHS = frozenset({"agents.defaults.experimental_soul"})
+_WORKSPACE_TEXT_SUFFIXES = frozenset({
+    ".cfg", ".conf", ".css", ".csv", ".html", ".ini", ".js", ".json",
+    ".jsx", ".md", ".py", ".sh", ".skill", ".sql", ".toml", ".ts",
+    ".tsx", ".txt", ".xml", ".yaml", ".yml",
+})
+_WORKSPACE_HIDDEN_DIRS = frozenset({"agents", "__pycache__", "node_modules"})
+_WORKSPACE_SENSITIVE_STEMS = ("auth", "credential", "secret", "token", "private-key", "private_key")
+_WORKSPACE_MAX_EDIT_BYTES = 2 * 1024 * 1024
 
 
 def _json_error(message: str, status: int = 400) -> web.Response:
@@ -35,20 +41,15 @@ class ApiRoutes:
         self.agent = server.agent
         self.config = server.config
         self.notifications = server.notifications
-        self.heartbeat = server.heartbeat
 
     def register(self, r: web.UrlDispatcher) -> None:
         # config & secrets
         r.add_get("/api/config/schema", self.config_schema)
-        r.add_get("/api/config", self.config_list)
-        r.add_get("/api/config/diff", self.config_diff)
         r.add_patch("/api/config", self.config_set)
         r.add_get("/api/secrets", self.secrets_list)
         r.add_put("/api/secrets", self.secrets_set)
-        r.add_post("/api/secrets/reveal", self.secrets_reveal)
         # cron
         r.add_get("/api/cron", self.cron_list)
-        r.add_post("/api/cron", self.cron_add)
         r.add_patch("/api/cron/{job_id}", self.cron_update)
         r.add_delete("/api/cron/{job_id}", self.cron_delete)
         r.add_post("/api/cron/{job_id}/run", self.cron_run)
@@ -59,10 +60,7 @@ class ApiRoutes:
         r.add_patch("/api/hooks/{hook_id}", self.hooks_update)
         r.add_delete("/api/hooks/{hook_id}", self.hooks_delete)
         r.add_get("/api/hooks/{hook_id}/history", self.hooks_history)
-        # agents (definitions + live runs)
-        r.add_get("/api/agents/defs", self.agents_defs)
-        r.add_get("/api/agents/defs/{name}", self.agents_def_get)
-        r.add_put("/api/agents/defs/{name}", self.agents_def_put)
+        # agents: live runs only
         r.add_get("/api/agents/tasks", self.agents_tasks)
         r.add_get("/api/agents/tasks/{task_id}", self.agents_task_get)
         r.add_post("/api/agents/tasks/{task_id}/stop", self.agents_task_stop)
@@ -73,118 +71,56 @@ class ApiRoutes:
         r.add_get("/api/jobs/{job_id}/output", self.jobs_output)
         r.add_post("/api/jobs/{job_id}/kill", self.jobs_kill)
         r.add_post("/api/jobs/{job_id}/dismiss", self.jobs_dismiss)
-        # workspace files & memory & skills & recall
+        # workspace files & skills
         r.add_get("/api/workspace/tree", self.workspace_tree)
         r.add_get("/api/workspace/file", self.workspace_file_get)
         r.add_put("/api/workspace/file", self.workspace_file_put)
+        r.add_get("/api/workspace/download", self.workspace_file_download)
         r.add_get("/api/skills", self.skills_list)
         r.add_get("/api/skills/{name}", self.skills_get)
         r.add_put("/api/skills/{name}", self.skills_put)
-        r.add_post("/api/recall/search", self.recall_search)
-        r.add_post("/api/heartbeat/trigger", self.heartbeat_trigger)
         # status, logs, update, restart
         r.add_get("/api/status/full", self.status_full)
         r.add_get("/api/logs/tail", self.logs_tail)
         r.add_post("/api/update/check", self.update_check)
         r.add_post("/api/update/run", self.update_run)
         r.add_post("/api/restart", self.restart)
-        # notifications & usage
+        # activity
         r.add_get("/api/notifications", self.notifications_list)
         r.add_post("/api/notifications/read", self.notifications_read)
-        r.add_get("/api/usage", self.usage)
 
     # ── config & secrets ─────────────────────────────────────────
 
     async def config_schema(self, request: web.Request) -> web.Response:
-        from ragnarbot.agent.tools.secrets_helpers import CONFIG_DEPENDENCIES
         from ragnarbot.config.loader import load_config
         from ragnarbot.config.path_utils import get_all_paths, get_field_meta
-        from ragnarbot.config.providers import PROVIDERS, supports_oauth
         from ragnarbot.config.schema import Config
 
         config = load_config()
         all_paths = get_all_paths(config)
-        model_fields = {"agents.defaults.model", "agents.fallback.model"}
-
-        model_options = [
-            {
-                "id": m["id"],
-                "name": m["name"],
-                "description": m.get("description", ""),
-                "provider": p["id"],
-                "provider_name": p["name"],
-                "vision": m.get("vision", True),
-                "oauth": supports_oauth(p["id"]),
-            }
-            for p in PROVIDERS for m in p["models"]
-        ]
-
-        deps_by_path: dict[str, list[dict]] = {}
-        for dep in CONFIG_DEPENDENCIES:
-            deps_by_path.setdefault(dep.config_path, []).append({
-                "value": dep.value_match,
-                "match": dep.match_mode,
-                "creds_paths": list(dep.creds_paths),
-                "hint": dep.error_msg,
-            })
-
         fields = []
-        for p in sorted(all_paths.keys()):
-            try:
-                meta = get_field_meta(Config, p)
-            except ValueError:
-                continue
+        for path in sorted(_WEB_CONFIG_PATHS):
+            meta = get_field_meta(Config, path)
             default = meta.get("default")
             if default.__class__.__name__ == "PydanticUndefinedType":
                 default = None
-            field: dict[str, Any] = {
-                "path": p,
+            fields.append({
+                "path": path,
                 "type": meta.get("type", "unknown"),
                 "default": default,
-                "value": all_paths[p],
+                "value": all_paths[path],
                 "reload": meta.get("reload"),
                 "label": meta.get("label", ""),
-            }
-            pattern = meta.get("pattern")
-            if pattern:
-                field["pattern"] = pattern
-                m = _ENUM_PATTERN.match(pattern)
-                if m:
-                    field["enum"] = m.group(1).split("|")
-            for key in ("ge", "le"):
-                if meta.get(key) is not None:
-                    field[key] = meta[key]
-            if p in model_fields:
-                field["options"] = model_options
-            if p in deps_by_path:
-                field["depends_on"] = deps_by_path[p]
-            fields.append(field)
+            })
         return web.json_response(fields)
-
-    async def config_list(self, request: web.Request) -> web.Response:
-        from ragnarbot.config.loader import load_config
-        from ragnarbot.config.path_utils import get_all_paths
-        return web.json_response(get_all_paths(load_config()))
-
-    async def config_diff(self, request: web.Request) -> web.Response:
-        from ragnarbot.config.loader import load_config
-        from ragnarbot.config.path_utils import get_all_paths
-        from ragnarbot.config.schema import Config
-
-        current = get_all_paths(load_config())
-        defaults = get_all_paths(Config())
-        diffs = [
-            {"path": p, "default": defaults.get(p), "current": v}
-            for p, v in sorted(current.items())
-            if v != defaults.get(p)
-        ]
-        return web.json_response(diffs)
 
     async def config_set(self, request: web.Request) -> web.Response:
         body = await request.json()
         path, value = body.get("path"), body.get("value")
         if not path or value is None:
             return _json_error("path and value are required")
+        if path not in _WEB_CONFIG_PATHS:
+            return _json_error("this setting is managed through the agent", 403)
         result = await self._config_tool_set(path, value)
         return result
 
@@ -228,19 +164,6 @@ class ApiRoutes:
             path = f"secrets.{path}"
         return await self._config_tool_set(path, value)
 
-    async def secrets_reveal(self, request: web.Request) -> web.Response:
-        from ragnarbot.agent.tools.secrets_helpers import secrets_get
-        from ragnarbot.auth.credentials import load_credentials
-
-        body = await request.json()
-        path = (body.get("path") or "").removeprefix("secrets.")
-        if not path:
-            return _json_error("path is required")
-        result = secrets_get(load_credentials(), path)
-        if result.startswith("Error"):
-            return _json_error(result, 404)
-        return web.json_response(json.loads(result))
-
     # ── cron ─────────────────────────────────────────────────────
 
     @property
@@ -252,43 +175,14 @@ class ApiRoutes:
             return web.json_response([])
         return web.json_response([asdict(j) for j in self.cron.list_jobs(include_disabled=True)])
 
-    async def cron_add(self, request: web.Request) -> web.Response:
-        from ragnarbot.cron.types import CronSchedule
-
-        if self.cron is None:
-            return _json_error("cron service unavailable", 500)
-        body = await request.json()
-        try:
-            schedule = CronSchedule(**body["schedule"])
-        except (KeyError, TypeError) as e:
-            return _json_error(f"invalid schedule: {e}")
-        error = _validate_schedule(schedule)
-        if error:
-            return _json_error(error)
-        job = self.cron.add_job(
-            name=body.get("name", "unnamed"),
-            schedule=schedule,
-            message=body.get("message", ""),
-            mode=body.get("mode", "isolated"),
-            deliver=bool(body.get("deliver", False)),
-            channel=body.get("channel"),
-            to=body.get("to"),
-            delete_after_run=bool(body.get("delete_after_run", False)),
-            agent=body.get("agent"),
-        )
-        return web.json_response(asdict(job))
-
     async def cron_update(self, request: web.Request) -> web.Response:
         if self.cron is None:
             return _json_error("cron service unavailable", 500)
         job_id = request.match_info["job_id"]
         body = await request.json()
-        if "enabled" in body and len(body) == 1:
-            job = self.cron.enable_job(job_id, bool(body["enabled"]))
-        else:
-            allowed = {k: v for k, v in body.items()
-                       if k in ("name", "message", "mode", "agent", "enabled", "schedule")}
-            job = self.cron.update_job(job_id, **allowed)
+        if set(body) != {"enabled"}:
+            return _json_error("the web console only supports enabling or pausing cron jobs")
+        job = self.cron.enable_job(job_id, bool(body["enabled"]))
         if job is None:
             raise web.HTTPNotFound()
         return web.json_response(asdict(job))
@@ -373,36 +267,6 @@ class ApiRoutes:
             self.hooks.get_history(request.match_info["hook_id"], limit=50)
         )
 
-    # ── agents: definitions ──────────────────────────────────────
-
-    async def agents_defs(self, request: web.Request) -> web.Response:
-        return web.json_response(self.agent.context.agents.list_agents())
-
-    async def agents_def_get(self, request: web.Request) -> web.Response:
-        name = request.match_info["name"]
-        definition = self.agent.context.agents.load_agent(name)
-        if definition is None:
-            raise web.HTTPNotFound()
-        data = asdict(definition)
-        try:
-            data["content"] = Path(definition.path).read_text(encoding="utf-8")
-        except OSError:
-            data["content"] = ""
-        return web.json_response(data)
-
-    async def agents_def_put(self, request: web.Request) -> web.Response:
-        name = _safe_name(request.match_info["name"])
-        if not name:
-            return _json_error("invalid agent name")
-        body = await request.json()
-        content = body.get("content", "")
-        if not content.strip():
-            return _json_error("content is required")
-        path = Path(self.agent.workspace) / "agents" / name / "AGENT.md"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-        return web.json_response({"ok": True, "path": str(path)})
-
     # ── agents: live runs + background jobs ──────────────────────
 
     async def agents_tasks(self, request: web.Request) -> web.Response:
@@ -446,39 +310,76 @@ class ApiRoutes:
         result = self.agent.bg_processes.dismiss(request.match_info["job_id"])
         return web.json_response({"detail": result})
 
-    # ── workspace, memory, skills, recall ────────────────────────
+    # ── workspace files & skills ─────────────────────────────────
 
     @property
     def workspace(self) -> Path:
         return Path(self.agent.workspace)
 
-    def _workspace_path(self, raw: str) -> Path:
+    @staticmethod
+    def _workspace_file_is_exposed(rel: Path) -> bool:
+        """Keep Files focused on safe text documents and source files."""
+        if not rel.parts or any(part.startswith(".") for part in rel.parts):
+            return False
+        if any(part in _WORKSPACE_HIDDEN_DIRS for part in rel.parts[:-1]):
+            return False
+        stem = rel.stem.lower()
+        if "sanitized" not in stem and any(
+            stem == prefix or stem.startswith(f"{prefix}-") or stem.startswith(f"{prefix}_")
+            for prefix in _WORKSPACE_SENSITIVE_STEMS
+        ):
+            return False
+        return rel.suffix.lower() in _WORKSPACE_TEXT_SUFFIXES
+
+    def _workspace_path(self, raw: str, *, exposed_file: bool = False) -> Path:
         path = (self.workspace / raw).resolve()
         if not path.is_relative_to(self.workspace.resolve()):
             raise web.HTTPForbidden(reason="path outside workspace")
+        rel = path.relative_to(self.workspace.resolve())
+        if rel.parts and rel.parts[0] == "agents":
+            raise web.HTTPForbidden(reason="agent definitions are not exposed in the web console")
+        if exposed_file and not self._workspace_file_is_exposed(rel):
+            raise web.HTTPForbidden(reason="file is not exposed in the web console")
         return path
 
     async def workspace_tree(self, request: web.Request) -> web.Response:
-        root = self.workspace
-        entries = []
+        root = self.workspace.resolve()
+        files: list[Path] = []
         for path in sorted(root.rglob("*")):
             rel = path.relative_to(root)
-            if any(part.startswith(".") for part in rel.parts):
+            if (
+                not path.is_file()
+                or path.is_symlink()
+                or len(rel.parts) > 6
+                or not self._workspace_file_is_exposed(rel)
+                or path.stat().st_size > _WORKSPACE_MAX_EDIT_BYTES
+            ):
                 continue
-            if len(rel.parts) > 6:
-                continue
-            entries.append({
-                "path": str(rel),
-                "dir": path.is_dir(),
-                "size": path.stat().st_size if path.is_file() else None,
-            })
+            files.append(path)
+
+        directories = {
+            parent
+            for path in files
+            for parent in path.relative_to(root).parents
+            if parent != Path(".")
+        }
+        entries = [
+            {"path": str(rel), "dir": True, "size": None}
+            for rel in sorted(directories, key=str)
+        ]
+        entries.extend({
+            "path": str(path.relative_to(root)),
+            "dir": False,
+            "size": path.stat().st_size,
+        } for path in files)
+        entries.sort(key=lambda entry: entry["path"])
         return web.json_response(entries)
 
     async def workspace_file_get(self, request: web.Request) -> web.Response:
-        path = self._workspace_path(request.query.get("path", ""))
+        path = self._workspace_path(request.query.get("path", ""), exposed_file=True)
         if not path.is_file():
             raise web.HTTPNotFound()
-        if path.stat().st_size > 2 * 1024 * 1024:
+        if path.stat().st_size > _WORKSPACE_MAX_EDIT_BYTES:
             return _json_error("file too large to edit", 413)
         try:
             content = path.read_text(encoding="utf-8")
@@ -491,22 +392,37 @@ class ApiRoutes:
         raw = body.get("path", "")
         if not raw:
             return _json_error("path is required")
-        path = self._workspace_path(raw)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(body.get("content", ""), encoding="utf-8")
+        path = self._workspace_path(raw, exposed_file=True)
+        if not path.is_file():
+            raise web.HTTPNotFound()
+        content = body.get("content", "")
+        if not isinstance(content, str):
+            return _json_error("content must be a string")
+        if len(content.encode("utf-8")) > _WORKSPACE_MAX_EDIT_BYTES:
+            return _json_error("file too large to edit", 413)
+        path.write_text(content, encoding="utf-8")
         return web.json_response({"ok": True})
 
-    async def skills_list(self, request: web.Request) -> web.Response:
-        return web.json_response(
-            self.agent.context.skills.list_skills(filter_unavailable=False)
+    async def workspace_file_download(self, request: web.Request) -> web.StreamResponse:
+        path = self._workspace_path(request.query.get("path", ""), exposed_file=True)
+        if not path.is_file():
+            raise web.HTTPNotFound()
+        filename = path.name.replace('"', "") or "download"
+        return web.FileResponse(
+            path,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+
+    async def skills_list(self, request: web.Request) -> web.Response:
+        skills = self.agent.context.skills.list_skills(filter_unavailable=False)
+        return web.json_response([skill for skill in skills if skill.get("source") == "workspace"])
 
     async def skills_get(self, request: web.Request) -> web.Response:
         name = _safe_name(request.match_info["name"])
-        content = self.agent.context.skills.load_skill(name) if name else None
-        if content is None:
+        path = self.workspace / "skills" / name / "SKILL.md" if name else None
+        if path is None or not path.is_file():
             raise web.HTTPNotFound()
-        return web.json_response({"name": name, "content": content})
+        return web.json_response({"name": name, "content": path.read_text(encoding="utf-8")})
 
     async def skills_put(self, request: web.Request) -> web.Response:
         name = _safe_name(request.match_info["name"])
@@ -517,101 +433,30 @@ class ApiRoutes:
         if not content.strip():
             return _json_error("content is required")
         path = self.workspace / "skills" / name / "SKILL.md"
+        builtin_root = getattr(self.agent.context.skills, "builtin_skills", None)
+        builtin_path = Path(builtin_root) / name / "SKILL.md" if builtin_root else None
+        if not path.exists() and builtin_path is not None and builtin_path.exists():
+            return _json_error("builtin skills are not editable in the web console", 403)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return web.json_response({"ok": True, "path": str(path)})
 
-    async def recall_search(self, request: web.Request) -> web.Response:
-        body = await request.json()
-        query = (body.get("query") or "").strip()
-        if not query:
-            return _json_error("query is required")
-        index = self.agent.index
-        if not index.available():
-            return web.json_response(
-                {"error": "recall index not ready", "status": index.status()},
-                status=503,
-            )
-        results = await index.search(
-            query=query,
-            scope=body.get("scope", "both"),
-            top_k=int(body.get("top_k", 8)),
-            date_from=body.get("date_from"),
-            date_to=body.get("date_to"),
-        )
-        return web.json_response({"results": results})
-
-    async def heartbeat_trigger(self, request: web.Request) -> web.Response:
-        if self.heartbeat is None:
-            return _json_error("heartbeat unavailable", 500)
-        asyncio.create_task(self.heartbeat.trigger_now())
-        return web.json_response({"ok": True})
-
     # ── status, logs, update, restart ────────────────────────────
 
     async def status_full(self, request: web.Request) -> web.Response:
-        from ragnarbot.auth.credentials import load_credentials
-        from ragnarbot.instance import get_instance, load_pending_update
+        from ragnarbot.instance import get_instance
 
         instance = get_instance()
-        creds = load_credentials()
-
-        providers_auth = {}
-        for name in ("anthropic", "openai", "gemini", "openrouter"):
-            pc = getattr(creds.providers, name, None)
-            providers_auth[name] = {
-                "api_key": bool(pc and pc.api_key),
-                "oauth": bool(pc and pc.oauth_key),
-            }
-        try:
-            from ragnarbot.auth import gemini_oauth, openai_oauth
-            providers_auth["gemini"]["oauth"] = gemini_oauth.is_authenticated()
-            providers_auth["openai"]["oauth"] = openai_oauth.is_authenticated()
-        except Exception:
-            pass
-
-        daemon: dict[str, Any] = {"status": "unsupported"}
-        try:
-            from ragnarbot.daemon.resolve import get_manager
-            info = get_manager().status()
-            daemon = {
-                "status": info.status.value if hasattr(info.status, "value") else str(info.status),
-                "pid": info.pid,
-                "log_path": str(info.log_path) if info.log_path else None,
-            }
-        except Exception as e:
-            daemon["detail"] = str(e)
-
-        cron_jobs = self.cron.list_jobs(include_disabled=True) if self.cron else []
-        next_runs = [j.state.next_run_at_ms for j in cron_jobs
-                     if j.enabled and j.state.next_run_at_ms]
 
         return web.json_response({
             "version": __version__,
             "profile": instance.profile,
-            "model": self.agent.model,
-            "fallback_model": self.agent._fallback_model,
             "workspace": str(self.agent.workspace),
-            "daemon": daemon,
-            "providers": providers_auth,
-            "pending_update": load_pending_update(),
-            "channels": {
-                "telegram": {"enabled": self.config.channels.telegram.enabled},
-                "web": {"clients": self.server.channel.client_count},
-            },
-            "heartbeat": {
-                "enabled": self.config.heartbeat.enabled,
-                "interval_m": self.config.heartbeat.interval_m,
-            },
-            "cron": {"jobs": len(cron_jobs), "next_run_at_ms": min(next_runs, default=None)},
             "hooks": {
                 "enabled": self.config.hooks.enabled,
                 "port": self.config.hooks.port,
                 "count": len(self.hooks.list_hooks(include_disabled=True)) if self.hooks else 0,
             },
-            "recall": {"status": self.agent.index.status(), "ready": self.agent.index.available()},
-            "transcription": self.config.transcription.provider,
-            "notifications_unread": self.notifications.unread_count() if self.notifications else 0,
         })
 
     async def logs_tail(self, request: web.Request) -> web.Response:
@@ -681,79 +526,8 @@ class ApiRoutes:
             return _json_error("either all:true or ids:[...] is required")
         return web.json_response({"ok": True, "unread": self.notifications.unread_count()})
 
-    async def usage(self, request: web.Request) -> web.Response:
-        range_key = request.query.get("range", "week")
-        days = {"day": 1, "week": 7, "month": 30}.get(range_key, 7)
-        cutoff = datetime.now() - timedelta(days=days)
-        path = (self.server.data_dir or Path(".")) / "web" / "usage.jsonl"
-
-        totals = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "turns": 0}
-        by_model: dict[str, dict[str, int]] = {}
-        by_source: dict[str, dict[str, int]] = {}
-        by_day: dict[str, dict[str, int]] = {}
-        if path.is_file():
-            with open(path) as f:
-                for line in f:
-                    try:
-                        rec = json.loads(line)
-                        ts = datetime.fromisoformat(rec["ts"])
-                    except (json.JSONDecodeError, KeyError, ValueError):
-                        continue
-                    if ts < cutoff:
-                        continue
-                    inp = rec.get("input_tokens", 0) or 0
-                    out = rec.get("output_tokens", 0) or 0
-                    totals["input_tokens"] += inp
-                    totals["output_tokens"] += out
-                    totals["cache_read_tokens"] += rec.get("cache_read_tokens", 0) or 0
-                    totals["turns"] += 1
-                    for key, bucket in (
-                        (rec.get("model", "unknown"), by_model),
-                        (rec.get("source", "unknown"), by_source),
-                        (ts.strftime("%Y-%m-%d"), by_day),
-                    ):
-                        b = bucket.setdefault(key, {"input_tokens": 0, "output_tokens": 0, "turns": 0})
-                        b["input_tokens"] += inp
-                        b["output_tokens"] += out
-                        b["turns"] += 1
-        return web.json_response({
-            "range": range_key,
-            "totals": totals,
-            "by_model": by_model,
-            "by_source": by_source,
-            "by_day": by_day,
-        })
-
-
 def _safe_name(name: str) -> str | None:
     """Validate a skill/agent directory name (no path tricks)."""
     if re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}", name or ""):
         return name
-    return None
-
-
-def _validate_schedule(schedule: Any) -> str | None:
-    """Validate a CronSchedule; returns an error message or None."""
-    if schedule.kind == "at":
-        if not schedule.at_ms:
-            return "at_ms is required for one-time schedules"
-    elif schedule.kind == "every":
-        if not schedule.every_ms or schedule.every_ms < 1000:
-            return "every_ms must be at least 1000"
-    elif schedule.kind == "cron":
-        if not schedule.expr:
-            return "expr is required for cron schedules"
-        try:
-            import croniter
-            croniter.croniter(schedule.expr)
-        except Exception as e:
-            return f"invalid cron expression: {e}"
-        if schedule.tz:
-            try:
-                from zoneinfo import ZoneInfo
-                ZoneInfo(schedule.tz)
-            except Exception:
-                return f"unknown timezone: {schedule.tz}"
-    else:
-        return f"unknown schedule kind: {schedule.kind}"
     return None

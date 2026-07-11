@@ -42,7 +42,12 @@ export const api = {
 
   async transcribe(blob: Blob): Promise<string> {
     const fd = new FormData()
-    fd.append('file', blob, 'voice.webm')
+    const extension = blob.type.includes('mp4') || blob.type.includes('aac')
+      ? 'm4a'
+      : blob.type.includes('ogg')
+        ? 'ogg'
+        : 'webm'
+    fd.append('file', blob, `voice.${extension}`)
     const res = await fetch('/api/transcribe', { method: 'POST', body: fd })
     const data = await res.json()
     if (!res.ok) throw new ApiError(data?.error || 'transcription failed', res.status)
@@ -85,7 +90,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   metadata?: Record<string, unknown>
-  media_refs?: { path: string; mime?: string }[]
+  media_refs?: { path: string; mime?: string; kind?: string; filename?: string }[]
   media_items?: MediaItem[]
   media?: string[]
   usage?: TurnUsage
@@ -156,12 +161,6 @@ export interface HookDef {
   trigger_count: number
 }
 
-export interface AgentDefSummary {
-  name: string
-  description: string
-  source: string
-}
-
 export interface AgentTask {
   id: string
   label: string
@@ -185,27 +184,8 @@ export interface Notification {
 export interface StatusFull {
   version: string
   profile: string
-  model: string
-  fallback_model: string | null
   workspace: string
-  daemon: { status: string; pid?: number | null; log_path?: string | null; detail?: string }
-  providers: Record<string, { api_key: boolean; oauth: boolean }>
-  pending_update: Record<string, unknown> | null
-  channels: { telegram: { enabled: boolean }; web: { clients: number } }
-  heartbeat: { enabled: boolean; interval_m: number }
-  cron: { jobs: number; next_run_at_ms: number | null }
   hooks: { enabled: boolean; port: number; count: number }
-  recall: { status: string; ready: boolean }
-  transcription: string
-  notifications_unread: number
-}
-
-export interface UsageReport {
-  range: string
-  totals: { input_tokens: number; output_tokens: number; cache_read_tokens: number; turns: number }
-  by_model: Record<string, { input_tokens: number; output_tokens: number; turns: number }>
-  by_source: Record<string, { input_tokens: number; output_tokens: number; turns: number }>
-  by_day: Record<string, { input_tokens: number; output_tokens: number; turns: number }>
 }
 
 export interface WorkspaceEntry {
@@ -219,9 +199,5 @@ export interface SkillSummary {
   description?: string
   source?: string
   always?: string | boolean
-  [key: string]: unknown
-}
-
-export interface RecallResult {
   [key: string]: unknown
 }

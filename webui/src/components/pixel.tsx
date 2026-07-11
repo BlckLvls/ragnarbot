@@ -7,27 +7,68 @@ import { useEffect, useRef } from 'react'
 export const NAV_PX: Record<string, number[]> = {
   Chat: [1, 1, 1, 1, 1, 1, 0, 1, 0],
   Cron: [0, 1, 0, 1, 1, 1, 0, 1, 0],
-  Hooks: [1, 1, 0, 0, 1, 0, 0, 1, 1],
   Agents: [1, 0, 1, 1, 1, 1, 1, 0, 1],
-  Memory: [1, 1, 1, 1, 0, 1, 1, 1, 1],
+  Files: [1, 1, 1, 1, 0, 1, 1, 1, 1],
   Skills: [0, 1, 0, 1, 1, 1, 1, 0, 1],
-  Sessions: [1, 1, 1, 0, 0, 0, 1, 1, 1],
   Settings: [1, 0, 1, 0, 1, 0, 1, 0, 1],
-  Status: [0, 0, 1, 0, 1, 1, 1, 1, 1],
   More: [0, 0, 0, 1, 1, 1, 0, 0, 0],
   Bell: [0, 1, 0, 1, 1, 1, 1, 1, 1],
 }
+
+export const CHAT_ACTION_PX = {
+  add: [
+    0, 0, 1, 0, 0,
+    0, 0, 1, 0, 0,
+    1, 1, 1, 1, 1,
+    0, 0, 1, 0, 0,
+    0, 0, 1, 0, 0,
+  ],
+  microphone: [
+    0, 1, 1, 1, 0,
+    0, 1, 0, 1, 0,
+    0, 1, 0, 1, 0,
+    0, 1, 0, 1, 0,
+    1, 0, 0, 0, 1,
+    0, 1, 1, 1, 0,
+    0, 0, 1, 0, 0,
+  ],
+  send: [
+    0, 0, 1, 0, 0,
+    0, 0, 0, 1, 0,
+    1, 1, 1, 1, 1,
+    0, 0, 0, 1, 0,
+    0, 0, 1, 0, 0,
+  ],
+  stop: [
+    1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1,
+  ],
+  followup: [
+    1, 0, 0, 0, 0, 0, 0,
+    1, 0, 0, 0, 0, 0, 0,
+    1, 0, 0, 0, 1, 0, 0,
+    1, 0, 0, 0, 1, 1, 0,
+    1, 1, 1, 1, 1, 1, 1,
+    0, 0, 0, 0, 1, 1, 0,
+    0, 0, 0, 0, 1, 0, 0,
+  ],
+} as const
 
 export function PixelIcon({
   px,
   cell = 3,
   gap = 1.5,
+  cols = 3,
   on,
   off = 'transparent',
 }: {
-  px: number[]
+  px: readonly number[]
   cell?: number
   gap?: number
+  cols?: number
   on: string
   off?: string
 }) {
@@ -35,7 +76,7 @@ export function PixelIcon({
     <span
       style={{
         display: 'grid',
-        gridTemplateColumns: `repeat(3, ${cell}px)`,
+        gridTemplateColumns: `repeat(${cols}, ${cell}px)`,
         gridAutoRows: `${cell}px`,
         gap: `${gap}px`,
       }}
@@ -136,32 +177,45 @@ export function PixelWordmark({
     return () => clearInterval(iv)
   }, [w, h, cell, gap, text, motion])
 
-  return <canvas ref={ref} width={w * 2} height={h * 2} style={{ width: w, height: h }} />
+  return <canvas ref={ref} width={w * 2} height={h * 2} style={{ width: w, maxWidth: '100%', height: 'auto' }} />
 }
 
 // Pixel context meter: N blocks, filled by percent; color shifts at thresholds.
 export function ContextMeter({
   percent,
-  blocks = 14,
+  mode,
+  detail,
+  blocks = 12,
   className = '',
 }: {
   percent: number
+  mode?: string
+  detail?: string
   blocks?: number
   className?: string
 }) {
-  const filled = Math.round((Math.min(100, Math.max(0, percent)) / 100) * blocks)
+  const safePercent = Math.min(100, Math.max(0, percent))
+  const filled = Math.round((safePercent / 100) * blocks)
   const color = percent >= 90 ? 'bg-err' : percent >= 65 ? 'bg-warn' : 'bg-acc'
+  const label = `Context ${mode ? `${mode}, ` : ''}${safePercent.toFixed(0)} percent${detail ? `, ${detail}` : ''}`
   return (
-    <span className={`inline-flex items-center gap-[3px] ${className}`} title={`context: ${percent.toFixed(0)}%`}>
-      <span className="flex gap-[2px]">
+    <span
+      role="status"
+      aria-label={label}
+      data-testid="context-meter"
+      className={`inline-flex min-h-9 items-center gap-2 rounded-[5px] border border-line bg-raised px-2.5 py-1 ${className}`}
+    >
+      <span className="flex gap-[2px]" aria-hidden="true">
         {Array.from({ length: blocks }, (_, i) => (
           <span
             key={i}
-            className={`h-[8px] w-[4px] ${i < filled ? color : 'bg-raised2'}`}
+            className={`h-[10px] w-[4px] ${i < filled ? color : 'bg-raised2'}`}
           />
         ))}
       </span>
-      <span className="font-mono text-[9.5px] text-muted">{percent.toFixed(0)}%</span>
+      <span className="min-w-[30px] text-right font-mono text-[11px] font-semibold text-mist">
+        {safePercent.toFixed(0)}%
+      </span>
     </span>
   )
 }
