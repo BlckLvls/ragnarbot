@@ -17,8 +17,8 @@
   --rb-soft: 154 156 161;   /* #9A9CA1 */
   --rb-muted: 99 101 107;   /* #63656B */
   --rb-faint: 74 76 82;     /* #4A4C52 */
-  --rb-acc: 255 178 72;     /* #FFB248 */
-  --rb-onacc: 23 19 10;     /* #17130A */
+  --rb-acc: 111 195 212;    /* #6FC3D4 — cyan default */
+  --rb-onacc: 10 22 25;     /* #0A1619 */
   --rb-ok: 124 201 143;     /* #7CC98F */
   --rb-warn: 227 195 91;    /* #E3C35B */
   --rb-err: 224 100 86;     /* #E06456 */
@@ -40,8 +40,8 @@ html.light {
   --rb-soft: 91 93 99;      /* #5B5D63 */
   --rb-muted: 139 141 146;  /* #8B8D92 */
   --rb-faint: 166 168 173;
-  --rb-acc: 232 163 61;     /* #E8A33D */
-  --rb-onacc: 36 26 8;      /* #241A08 */
+  --rb-acc: 58 145 163;     /* #3A91A3 — cyan default */
+  --rb-onacc: 245 250 251;  /* #F5FAFB */
   --rb-ok: 95 168 113;      /* #5FA871 */
   --rb-warn: 168 132 43;
   --rb-err: 199 87 74;
@@ -58,11 +58,15 @@ html.light {
   color-scheme: light;
 }
 
-/* Accent variants (user-switchable, from the design's accent options) */
-html[data-accent='cyan'] { --rb-acc: 111 195 212; --rb-onacc: 10 22 25; }
+/* Accent variants. Cyan is the un-attributed default. */
+html[data-accent='violet'] { --rb-acc: 171 132 255; --rb-onacc: 18 10 34; }
+html[data-accent='lime'] { --rb-acc: 166 232 95; --rb-onacc: 13 25 5; }
+html[data-accent='amber'] { --rb-acc: 255 178 72; --rb-onacc: 23 19 10; }
 html[data-accent='bone'] { --rb-acc: 236 234 228; --rb-onacc: 23 19 10; }
 html[data-accent='ember'] { --rb-acc: 224 100 86; --rb-onacc: 26 9 7; }
-html.light[data-accent='cyan'] { --rb-acc: 58 145 163; --rb-onacc: 245 250 251; }
+html.light[data-accent='violet'] { --rb-acc: 121 79 207; --rb-onacc: 250 247 255; }
+html.light[data-accent='lime'] { --rb-acc: 92 153 45; --rb-onacc: 249 253 245; }
+html.light[data-accent='amber'] { --rb-acc: 232 163 61; --rb-onacc: 36 26 8; }
 html.light[data-accent='bone'] { --rb-acc: 90 88 82; --rb-onacc: 245 244 240; }
 html.light[data-accent='ember'] { --rb-acc: 194 79 66; --rb-onacc: 250 240 238; }
 

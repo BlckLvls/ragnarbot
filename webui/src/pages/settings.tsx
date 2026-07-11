@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { ApiError, SecretEntry, StatusFull, api } from '../lib/api'
 import { Page } from '../app/shell'
-import { Accent, Theme, applyTheme, loadTheme } from '../app/theme'
+import { ACCENTS, Accent, Theme, applyTheme, loadTheme } from '../app/theme'
 import {
   Button,
   Card,
@@ -468,7 +468,6 @@ function CustomSecrets({
 // ── appearance ───────────────────────────────────────────────
 
 const THEMES: readonly Theme[] = ['dark', 'light']
-const ACCENTS: readonly Accent[] = ['amber', 'cyan', 'bone', 'ember']
 
 function AppearanceSection() {
   const [pref, setPref] = useState(() => loadTheme())

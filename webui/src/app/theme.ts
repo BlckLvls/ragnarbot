@@ -1,7 +1,8 @@
 // Theme + accent preferences (client-side, localStorage).
 
 export type Theme = 'dark' | 'light'
-export type Accent = 'amber' | 'cyan' | 'bone' | 'ember'
+export const ACCENTS = ['cyan', 'violet', 'lime', 'ember', 'amber', 'bone'] as const
+export type Accent = (typeof ACCENTS)[number]
 
 export function applyTheme(theme: Theme, accent: Accent) {
   const root = document.documentElement
@@ -10,7 +11,7 @@ export function applyTheme(theme: Theme, accent: Accent) {
   document
     .querySelector<HTMLMetaElement>('meta[name="theme-color"]')
     ?.setAttribute('content', theme === 'light' ? '#ECE9E2' : '#101116')
-  if (accent === 'amber') root.removeAttribute('data-accent')
+  if (accent === 'cyan') root.removeAttribute('data-accent')
   else root.setAttribute('data-accent', accent)
   localStorage.setItem('rb-theme', theme)
   localStorage.setItem('rb-accent', accent)
@@ -18,7 +19,8 @@ export function applyTheme(theme: Theme, accent: Accent) {
 
 export function loadTheme(): { theme: Theme; accent: Accent } {
   const theme = (localStorage.getItem('rb-theme') as Theme) || 'dark'
-  const accent = (localStorage.getItem('rb-accent') as Accent) || 'amber'
+  const storedAccent = localStorage.getItem('rb-accent') as Accent | null
+  const accent = storedAccent && ACCENTS.includes(storedAccent) ? storedAccent : 'cyan'
   return { theme, accent }
 }
 
