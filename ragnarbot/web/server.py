@@ -163,7 +163,7 @@ class WebServer:
 
     # ── lifecycle ────────────────────────────────────────────────
 
-    async def start(self) -> None:
+    async def start(self) -> bool:
         self._runner = web.AppRunner(self.app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, self.host, self.port)
@@ -176,8 +176,9 @@ class WebServer:
                 f"Web console failed to bind {self.host}:{self.port}: {e}. "
                 f"Change web.port in config if the port is taken."
             )
-            return
+            return False
         logger.info(f"Web console listening on http://{self.host}:{self.port}")
+        return True
 
     async def stop(self) -> None:
         if self._runner:

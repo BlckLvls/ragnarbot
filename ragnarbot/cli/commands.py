@@ -24,6 +24,14 @@ from ragnarbot.instance import (
     tilde_path,
 )
 from ragnarbot.providers.lightning import LIGHTNING_UNSUPPORTED_NOTE, resolve_lightning
+from ragnarbot.web.runtime import (
+    WebProbe,
+    lan_web_url,
+    port_is_available,
+    probe_web,
+    wait_for_web,
+    web_url,
+)
 
 app = typer.Typer(
     name="ragnarbot",
@@ -92,6 +100,49 @@ def _validate_auth(config, creds):
 def _running_gateway_pid() -> int | None:
     """Return the live PID for the active profile, if any."""
     return get_live_gateway_pid()
+
+
+def _web_probe_label(probe: WebProbe) -> str:
+    if probe.reachable:
+        return "[green]reachable[/green]"
+    if probe.profile:
+        return f"[red]{probe.error}[/red]"
+    return "[yellow]not reachable[/yellow]"
+
+
+def _print_web_runtime(config, *, wait: bool = False) -> WebProbe | None:
+    """Print the active profile's browser URL and live reachability."""
+    if not config.web.enabled:
+        console.print("Web UI:       [dim]disabled[/dim]")
+        return None
+    instance = get_instance()
+    probe = (
+        wait_for_web(config.web, expected_profile=instance.profile)
+        if wait
+        else probe_web(config.web, expected_profile=instance.profile)
+    )
+    console.print(f"Web UI:       {web_url(config.web)} ({_web_probe_label(probe)})")
+    network_url = lan_web_url(config.web)
+    if network_url:
+        console.print(f"Web LAN:      {network_url}")
+    console.print(f"Web bind:     {config.web.host}:{config.web.port}")
+    return probe
+
+
+def _ensure_runtime_ports_available(config) -> None:
+    """Fail clearly before starting when configured HTTP listeners are occupied."""
+    conflicts: list[str] = []
+    if config.hooks.enabled and not port_is_available(config.gateway.host, config.hooks.port):
+        conflicts.append(f"hooks {config.gateway.host}:{config.hooks.port}")
+    if config.web.enabled and not port_is_available(config.web.host, config.web.port):
+        probe = probe_web(config.web)
+        owner = f" (profile '{probe.profile}')" if probe.profile else ""
+        conflicts.append(f"web {config.web.host}:{config.web.port}{owner}")
+    if not conflicts:
+        return
+    console.print(f"[red]Error:[/red] configured port already in use: {', '.join(conflicts)}")
+    console.print("Choose a different profile port block in config.json.")
+    raise typer.Exit(1)
 
 
 def _acquire_gateway_claim_or_exit(instance=None) -> None:
@@ -256,7 +307,13 @@ app.add_typer(gateway_app, name="gateway")
 @gateway_app.callback()
 def gateway_main(
     ctx: typer.Context,
-    port: int = typer.Option(18790, "--port", "-p", help="Gateway port"),
+    web_port: int | None = typer.Option(
+        None,
+        "--web-port",
+        min=1,
+        max=65535,
+        help="Override the configured Web UI port for this foreground run",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
     """Start the ragnarbot gateway. Use subcommands to manage the daemon."""
@@ -286,7 +343,7 @@ def gateway_main(
     restart_requested = False
 
     try:
-        console.print(f"{__logo__} Starting {instance.runtime_name} gateway on port {port}...")
+        console.print(f"{__logo__} Starting {instance.runtime_name} gateway...")
 
         from ragnarbot.daemon.resolve import resolve_path
         resolve_path()
@@ -296,6 +353,9 @@ def gateway_main(
             raise typer.Exit(0)
 
         config = load_config()
+        if web_port is not None:
+            config.web.port = web_port
+        _ensure_runtime_ports_available(config)
         creds = load_credentials()
 
         # Create components
@@ -592,10 +652,6 @@ def gateway_main(
                 heartbeat=heartbeat,
                 notifications=notifications,
             )
-            console.print(
-                f"[green]✓[/green] Web console: http://{config.web.host}:{config.web.port}"
-            )
-
         if channels.enabled_channels:
             console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
         else:
@@ -727,7 +783,11 @@ def gateway_main(
                 if hook_server:
                     await hook_server.start()
                 if web_server:
-                    await web_server.start()
+                    if not await web_server.start():
+                        raise RuntimeError(
+                            f"Web UI could not bind {config.web.host}:{config.web.port}"
+                        )
+                    console.print(f"[green]✓[/green] Web UI: {web_url(config.web)}")
 
                 agent_task = asyncio.create_task(agent.run())
                 channel_task = asyncio.create_task(channels.start_all())
@@ -798,12 +858,23 @@ def gateway_start():
         pid = _running_gateway_pid()
         if pid:
             console.print(f"[green]Gateway is already running[/green] (PID {pid})")
+            from ragnarbot.config.loader import load_config
+
+            _print_web_runtime(load_config())
             return
 
         info = manager.status()
         if info.status == DaemonStatus.RUNNING:
             console.print(f"[green]Gateway is already running[/green] (PID {info.pid})")
+            from ragnarbot.config.loader import load_config
+
+            _print_web_runtime(load_config())
             return
+
+        from ragnarbot.config.loader import load_config
+
+        config = load_config()
+        _ensure_runtime_ports_available(config)
 
         if not manager.is_installed():
             manager.install()
@@ -811,6 +882,7 @@ def gateway_start():
 
         manager.start()
         console.print("[green]Gateway started[/green]")
+        _print_web_runtime(config, wait=True)
     except DaemonError as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1)
@@ -868,6 +940,9 @@ def gateway_restart():
 
         manager.restart()
         console.print("[green]Gateway restarted[/green]")
+        from ragnarbot.config.loader import load_config
+
+        _print_web_runtime(load_config(), wait=True)
     except DaemonError as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1)
@@ -937,7 +1012,71 @@ def gateway_status():
         console.print(f"Service file: {info.service_file}")
     if info.log_path:
         console.print(f"Logs:         {info.log_path}")
+    from ragnarbot.config.loader import load_config
+
+    _print_web_runtime(load_config())
     _print_pending_update()
+
+
+# ============================================================================
+# Web UI Commands
+# ============================================================================
+
+web_app = typer.Typer(help="Discover and open the profile-local Web UI")
+app.add_typer(web_app, name="web")
+
+
+@web_app.command("url")
+def web_url_command(
+    lan: bool = typer.Option(False, "--lan", help="Print the LAN URL for wildcard binds"),
+):
+    """Print the active profile's browser URL."""
+    from ragnarbot.config.loader import load_config
+
+    config = load_config()
+    if not config.web.enabled:
+        console.print("Web UI is disabled")
+        raise typer.Exit(1)
+    url = lan_web_url(config.web) if lan else web_url(config.web)
+    if url is None:
+        console.print("LAN URL is unavailable for this bind address")
+        raise typer.Exit(1)
+    console.print(url, markup=False)
+
+
+@web_app.command("status")
+def web_status():
+    """Show the configured Web UI address and live reachability."""
+    from ragnarbot.config.loader import load_config
+
+    instance = get_instance()
+    console.print(f"Profile:      {instance.profile}")
+    _print_web_runtime(load_config())
+
+
+@web_app.command("open")
+def web_open():
+    """Open the active profile's Web UI in the default browser."""
+    import webbrowser
+
+    from ragnarbot.config.loader import load_config
+
+    config = load_config()
+    if not config.web.enabled:
+        console.print("[red]Error:[/red] Web UI is disabled")
+        raise typer.Exit(1)
+    instance = get_instance()
+    probe = probe_web(config.web, expected_profile=instance.profile)
+    if not probe.reachable:
+        console.print(f"[red]Error:[/red] Web UI is not reachable at {web_url(config.web)}")
+        if probe.error:
+            console.print(f"[dim]{probe.error}[/dim]")
+        raise typer.Exit(1)
+    url = web_url(config.web)
+    if not webbrowser.open(url):
+        console.print(f"Could not open a browser. Visit {url}")
+        raise typer.Exit(1)
+    console.print(f"Opened {url}")
 
 
 
