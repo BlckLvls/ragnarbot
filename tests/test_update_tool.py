@@ -1,12 +1,43 @@
 """Tests for the update tool."""
 
+import asyncio
 import json
+import os
+import signal
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
+import ragnarbot.agent.tools.update as update_module
 from ragnarbot.agent.tools.update import UpdateTool, _parse_version
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+async def _wait_for_pid_exit(pid: int, timeout: float = 2.0) -> bool:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while _pid_exists(pid):
+        if asyncio.get_running_loop().time() >= deadline:
+            return False
+        await asyncio.sleep(0.02)
+    return True
+
+
+def _force_kill(pid: int | None) -> None:
+    if pid is None or not _pid_exists(pid):
+        return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 # ---------------------------------------------------------------------------
 # _parse_version
@@ -391,3 +422,28 @@ async def test_update_marks_offline_profiles_for_info_only_notice(tool, agent, t
     assert payload["requires_restart"] is False
     assert "target_channel" not in payload
     mock_signal.assert_not_called()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-group regression")
+@pytest.mark.asyncio
+async def test_upgrade_timeout_kills_installer_descendants(tmp_path, monkeypatch):
+    monkeypatch.setattr(update_module, "UPGRADE_TIMEOUT_SECONDS", 0.5)
+    pid_path = tmp_path / "installer-child.pid"
+    parent_code = (
+        "import pathlib, subprocess, sys, time; "
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time; time.sleep(30)']); "
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid)); "
+        "time.sleep(30)"
+    )
+    child_pid = None
+    try:
+        with pytest.raises(RuntimeError, match="timed out"):
+            await UpdateTool._run_subprocess(
+                sys.executable, "-c", parent_code, str(pid_path),
+            )
+
+        child_pid = int(pid_path.read_text())
+        assert await _wait_for_pid_exit(child_pid), "installer timeout left a child alive"
+    finally:
+        _force_kill(child_pid)

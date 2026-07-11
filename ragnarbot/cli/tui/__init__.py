@@ -94,7 +94,8 @@ def _onboarding_loop(console: Console) -> None:
 
         elif step == 4:
             provider_id = PROVIDERS[provider_idx]["id"]
-            model_idx = model_screen(console, provider_id)
+            auth_method = "oauth" if auth_idx == 0 else "api_key"
+            model_idx = model_screen(console, provider_id, auth_method)
             if model_idx is None:
                 step = 3
                 continue
@@ -103,7 +104,7 @@ def _onboarding_loop(console: Console) -> None:
         elif step == 5:
             provider_id = PROVIDERS[provider_idx]["id"]
             auth_method = "oauth" if auth_idx == 0 else "api_key"
-            model_id = get_models(provider_id)[model_idx]["id"]
+            model_id = get_models(provider_id, auth_method)[model_idx]["id"]
             lightning_idx = lightning_mode_screen(console, auth_method, model_id)
             if lightning_idx is None:
                 step = 4
@@ -184,7 +185,7 @@ def _onboarding_loop(console: Console) -> None:
             provider_id = PROVIDERS[provider_idx]["id"]
             provider = get_provider(provider_id)
             auth_method = "oauth" if auth_idx == 0 else "api_key"
-            models = get_models(provider_id)
+            models = get_models(provider_id, auth_method)
             model = models[model_idx]
             telegram_configured = bool(telegram_token)
 

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-from anthropic import APIStatusError
+from anthropic import APIConnectionError, APIStatusError
 
 from ragnarbot.providers.anthropic_provider import (
     AnthropicProvider,
@@ -347,6 +347,13 @@ def _make_overloaded_error() -> APIStatusError:
     )
 
 
+def _make_connection_error(detail: str = "DNS lookup failed") -> APIConnectionError:
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    error = APIConnectionError(request=request)
+    error.__cause__ = httpx.ConnectError(detail, request=request)
+    return error
+
+
 def _make_success_stream(text="Hello"):
     block = MagicMock()
     block.type = "text"
@@ -447,3 +454,110 @@ class TestOverloadedRetry:
         assert resp.finish_reason == "error"
         assert "some other error" in (resp.content or "")
         assert call_count == 1
+
+
+class TestConnectionDiagnosticsAndRetry:
+    @pytest.mark.asyncio
+    async def test_sdk_connection_error_is_not_retried_and_includes_cause(self):
+        provider = _make_provider_with_mock_client()
+        provider.client.messages.stream = MagicMock(
+            side_effect=_make_connection_error(),
+        )
+
+        resp = await provider.chat(
+            messages=[{"role": "user", "content": "hi"}],
+            model="claude-opus-4-6",
+        )
+
+        assert resp.finish_reason == "error"
+        assert "APIConnectionError: Connection error." in (resp.content or "")
+        assert "ConnectError: DNS lookup failed" in (resp.content or "")
+        assert provider.client.messages.stream.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_connection_logs_never_include_oauth_token_or_traceback(self, caplog):
+        token = "sk-ant-oat01-sentinel-secret-token"
+        provider = _make_provider_with_mock_client()
+        provider.oauth_token = token
+        request = httpx.Request(
+            "POST",
+            "https://api.anthropic.com/v1/messages",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        error = APIConnectionError(request=request)
+        error.__cause__ = httpx.ConnectError(
+            f"Authorization: Bearer {token}",
+            request=request,
+        )
+        provider.client.messages.stream = MagicMock(side_effect=error)
+
+        with caplog.at_level("WARNING", logger="ragnarbot.providers.anthropic_provider"):
+            resp = await provider.chat(
+                messages=[{"role": "user", "content": "hi"}],
+                model="claude-opus-4-6",
+            )
+
+        assert token not in caplog.text
+        assert token not in (resp.content or "")
+        assert "[REDACTED]" in caplog.text
+        assert all(record.exc_info is None for record in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_open_stream_read_error_retries_once_then_succeeds(self):
+        provider = _make_provider_with_mock_client()
+        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+
+        failed_stream = AsyncMock()
+        failed_stream.__aenter__ = AsyncMock(return_value=failed_stream)
+        failed_stream.__aexit__ = AsyncMock(return_value=False)
+        failed_stream.get_final_message = AsyncMock(
+            side_effect=httpx.ReadError("", request=request),
+        )
+        provider.client.messages.stream = MagicMock(
+            side_effect=[failed_stream, _make_success_stream()],
+        )
+
+        with patch(
+            "ragnarbot.providers.anthropic_provider.asyncio.sleep",
+            AsyncMock(),
+        ) as sleep:
+            resp = await provider.chat(
+                messages=[{"role": "user", "content": "hi"}],
+                model="claude-opus-4-6",
+            )
+
+        assert resp.finish_reason == "stop"
+        assert resp.content == "Hello"
+        assert provider.client.messages.stream.call_count == 2
+        sleep.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_open_stream_read_error_retries_only_once_and_has_type(self):
+        provider = _make_provider_with_mock_client()
+        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+
+        def failed_stream():
+            stream = AsyncMock()
+            stream.__aenter__ = AsyncMock(return_value=stream)
+            stream.__aexit__ = AsyncMock(return_value=False)
+            stream.get_final_message = AsyncMock(
+                side_effect=httpx.ReadError("", request=request),
+            )
+            return stream
+
+        provider.client.messages.stream = MagicMock(
+            side_effect=[failed_stream(), failed_stream()],
+        )
+
+        with patch(
+            "ragnarbot.providers.anthropic_provider.asyncio.sleep",
+            AsyncMock(),
+        ):
+            resp = await provider.chat(
+                messages=[{"role": "user", "content": "hi"}],
+                model="claude-opus-4-6",
+            )
+
+        assert resp.finish_reason == "error"
+        assert resp.content == "Error calling LLM: ReadError"
+        assert provider.client.messages.stream.call_count == 2

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 import ragnarbot
+from ragnarbot.agent.processes import isolated_process_kwargs, terminate_process_tree
 from ragnarbot.agent.tools.base import Tool
 from ragnarbot.instance import (
     clear_pending_update,
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
 
 GITHUB_REPO = "BlckLvls/ragnarbot"
 GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}"
+UPGRADE_TIMEOUT_SECONDS = 600
 
 
 def get_update_marker_path():
@@ -282,22 +284,27 @@ class UpdateTool(Tool):
 
     @staticmethod
     async def _run_subprocess(*argv: str) -> tuple[int, bytes, bytes]:
-        """Run a subprocess and ensure it is killed on cancellation."""
+        """Run an installer with a bounded lifetime and process-tree cleanup."""
         proc = await asyncio.create_subprocess_exec(
             *argv,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **isolated_process_kwargs(),
         )
         try:
-            stdout, stderr = await proc.communicate()
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=UPGRADE_TIMEOUT_SECONDS,
+            )
         except asyncio.CancelledError:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            try:
-                await proc.wait()
-            except Exception:
-                pass
+            await terminate_process_tree(proc)
+            raise
+        except asyncio.TimeoutError as exc:
+            await terminate_process_tree(proc)
+            raise RuntimeError(
+                f"Upgrade command timed out after {UPGRADE_TIMEOUT_SECONDS} seconds"
+            ) from exc
+        except Exception:
+            await terminate_process_tree(proc)
             raise
         return proc.returncode or 0, stdout, stderr

@@ -1,11 +1,13 @@
 """Shell execution tool."""
 
 import asyncio
+import contextlib
 import re
 from pathlib import Path
 from typing import Any
 
 from ragnarbot.agent.pathing import resolve_working_dir
+from ragnarbot.agent.processes import isolated_process_kwargs, terminate_process_tree
 from ragnarbot.agent.tools.base import Tool
 
 
@@ -43,7 +45,11 @@ class ExecTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Execute a shell command and return its output. Use with caution."
+        return (
+            "Execute a short, non-interactive shell command and return its output. "
+            "Use exec_bg for package installs, downloads, builds, or anything that may take "
+            "more than a few seconds."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -72,9 +78,11 @@ class ExecTool(Tool):
         try:
             process = await asyncio.create_subprocess_shell(
                 command,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(cwd),
+                **isolated_process_kwargs(),
             )
 
             try:
@@ -83,18 +91,11 @@ class ExecTool(Tool):
                     timeout=self.timeout
                 )
             except asyncio.CancelledError:
-                if process.returncode is None:
-                    try:
-                        process.kill()
-                    except ProcessLookupError:
-                        pass
-                    try:
-                        await process.wait()
-                    except Exception:
-                        pass
+                with contextlib.suppress(Exception):
+                    await terminate_process_tree(process)
                 raise
             except asyncio.TimeoutError:
-                process.kill()
+                await terminate_process_tree(process)
                 return f"Error: Command timed out after {self.timeout} seconds"
 
             output_parts = []
@@ -122,6 +123,9 @@ class ExecTool(Tool):
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            if process is not None:
+                with contextlib.suppress(Exception):
+                    await terminate_process_tree(process)
             return f"Error executing command: {str(e)}"
 
     def _guard_command(self, command: str, cwd: str) -> str | None:

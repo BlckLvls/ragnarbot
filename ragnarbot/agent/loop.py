@@ -694,6 +694,42 @@ class AgentLoop:
             return None
         return chat_task.result()
 
+    async def _chat_route_observed(
+        self,
+        session_key: str | None,
+        *,
+        route: str,
+        model: str,
+        provider: LLMProvider,
+        chat_kwargs: dict[str, Any],
+    ) -> LLMResponse | None:
+        """Call one provider route and log timing without request content."""
+        started_at = time.monotonic()
+        try:
+            if session_key:
+                response = await self._chat_or_stop(
+                    session_key, provider=provider, **chat_kwargs,
+                )
+            else:
+                response = await provider.chat(**chat_kwargs)
+        except Exception as exc:
+            elapsed = time.monotonic() - started_at
+            logger.error(
+                f"LLM call raised: route={route} model={model} "
+                f"elapsed_s={elapsed:.3f} error_type={type(exc).__name__}"
+            )
+            raise
+
+        elapsed = time.monotonic() - started_at
+        finish_reason = response.finish_reason if response is not None else "cancelled"
+        response_type = type(response).__name__ if response is not None else "None"
+        logger.info(
+            f"LLM call completed: route={route} model={model} "
+            f"elapsed_s={elapsed:.3f} finish_reason={finish_reason} "
+            f"response_type={response_type}"
+        )
+        return response
+
     def _get_or_create_fallback_provider(self) -> LLMProvider | None:
         """Lazily create the fallback provider on first use."""
         if self._fallback_provider is not None:
@@ -718,6 +754,7 @@ class AgentLoop:
         *,
         notify_channel: str | None = None,
         notify_chat_id: str | None = None,
+        force_fallback: bool = False,
         **chat_kwargs,
     ) -> tuple[LLMResponse | None, bool, str | None]:
         """Call primary LLM with automatic fallback on error.
@@ -737,8 +774,13 @@ class AgentLoop:
         )
         use_primary = (
             not has_fallback
-            or not state.fallback_mode
-            or state.should_probe_primary(probe_interval)
+            or (
+                not force_fallback
+                and (
+                    not state.fallback_mode
+                    or state.should_probe_primary(probe_interval)
+                )
+            )
         )
         response = None
         primary_error = None
@@ -753,12 +795,13 @@ class AgentLoop:
                 state.mark_primary_probed()
                 logger.info("Probing primary provider for recovery...")
 
-            if session_key:
-                response = await self._chat_or_stop(
-                    session_key, provider=self.provider, **chat_kwargs,
-                )
-            else:
-                response = await self.provider.chat(**chat_kwargs)
+            response = await self._chat_route_observed(
+                session_key,
+                route="primary",
+                model=str(chat_kwargs["model"]),
+                provider=self.provider,
+                chat_kwargs=chat_kwargs,
+            )
 
             if response is None:
                 return None, False, None  # stopped by user
@@ -802,12 +845,13 @@ class AgentLoop:
         logger.info(f"Using fallback provider: {self._fallback_model}")
 
         chat_kwargs["model"] = self._fallback_model
-        if session_key:
-            fb_response = await self._chat_or_stop(
-                session_key, provider=fb_provider, **chat_kwargs,
-            )
-        else:
-            fb_response = await fb_provider.chat(**chat_kwargs)
+        fb_response = await self._chat_route_observed(
+            session_key,
+            route="fallback",
+            model=self._fallback_model,
+            provider=fb_provider,
+            chat_kwargs=chat_kwargs,
+        )
 
         if fb_response is None:
             return None, True, primary_error  # stopped by user
@@ -1687,6 +1731,7 @@ class AgentLoop:
                     session_key,
                     notify_channel=msg.channel,
                     notify_chat_id=msg.chat_id,
+                    force_fallback=batch_used_fallback,
                     messages=api_messages,
                     tools=tools_defs,
                     tool_runner=self._make_provider_tool_runner(
@@ -2765,6 +2810,7 @@ class AgentLoop:
                     session_key,
                     notify_channel=origin_channel,
                     notify_chat_id=origin_chat_id,
+                    force_fallback=batch_used_fallback,
                     messages=api_messages,
                     tools=tools_defs,
                     tool_runner=self._make_provider_tool_runner(
@@ -3362,6 +3408,7 @@ class AgentLoop:
             chat_kwargs["tools"] = tools_defs
             response, used_fallback, _ = await self._chat_with_fallback(
                 None,
+                force_fallback=batch_used_fallback,
                 **chat_kwargs,
             )
             if used_fallback:
@@ -3456,6 +3503,7 @@ class AgentLoop:
             chat_kwargs["tools"] = tools_defs
             response, used_fallback, _ = await self._chat_with_fallback(
                 None,
+                force_fallback=batch_used_fallback,
                 **chat_kwargs,
             )
             if used_fallback:
@@ -3586,6 +3634,7 @@ class AgentLoop:
             ]
             response, used_fallback, _ = await self._chat_with_fallback(
                 None,
+                force_fallback=batch_used_fallback,
                 messages=api_messages, tools=tools_defs,
             )
             if used_fallback:

@@ -29,8 +29,9 @@ class ExecBgTool(Tool):
         return (
             "Execute a shell command in the background. The command runs asynchronously "
             "and you'll be notified when it completes. Use for long-running tasks "
-            "(builds, image generation, data processing). Use 'output' to check progress, "
-            "'kill' to stop, 'poll' to schedule a status check."
+            "(package installs, builds, downloads, image generation, data processing). "
+            "Commands must be non-interactive because stdin is unavailable. Use 'output' "
+            "to check progress, 'kill' to stop, 'poll' to schedule a status check."
         )
 
     @property

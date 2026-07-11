@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
+from ragnarbot.agent.processes import isolated_process_kwargs, terminate_process_tree
 from ragnarbot.providers.base import (
     ConsumedSteeringMessage,
     ExecutedToolCall,
@@ -27,6 +28,7 @@ from ragnarbot.providers.base import (
     ToolCallHandler,
     ToolCallRequest,
     ToolRunner,
+    format_provider_exception,
 )
 from ragnarbot.providers.lightning import resolve_lightning
 from ragnarbot.providers.reasoning import resolve_reasoning
@@ -38,10 +40,13 @@ CODEX_FAST_MAX_ATTEMPTS = 2
 CODEX_FAST_RETRY_DELAY_SECONDS = 0.75
 CODEX_FAST_INITIAL_EVENT_TIMEOUT_SECONDS = 30.0
 CODEX_FAST_EVENT_POLL_INTERVAL_SECONDS = 0.25
+OPENAI_RAW_MAX_ATTEMPTS = 2
+OPENAI_RAW_RETRY_DELAY_SECONDS = 0.75
 CODEX_FAST_THREAD_REGISTRY = "thread_registry.json"
 CODEX_CLI_REQUIRED_NOTE = "OpenAI OAuth Lightning requires Codex CLI installed locally."
 CODEX_CLI_INSTALL_BUTTON_TEXT = "Install Codex CLI"
 CODEX_CLI_MANUAL_INSTALL = "npm install -g @openai/codex"
+CODEX_CLI_INSTALL_TIMEOUT_SECONDS = 900
 _DEFAULT_CODEX_CLI_PATHS = (
     "/opt/homebrew/bin/codex",
     "/usr/local/bin/codex",
@@ -64,6 +69,14 @@ class _JSONRPCError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.data = data
+
+
+class OpenAIResponseEventError(RuntimeError):
+    """A terminal Responses API event reported a failed response."""
+
+
+class OpenAIIncompleteStreamError(RuntimeError):
+    """A raw Responses API stream ended without a terminal response event."""
 
 
 class _CodexAppServerProcess:
@@ -385,8 +398,10 @@ class OpenAIChatGPTProvider(LLMProvider):
                 account_id=account_id,
             )
         except Exception as e:
+            detail = format_provider_exception(e)
+            logger.error(f"OpenAI ChatGPT API call failed: {detail}")
             return LLMResponse(
-                content=f"Error calling OpenAI ChatGPT API: {e}",
+                content=f"Error calling OpenAI ChatGPT API: {detail}",
                 finish_reason="error",
             )
 
@@ -415,7 +430,23 @@ class OpenAIChatGPTProvider(LLMProvider):
             "originator": "ragnarbot",
             "accept": "text/event-stream",
         }
-        return await self._stream_request(request_body, headers)
+        for attempt in range(1, OPENAI_RAW_MAX_ATTEMPTS + 1):
+            try:
+                return await self._stream_request(request_body, headers)
+            except Exception as exc:
+                if (
+                    attempt >= OPENAI_RAW_MAX_ATTEMPTS
+                    or not _should_retry_openai_raw_exception(exc)
+                ):
+                    raise
+                logger.warning(
+                    "Retrying OpenAI raw transport after transient failure "
+                    f"(attempt {attempt}/{OPENAI_RAW_MAX_ATTEMPTS}): "
+                    f"{format_provider_exception(exc)}"
+                )
+                await asyncio.sleep(OPENAI_RAW_RETRY_DELAY_SECONDS)
+
+        raise AssertionError("OpenAI raw retry loop exhausted unexpectedly")
 
     async def _chat_codex_fast(
         self,
@@ -905,6 +936,9 @@ class OpenAIChatGPTProvider(LLMProvider):
         tool_calls: list[ToolCallRequest] = []
         finish_reason = "stop"
         usage: dict[str, int] = {}
+        terminal_response: LLMResponse | None = None
+        completed = False
+        ended_with_done = False
 
         pending_calls: dict[str, dict] = {}
 
@@ -923,6 +957,7 @@ class OpenAIChatGPTProvider(LLMProvider):
 
                     raw = line[len("data: "):]
                     if raw.strip() == "[DONE]":
+                        ended_with_done = True
                         break
 
                     try:
@@ -940,29 +975,35 @@ class OpenAIChatGPTProvider(LLMProvider):
                     elif event_type == "response.output_item.added":
                         item = event.get("item", {})
                         if item.get("type") == "function_call":
-                            item_id = item.get("id", "")
+                            item_id = item.get("id") or item.get("call_id", "")
                             pending_calls[item_id] = {
                                 "name": item.get("name", ""),
                                 "arguments": "",
+                                "call_id": item.get("call_id") or item_id,
                             }
 
                     elif event_type == "response.function_call_arguments.delta":
-                        call_id = event.get("item_id", "")
-                        if call_id in pending_calls:
-                            pending_calls[call_id]["arguments"] += event.get("delta", "")
+                        item_id = event.get("item_id", "")
+                        if item_id in pending_calls:
+                            pending_calls[item_id]["arguments"] += event.get("delta", "")
 
                     elif event_type == "response.function_call_arguments.done":
-                        call_id = event.get("item_id", "")
-                        if call_id in pending_calls:
-                            call_data = pending_calls.pop(call_id)
-                            args = call_data["arguments"]
+                        item_id = event.get("item_id", "")
+                        if item_id in pending_calls:
+                            call_data = pending_calls.pop(item_id)
+                            args = event.get("arguments", call_data["arguments"])
                             try:
                                 args = json.loads(args)
                             except (json.JSONDecodeError, ValueError):
                                 args = {"raw": args}
+                            protocol_call_id = (
+                                event.get("call_id")
+                                or call_data.get("call_id")
+                                or item_id
+                            )
                             tool_calls.append(
                                 ToolCallRequest(
-                                    id=call_id,
+                                    id=protocol_call_id,
                                     name=call_data["name"],
                                     arguments=args,
                                 )
@@ -970,13 +1011,60 @@ class OpenAIChatGPTProvider(LLMProvider):
 
                     elif event_type == "response.completed":
                         response = event.get("response", {})
-                        resp_usage = response.get("usage", {})
-                        if resp_usage:
-                            usage = {
-                                "prompt_tokens": resp_usage.get("input_tokens", 0),
-                                "completion_tokens": resp_usage.get("output_tokens", 0),
-                                "total_tokens": resp_usage.get("total_tokens", 0),
-                            }
+                        if pending_calls:
+                            raise OpenAIIncompleteStreamError(
+                                "OpenAI response.completed arrived with incomplete "
+                                "function-call arguments"
+                            )
+                        usage = _extract_openai_response_usage(response)
+                        completed = True
+                        break
+
+                    elif event_type == "response.failed":
+                        response = event.get("response", {})
+                        terminal_response = _openai_event_error_response(
+                            event_type,
+                            response,
+                        )
+                        break
+
+                    elif event_type == "response.incomplete":
+                        response = event.get("response", {})
+                        response_usage = _extract_openai_response_usage(response)
+                        reason = _openai_incomplete_reason(response)
+                        partial_text = "".join(text_parts)
+                        if reason == "max_output_tokens" and partial_text.strip():
+                            # Preserve useful partial prose, but never surface
+                            # tool calls from a truncated response.
+                            terminal_response = LLMResponse(
+                                content=partial_text,
+                                finish_reason="length",
+                                usage=response_usage,
+                            )
+                        else:
+                            terminal_response = _openai_event_error_response(
+                                event_type,
+                                response,
+                            )
+                        break
+
+        if terminal_response is not None:
+            # Failed/incomplete responses must not leak buffered tool calls to
+            # the agent loop. Only max_output_tokens preserves partial prose.
+            return terminal_response
+
+        if not completed:
+            ending = "[DONE]" if ended_with_done else "EOF"
+            buffered: list[str] = []
+            if text_parts:
+                buffered.append("partial text")
+            if tool_calls or pending_calls:
+                buffered.append("partial tool data")
+            discarded = f"; discarded {', '.join(buffered)}" if buffered else ""
+            raise OpenAIIncompleteStreamError(
+                "OpenAI raw stream ended without response.completed, "
+                f"response.failed, or response.incomplete ({ending}{discarded})"
+            )
 
         if tool_calls:
             finish_reason = "tool_calls"
@@ -1290,10 +1378,28 @@ async def install_codex_cli() -> tuple[bool, str]:
     command, display = install
     proc = await asyncio.create_subprocess_exec(
         *command,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **isolated_process_kwargs(),
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=CODEX_CLI_INSTALL_TIMEOUT_SECONDS,
+        )
+    except asyncio.CancelledError:
+        await terminate_process_tree(proc)
+        raise
+    except asyncio.TimeoutError:
+        await terminate_process_tree(proc)
+        return (
+            False,
+            f"Installation timed out after {CODEX_CLI_INSTALL_TIMEOUT_SECONDS} seconds. "
+            f"Run manually: {display}",
+        )
+    except Exception as exc:
+        await terminate_process_tree(proc)
+        return False, f"Installation failed: {exc}. Run manually: {display}"
     if proc.returncode == 0:
         if is_codex_cli_available():
             return True, display
@@ -1341,6 +1447,80 @@ def _should_retry_codex_fast_response(response: LLMResponse) -> bool:
     return (
         "codex fast transport closed unexpectedly" in content
         or "codex fast transport startup timed out" in content
+    )
+
+
+def _should_retry_openai_raw_exception(exc: Exception) -> bool:
+    """Retry one raw request for network flakes or transient HTTP statuses."""
+    if isinstance(exc, OpenAIIncompleteStreamError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        return status in {408, 409, 429} or status >= 500
+    return isinstance(
+        exc,
+        (
+            httpx.NetworkError,
+            httpx.TimeoutException,
+            httpx.RemoteProtocolError,
+        ),
+    )
+
+
+def _extract_openai_response_usage(response: Any) -> dict[str, int]:
+    """Extract normalized token usage from a terminal Responses API event."""
+    if not isinstance(response, dict):
+        return {}
+    raw_usage = response.get("usage")
+    if not isinstance(raw_usage, dict) or not raw_usage:
+        return {}
+    return {
+        "prompt_tokens": raw_usage.get("input_tokens", 0),
+        "completion_tokens": raw_usage.get("output_tokens", 0),
+        "total_tokens": raw_usage.get("total_tokens", 0),
+    }
+
+
+def _openai_incomplete_reason(response: Any) -> str | None:
+    """Return the documented incomplete reason when present."""
+    if not isinstance(response, dict):
+        return None
+    details = response.get("incomplete_details")
+    if not isinstance(details, dict):
+        return None
+    reason = details.get("reason")
+    return str(reason).strip() if reason is not None else None
+
+
+def _openai_event_error_response(
+    event_type: str,
+    response: Any,
+) -> LLMResponse:
+    """Build a safe error response from failed or incomplete terminal events."""
+    details: list[str] = []
+    if isinstance(response, dict):
+        if event_type == "response.failed":
+            error = response.get("error")
+            if isinstance(error, dict):
+                for key in ("code", "message"):
+                    value = error.get(key)
+                    if value is not None and str(value).strip():
+                        details.append(f"{key}={value}")
+            elif error is not None and str(error).strip():
+                details.append(str(error))
+        else:
+            reason = _openai_incomplete_reason(response)
+            if reason:
+                details.append(f"reason={reason}")
+
+    suffix = "; ".join(details) if details else "no error details"
+    detail = format_provider_exception(
+        OpenAIResponseEventError(f"{event_type}: {suffix}")
+    )
+    return LLMResponse(
+        content=f"Error calling OpenAI ChatGPT API: {detail}",
+        finish_reason="error",
+        usage=_extract_openai_response_usage(response),
     )
 
 

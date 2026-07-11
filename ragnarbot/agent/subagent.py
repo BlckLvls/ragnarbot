@@ -99,6 +99,7 @@ class SubagentManager:
             self._chat_fn = chat_fn
         else:
             async def _default(session_key=None, **kwargs):
+                kwargs.pop("force_fallback", None)
                 return await self.provider.chat(**kwargs), False, None
             self._chat_fn = _default
         self._on_fallback_batch = on_fallback_batch
@@ -250,7 +251,11 @@ class SubagentManager:
                 if reasoning_level is not None:
                     chat_kwargs["reasoning_level"] = reasoning_level
 
-                response, used_fallback, _ = await self._chat_fn(None, **chat_kwargs)
+                response, used_fallback, _ = await self._chat_fn(
+                    None,
+                    force_fallback=batch_used_fallback,
+                    **chat_kwargs,
+                )
                 if used_fallback:
                     batch_used_fallback = True
 

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
+from ragnarbot.agent.processes import isolated_process_kwargs, terminate_process_tree
 from ragnarbot.agent.tools.base import Tool
 from ragnarbot.instance import ensure_instance_root
 
@@ -35,6 +36,7 @@ STEALTH_ARGS = [
 ]
 
 GOTO_TIMEOUT_MS = 30_000  # 30s navigation timeout
+BROWSER_INSTALL_TIMEOUT_SECONDS = 900
 
 
 def _build_brand_header(major: str) -> str:
@@ -122,19 +124,33 @@ class BrowserSessionManager:
         logger.info("Installing Chromium browser (first-time setup)...")
         proc = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "patchright", "install", "chromium",
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            **isolated_process_kwargs(),
         )
         try:
-            await proc.wait()
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=BROWSER_INSTALL_TIMEOUT_SECONDS,
+            )
         except asyncio.CancelledError:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
+            await terminate_process_tree(proc)
+            raise
+        except asyncio.TimeoutError as exc:
+            await terminate_process_tree(proc)
+            raise RuntimeError(
+                "Chromium installation timed out after "
+                f"{BROWSER_INSTALL_TIMEOUT_SECONDS} seconds. "
+                "Run manually: patchright install chromium"
+            ) from exc
+        except Exception:
+            await terminate_process_tree(proc)
             raise
         if proc.returncode != 0:
+            output = (stderr or stdout or b"").decode("utf-8", errors="replace").strip()
+            detail = output.splitlines()[-1] if output else "installer exited with an error"
             raise RuntimeError(
-                "Failed to install Chromium. Run manually: patchright install chromium"
+                f"Failed to install Chromium: {detail}. "
+                "Run manually: patchright install chromium"
             )
         logger.info("Chromium installed.")
         self._chromium_installed = True

@@ -1,6 +1,7 @@
 """Background process manager for async command execution."""
 
 import asyncio
+import contextlib
 import re
 import time
 import uuid
@@ -13,6 +14,7 @@ from typing import TYPE_CHECKING
 from loguru import logger
 
 from ragnarbot.agent.pathing import resolve_working_dir
+from ragnarbot.agent.processes import isolated_process_kwargs, terminate_process_tree
 from ragnarbot.bus.events import InboundMessage
 
 if TYPE_CHECKING:
@@ -24,6 +26,16 @@ MAX_CONCURRENT = 10
 MAX_RUNTIME = 1200  # 20 minutes
 OUTPUT_BUFFER_LINES = 1000
 AUTO_DISMISS_SECONDS = 300  # 5 minutes
+
+
+async def _cancel_and_await_lifecycle(lifecycle: asyncio.Future | None) -> None:
+    """Cancel and retrieve a job lifecycle future without leaking warnings."""
+    if lifecycle is None:
+        return
+    if not lifecycle.done():
+        lifecycle.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await lifecycle
 
 
 class JobState(str, Enum):
@@ -166,41 +178,70 @@ class BackgroundProcessManager:
 
     async def _run_job(self, job: BgJob) -> None:
         """Execute subprocess, capture output, announce result on completion."""
+        lifecycle: asyncio.Future | None = None
         try:
             process = await asyncio.create_subprocess_shell(
                 job.command,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=job.working_dir,
+                **isolated_process_kwargs(),
             )
             job.process = process
+
+            # ``kill`` can race with subprocess creation. Do not let a job that
+            # was cancelled before assignment escape as an untracked process.
+            if job.status == JobState.killed:
+                await terminate_process_tree(process)
+                return
 
             async def _read_stream(stream: asyncio.StreamReader, buf: deque):
                 async for line in stream:
                     buf.append(line.decode("utf-8", errors="replace").rstrip("\n"))
 
-            readers = asyncio.gather(
+            lifecycle = asyncio.gather(
                 _read_stream(process.stdout, job.stdout_buffer),
                 _read_stream(process.stderr, job.stderr_buffer),
+                process.wait(),
             )
 
             try:
-                await asyncio.wait_for(readers, timeout=MAX_RUNTIME)
-                await process.wait()
+                await asyncio.wait_for(lifecycle, timeout=MAX_RUNTIME)
             except asyncio.TimeoutError:
-                process.kill()
-                await process.wait()
+                await _cancel_and_await_lifecycle(lifecycle)
+                await terminate_process_tree(process)
+                if job.status == JobState.killed:
+                    return
                 job.status = JobState.killed
                 job.exit_code = process.returncode
                 job.finished_at = time.time()
                 await self._announce_completion(job, timed_out=True)
                 return
 
+            if job.status == JobState.killed:
+                return
+
             job.exit_code = process.returncode
             job.finished_at = time.time()
             job.status = JobState.completed if process.returncode == 0 else JobState.error
 
+        except asyncio.CancelledError:
+            await _cancel_and_await_lifecycle(lifecycle)
+            if job.process is not None:
+                with contextlib.suppress(Exception):
+                    await terminate_process_tree(job.process)
+            job.status = JobState.killed
+            job.exit_code = job.process.returncode if job.process else None
+            job.finished_at = time.time()
+            raise
         except Exception as e:
+            await _cancel_and_await_lifecycle(lifecycle)
+            if job.process is not None:
+                with contextlib.suppress(Exception):
+                    await terminate_process_tree(job.process)
+            if job.status == JobState.killed:
+                return
             logger.error(f"Background job [{job.job_id}] failed: {e}")
             job.status = JobState.error
             job.finished_at = time.time()
@@ -358,20 +399,25 @@ Report this status to the user naturally."""
             return f"Poll {job_id} cancelled."
 
         # Real process
-        if job.process:
-            try:
-                job.process.terminate()
-                try:
-                    await asyncio.wait_for(job.process.wait(), timeout=3)
-                except asyncio.TimeoutError:
-                    job.process.kill()
-                    await job.process.wait()
-            except ProcessLookupError:
-                pass
-
         job.status = JobState.killed
-        job.exit_code = job.process.returncode if job.process else None
         job.finished_at = time.time()
+
+        if job.process:
+            await terminate_process_tree(job.process)
+            job.exit_code = job.process.returncode
+            if job.task and job.task is not asyncio.current_task() and not job.task.done():
+                try:
+                    await asyncio.wait_for(job.task, timeout=2)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    if not job.task.done():
+                        job.task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError, Exception):
+                            await job.task
+        elif job.task:
+            job.task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await job.task
+
         return f"Job {job_id} killed."
 
     def dismiss(self, job_id: str) -> str:

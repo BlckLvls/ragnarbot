@@ -1,17 +1,17 @@
 """Tests for unified fallback support across all LLM call sites."""
 
-import asyncio
-from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ragnarbot.agent.compactor import Compactor
 from ragnarbot.agent.cache import CacheManager
+from ragnarbot.agent.compactor import Compactor
 from ragnarbot.agent.fallback import FallbackState
+from ragnarbot.agent.loop import AgentLoop
 from ragnarbot.agent.subagent import SubagentManager
-from ragnarbot.providers.base import LLMResponse
-
+from ragnarbot.bus.events import InboundMessage
+from ragnarbot.config.schema import ExecToolConfig, FallbackConfig
+from ragnarbot.providers.base import LLMResponse, ToolCallRequest
 
 # ── Compactor chat_fn tests ──────────────────────────────────────
 
@@ -150,15 +150,21 @@ class TestSubagentChatFn:
         )
 
         response, used_fallback, error = await mgr._chat_fn(
-            None, messages=[], tools=[], model="test/model",
+            None,
+            force_fallback=True,
+            messages=[],
+            tools=[],
+            model="test/model",
         )
         assert response.content == "result"
         assert used_fallback is False
         mgr.provider.chat.assert_called_once()
+        assert "force_fallback" not in mgr.provider.chat.await_args.kwargs
 
     def _make_agent_task(self, task_id="test-id", task="do something",
                          label="test label", channel="test", chat_id="1"):
         import asyncio
+
         from ragnarbot.agent.subagent import AgentTask, AgentTaskStatus
         return AgentTask(
             id=task_id,
@@ -282,3 +288,275 @@ class TestRecordFallbackBatch:
         was_fb = state.record_primary_success()
         assert was_fb is False
         assert state.consecutive_failures == 0
+
+
+# ── Foreground/system interaction stickiness ─────────────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("system_message", [False, True])
+async def test_fallback_stays_sticky_for_entire_interaction(tmp_path, system_message):
+    """A fallback tool call must not hand the final answer back to primary."""
+    primary_model = "openai/gpt-5.6-sol"
+    fallback_model = "anthropic/claude-opus-4-8"
+
+    primary = MagicMock()
+    primary.get_default_model.return_value = primary_model
+    primary.chat = AsyncMock(side_effect=[
+        LLMResponse(content="primary timeout", finish_reason="error"),
+        LLMResponse(content="PRIMARY NEXT INTERACTION"),
+    ])
+
+    fallback = MagicMock()
+    fallback.chat = AsyncMock(side_effect=[
+        LLMResponse(
+            content="running tool",
+            tool_calls=[ToolCallRequest(
+                id="tool-1",
+                name="exec",
+                arguments={"command": "echo ok"},
+            )],
+            finish_reason="tool_calls",
+        ),
+        LLMResponse(content="FALLBACK FINAL"),
+    ])
+    provider_factory = MagicMock(return_value=fallback)
+
+    bus = MagicMock()
+    bus.publish_outbound = AsyncMock()
+    bus.publish_inbound = AsyncMock()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    with patch("ragnarbot.agent.loop.SubagentManager"):
+        agent = AgentLoop(
+            bus=bus,
+            provider=primary,
+            workspace=workspace,
+            model=primary_model,
+            exec_config=ExecToolConfig(),
+            fallback_model=fallback_model,
+            fallback_config=FallbackConfig(model=fallback_model),
+            provider_factory=provider_factory,
+        )
+
+    agent._fallback_state = FallbackState()
+    agent._fallback_state.save = MagicMock()
+    agent._execute_tool_with_tracking = AsyncMock(return_value="tool ok")
+    agent.index.start_chat_jobs = AsyncMock()
+
+    if system_message:
+        message = InboundMessage(
+            channel="system",
+            sender_id="subagent",
+            chat_id="telegram:123",
+            content="system result",
+        )
+        response = await agent._process_system_message(message)
+    else:
+        message = InboundMessage(
+            channel="telegram",
+            sender_id="user-1",
+            chat_id="123",
+            content="run a tool",
+        )
+        response = await agent._process_batch([message])
+
+    assert response is not None
+    assert response.content == f"FALLBACK FINAL\n\n_⚡ fallback: {fallback_model}_"
+    assert primary.chat.await_count == 1
+    assert fallback.chat.await_count == 2
+    provider_factory.assert_called_once_with(fallback_model, "api_key")
+    assert fallback.chat.await_args_list[1].kwargs["model"] == fallback_model
+    assert agent._execute_tool_with_tracking.await_count == 1
+    assert agent._fallback_state.consecutive_failures == 1
+    agent._fallback_state.save.assert_called_once_with()
+
+    # The pin is interaction-local: the next interaction probes primary normally.
+    if system_message:
+        next_response = await agent._process_system_message(InboundMessage(
+            channel="system",
+            sender_id="subagent",
+            chat_id="telegram:123",
+            content="next system result",
+        ))
+    else:
+        next_response = await agent._process_batch([InboundMessage(
+            channel="telegram",
+            sender_id="user-1",
+            chat_id="123",
+            content="next request",
+        )])
+
+    assert next_response is not None
+    assert next_response.content == "PRIMARY NEXT INTERACTION"
+    assert primary.chat.await_count == 2
+    assert fallback.chat.await_count == 2
+    assert agent._fallback_state.consecutive_failures == 0
+
+
+def _make_isolated_fallback_agent(tmp_path, *, real_subagents=False):
+    primary_model = "openai/gpt-5.6-sol"
+    fallback_model = "anthropic/claude-opus-4-8"
+
+    primary = MagicMock()
+    primary.get_default_model.return_value = primary_model
+    primary.chat = AsyncMock(side_effect=[
+        LLMResponse(content="primary timeout", finish_reason="error"),
+        LLMResponse(content="PRIMARY NEXT RUN"),
+    ])
+
+    fallback = MagicMock()
+    fallback.chat = AsyncMock(side_effect=[
+        LLMResponse(
+            content="running tool",
+            tool_calls=[ToolCallRequest(
+                id="tool-1",
+                name="list_dir",
+                arguments={"path": "."},
+            )],
+            finish_reason="tool_calls",
+        ),
+        LLMResponse(content="FALLBACK FINAL"),
+    ])
+    provider_factory = MagicMock(return_value=fallback)
+
+    bus = MagicMock()
+    bus.publish_outbound = AsyncMock()
+    bus.publish_inbound = AsyncMock()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    kwargs = {
+        "bus": bus,
+        "provider": primary,
+        "workspace": workspace,
+        "model": primary_model,
+        "exec_config": ExecToolConfig(),
+        "fallback_model": fallback_model,
+        "fallback_config": FallbackConfig(model=fallback_model),
+        "provider_factory": provider_factory,
+    }
+    if real_subagents:
+        agent = AgentLoop(**kwargs)
+    else:
+        with patch("ragnarbot.agent.loop.SubagentManager"):
+            agent = AgentLoop(**kwargs)
+
+    agent._fallback_state = FallbackState()
+    agent._fallback_state.save = MagicMock()
+    return agent, primary, fallback, provider_factory, fallback_model
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("loop_kind", ["cron", "hook", "heartbeat"])
+async def test_isolated_tool_loops_keep_fallback_sticky_per_run(tmp_path, loop_kind):
+    agent, primary, fallback, provider_factory, fallback_model = (
+        _make_isolated_fallback_agent(tmp_path)
+    )
+    agent.last_active_chat = ("telegram", "123")
+
+    async def run_once(sequence: int):
+        if loop_kind == "cron":
+            return await agent.process_cron_isolated(
+                job_name=f"job-{sequence}",
+                message="inspect workspace",
+                schedule_desc="manual test",
+                channel="telegram",
+                chat_id="123",
+            )
+        if loop_kind == "hook":
+            return await agent.process_hook_isolated(
+                hook_name=f"hook-{sequence}",
+                instructions="inspect workspace",
+                payload="{}",
+                mode="alert",
+                channel="telegram",
+                chat_id="123",
+            )
+        return await agent.process_heartbeat()
+
+    first_result = await run_once(1)
+
+    if loop_kind == "heartbeat":
+        assert first_result == (None, "telegram", "123")
+    else:
+        assert first_result == "FALLBACK FINAL"
+    assert primary.chat.await_count == 1
+    assert fallback.chat.await_count == 2
+    provider_factory.assert_called_once_with(fallback_model, "api_key")
+    assert fallback.chat.await_args_list[1].kwargs["model"] == fallback_model
+    assert agent._fallback_state.consecutive_failures == 1
+
+    second_result = await run_once(2)
+
+    if loop_kind == "heartbeat":
+        assert second_result == (None, "telegram", "123")
+    else:
+        assert second_result == "PRIMARY NEXT RUN"
+    assert primary.chat.await_count == 2
+    assert fallback.chat.await_count == 2
+    assert agent._fallback_state.consecutive_failures == 0
+
+
+@pytest.mark.asyncio
+async def test_subagent_tool_loop_keeps_fallback_sticky_per_run(tmp_path):
+    import asyncio
+
+    from ragnarbot.agent.subagent import AgentTask, AgentTaskStatus
+    from ragnarbot.agent.tools.deliver_result import DeliverResultTool
+    from ragnarbot.agent.tools.filesystem import ListDirTool
+    from ragnarbot.agent.tools.registry import ToolRegistry
+
+    agent, primary, fallback, provider_factory, fallback_model = (
+        _make_isolated_fallback_agent(tmp_path, real_subagents=True)
+    )
+
+    tools = ToolRegistry()
+    tools.register(ListDirTool(workspace=agent.workspace))
+    deliver_tool = DeliverResultTool()
+    tools.register(deliver_tool)
+
+    def make_task(task_id: str) -> AgentTask:
+        return AgentTask(
+            id=task_id,
+            label="sticky fallback",
+            agent_name=None,
+            task="inspect workspace",
+            status=AgentTaskStatus.running,
+            messages=[],
+            stop_event=asyncio.Event(),
+            origin={"channel": "telegram", "chat_id": "123"},
+        )
+
+    first_task = make_task("first")
+    await agent.subagents._run_agent(
+        first_task,
+        definition=None,
+        model=agent.model,
+        tools=tools,
+        deliver_tool=deliver_tool,
+    )
+
+    assert first_task.status == AgentTaskStatus.completed
+    assert first_task.result == "FALLBACK FINAL"
+    assert primary.chat.await_count == 1
+    assert fallback.chat.await_count == 2
+    provider_factory.assert_called_once_with(fallback_model, "api_key")
+    assert fallback.chat.await_args_list[1].kwargs["model"] == fallback_model
+    assert agent._fallback_state.consecutive_failures == 1
+
+    second_task = make_task("second")
+    await agent.subagents._run_agent(
+        second_task,
+        definition=None,
+        model=agent.model,
+        tools=tools,
+        deliver_tool=deliver_tool,
+    )
+
+    assert second_task.status == AgentTaskStatus.completed
+    assert second_task.result == "PRIMARY NEXT RUN"
+    assert primary.chat.await_count == 2
+    assert fallback.chat.await_count == 2
+    assert agent._fallback_state.consecutive_failures == 0
