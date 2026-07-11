@@ -318,6 +318,22 @@ class HooksConfig(BaseModel):
     )
 
 
+class WebConfig(BaseModel):
+    """Web console configuration."""
+    enabled: bool = Field(
+        default=True,
+        json_schema_extra={"reload": "warm", "label": "Enable web console"},
+    )
+    host: str = Field(
+        default="0.0.0.0",
+        json_schema_extra={"reload": "warm", "label": "Web console bind address"},
+    )
+    port: int = Field(
+        default=18792,
+        json_schema_extra={"reload": "warm", "label": "Web console port"},
+    )
+
+
 class Config(BaseSettings):
     """Root configuration for ragnarbot."""
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
@@ -328,6 +344,7 @@ class Config(BaseSettings):
     hooks: HooksConfig = Field(default_factory=HooksConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     transcription: TranscriptionConfig = Field(default_factory=TranscriptionConfig)
+    web: WebConfig = Field(default_factory=WebConfig)
 
     @property
     def workspace_path(self) -> Path:

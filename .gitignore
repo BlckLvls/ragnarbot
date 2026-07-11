@@ -17,3 +17,14 @@ docs/
 .venv/
 __pycache__/
 todo/
+webui/node_modules/
+ragnarbot/web/static/
+webui/tsconfig.tsbuildinfo
+
+# Local AI tooling and review workspaces
+/.agents/
+/.claude/
+/.codex/
+/scratchpad/
+/AGENTS.md
+/CLAUDE.md

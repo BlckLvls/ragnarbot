@@ -315,6 +315,142 @@ def test_set_lightning_mode_persists_and_edits_message(tmp_path):
     mock_save.assert_called_once_with(config)
 
 
+@pytest.mark.parametrize(
+    ("handler_name", "metadata_key", "runtime_attr", "config_attr"),
+    [
+        ("_handle_set_lightning_mode", "lightning_mode", "lightning_mode", "lightning_mode"),
+        ("_handle_set_trace_mode", "trace_mode", "trace_mode", "trace_mode"),
+        ("_handle_set_steering_mode", "steering_mode", "steering_enabled", "steering_enabled"),
+    ],
+)
+def test_web_boolean_toggles_persist(
+    tmp_path, handler_name, metadata_key, runtime_attr, config_attr,
+):
+    """Web commands send native booleans rather than Telegram on/off strings."""
+    agent = _make_agent(tmp_path)
+    agent.model = "openai/gpt-5.4"
+    agent.auth_method = "api_key"
+    setattr(agent, runtime_attr, True)
+    config = MagicMock()
+
+    with (
+        patch("ragnarbot.config.loader.load_config", return_value=config),
+        patch("ragnarbot.config.loader.save_config") as mock_save,
+    ):
+        response = getattr(agent, handler_name)(_make_msg(
+            channel="web",
+            content=f"/{metadata_key}",
+            command=handler_name.removeprefix("_handle_"),
+            **{metadata_key: False},
+        ))
+
+    assert response is not None
+    assert getattr(agent, runtime_attr) is False
+    assert getattr(config.agents.defaults, config_attr) is False
+    mock_save.assert_called_once_with(config)
+
+
+@pytest.mark.asyncio
+async def test_web_media_is_buffered_until_turn_commit(tmp_path):
+    agent = _make_agent(tmp_path)
+    media_path = tmp_path / "result.png"
+    media_path.write_bytes(b"png")
+    state = agent._start_run_state("web:main")
+    try:
+        await agent._publish_media_outbound(OutboundMessage(
+            channel="web",
+            chat_id="main",
+            content="Result caption",
+            metadata={"media_type": "photo", "media_path": str(media_path)},
+        ))
+    finally:
+        await agent._finish_run_state("web:main")
+
+    assert state.media_events[0]["content"] == "Result caption"
+    assert state.media_events[0]["media_items"][0]["path"] == str(media_path)
+    agent.sessions.get_or_create.assert_not_called()
+
+
+def test_turn_commit_persists_media_after_tools_and_before_final(tmp_path):
+    agent = _make_agent(tmp_path)
+    session = Session(key="web_main_test", user_key="web:main")
+    raw = _make_msg(
+        channel="web",
+        chat_id="main",
+        content="Prompt plus hidden marker",
+        display_content="Prompt",
+        attachments=[{"type": "file", "filename": "brief.pdf"}],
+    )
+    messages = [
+        {"role": "user", "content": "Prompt plus hidden marker"},
+        {
+            "role": "assistant",
+            "content": "Checking.",
+            "tool_calls": [{
+                "id": "tc-1",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            }],
+        },
+        {"role": "tool", "content": "ok", "tool_call_id": "tc-1", "name": "read_file"},
+        {"role": "assistant", "content": "Done."},
+    ]
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 2,
+        "cache_read_tokens": 0,
+        "model": "test",
+        "duration_ms": 100,
+    }
+
+    agent._save_batch_messages(
+        session,
+        messages,
+        0,
+        [{"raw_msg": raw, "media_refs": []}],
+        [],
+        media_events=[{
+            "content": "Result caption",
+            "media_items": [{"path": "/tmp/result.png", "kind": "photo"}],
+        }],
+        turn_usage=usage,
+    )
+
+    assert [message["role"] for message in session.messages] == [
+        "user", "assistant", "tool", "assistant", "assistant",
+    ]
+    assert session.messages[0]["content"] == "Prompt"
+    assert session.messages[0]["attachments"] == [{
+        "type": "file", "filename": "brief.pdf",
+    }]
+    assert session.messages[-2]["media_items"][0]["path"] == "/tmp/result.png"
+    assert session.messages[-2]["content"] == "Result caption"
+    assert session.messages[-1]["content"] == "Done."
+    assert session.messages[-1]["usage"] == usage
+
+
+def test_media_caption_echo_is_removed_from_final_reply():
+    from ragnarbot.agent.loop import _strip_media_caption_echo
+
+    media_events = [
+        {"content": "First caption", "media_items": []},
+        {"content": "MEDIA-CAPTION", "media_items": []},
+    ]
+
+    assert _strip_media_caption_echo(
+        "MEDIA-CAPTIONFinal answer", media_events,
+    ) == "Final answer"
+    assert _strip_media_caption_echo(
+        "First captionMEDIA-CAPTIONFinal answer", media_events,
+    ) == "Final answer"
+    assert _strip_media_caption_echo(
+        "Unrelated final answer", media_events,
+    ) == "Unrelated final answer"
+    assert _strip_media_caption_echo(
+        "MEDIA-CAPTION", media_events,
+    ) is None
+
+
 def test_set_lightning_mode_requires_codex_cli_for_openai_oauth(tmp_path):
     """Enabling OAuth Lightning without Codex CLI should not persist the toggle."""
     agent = _make_agent(tmp_path)

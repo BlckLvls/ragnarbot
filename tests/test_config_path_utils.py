@@ -33,6 +33,11 @@ def test_get_by_path_nested():
     assert get_by_path(config, "agents.defaults.debounce_seconds") == 0.5
 
 
+def test_web_console_listens_on_all_ipv4_interfaces_by_default():
+    config = Config()
+    assert config.web.host == "0.0.0.0"
+
+
 def test_get_by_path_deep():
     config = Config()
     assert get_by_path(config, "tools.web.search.engine") == "brave"
