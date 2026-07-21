@@ -374,6 +374,18 @@ class ApiRoutes:
 
         return web.json_response({"ok": True, "models": models})
 
+    async def _broadcast_state(self) -> None:
+        """Push a fresh state event (model, reasoning, context) to open web chats."""
+        channel = getattr(self.server, "channel", None)
+        build_state = getattr(self.server, "_build_state", None)
+        if channel is None or not callable(build_state):
+            return
+        try:
+            await channel.broadcast({"type": "state", **build_state()})
+        except Exception:
+            from loguru import logger
+            logger.exception("Failed to broadcast state after model switch")
+
     @staticmethod
     def _pick_auth_method(model: str, preferred: str | None) -> tuple[str | None, str | None]:
         """Find an auth method whose credentials work for `model`.
@@ -441,6 +453,7 @@ class ApiRoutes:
         switch = getattr(self.agent, "switch_model", None)
         switch_error = switch(model, auth) if callable(switch) else "agent unavailable"
         if switch_error is None:
+            await self._broadcast_state()
             return web.json_response({
                 "status": "applied",
                 "detail": f"Switched to {model} — active now.",

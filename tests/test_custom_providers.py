@@ -220,8 +220,16 @@ async def test_select_custom_model_switches_auth_to_api_key():
 @pytest.mark.asyncio
 async def test_select_hot_applies_when_agent_supports_switch():
     calls = []
+    broadcasts = []
     routes = make_routes()
     routes.agent.switch_model = lambda model, auth: calls.append((model, auth)) and None
+
+    class Channel:
+        async def broadcast(self, event):
+            broadcasts.append(event)
+
+    routes.server.channel = Channel()
+    routes.server._build_state = lambda: {"model": custom_model_id("jetson", QWEN)}
     await _add_jetson(routes)
 
     resp = await routes.models_select(JsonRequest(body={
@@ -231,6 +239,8 @@ async def test_select_hot_applies_when_agent_supports_switch():
     assert payload["restart_required"] is False
     assert payload["status"] == "applied"
     assert calls == [(custom_model_id("jetson", QWEN), "api_key")]
+    # Open web chats got a fresh state event so the header updates live.
+    assert broadcasts == [{"type": "state", "model": custom_model_id("jetson", QWEN)}]
 
 
 @pytest.mark.asyncio
