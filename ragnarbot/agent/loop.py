@@ -730,6 +730,38 @@ class AgentLoop:
         )
         return response
 
+    def switch_model(self, model: str, auth_method: str) -> str | None:
+        """Hot-swap the primary provider to a new model/auth pair.
+
+        Rebuilds the provider via the factory and repoints every component
+        that captured the old model at init. Returns an error message on
+        failure (the old provider stays active), None on success.
+        """
+        if not self._provider_factory:
+            return "no provider factory available — restart to apply"
+        try:
+            provider = self._provider_factory(model, auth_method)
+        except Exception as e:
+            logger.error(f"Failed to create provider for {model}: {e}")
+            return f"could not create provider: {e}"
+
+        self.provider = provider
+        self.model = model
+        self.auth_method = auth_method
+        self.compactor.provider = provider
+        self.compactor.model = model
+        self.context.model = model
+        read_tool = self.tools.get("file_read")
+        if read_tool is not None and hasattr(read_tool, "_model"):
+            read_tool._model = model
+        # A model switch is a fresh start for failover bookkeeping.
+        self._fallback_state.consecutive_failures = 0
+        self._fallback_state.fallback_mode = False
+        self._fallback_state.save()
+        self._fb_error_notified = False
+        logger.info(f"Hot-switched primary model to {model} ({auth_method})")
+        return None
+
     def _get_or_create_fallback_provider(self) -> LLMProvider | None:
         """Lazily create the fallback provider on first use."""
         if self._fallback_provider is not None:

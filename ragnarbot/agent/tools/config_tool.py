@@ -413,7 +413,23 @@ class ConfigTool(Tool):
 
     def _apply_warm_reload(self, path: str, value: Any) -> str | None:
         """Apply warm-reloadable fallback config changes without restart."""
+        from ragnarbot.config.loader import load_config
+
         agent = self._agent
+
+        switch = getattr(agent, "switch_model", None)
+
+        if path == "agents.defaults.model" and callable(switch):
+            auth_method = load_config().agents.defaults.auth_method
+            if switch(str(value), auth_method) is None:
+                return f"Model switched to {value} — active now."
+            return None  # fall back to "restart required"
+
+        if path == "agents.defaults.auth_method" and callable(switch):
+            model = load_config().agents.defaults.model
+            if switch(model, str(value)) is None:
+                return f"Auth method switched to {value} — active now."
+            return None
 
         if path == "agents.fallback.model":
             agent._fallback_model = str(value) if value else None
