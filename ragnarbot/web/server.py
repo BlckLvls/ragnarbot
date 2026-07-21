@@ -1,6 +1,7 @@
 """HTTP server for the web console: static SPA, WebSocket, and REST API."""
 
 import json
+import re
 import uuid
 from pathlib import Path
 from typing import Any
@@ -204,6 +205,8 @@ class WebServer:
         r.add_get("/api/sessions", self._handle_sessions_list)
         r.add_post("/api/sessions/new", self._handle_session_new)
         r.add_get("/api/sessions/active/messages", self._handle_active_messages)
+        r.add_post("/api/sessions/active/regenerate", self._handle_session_regenerate)
+        r.add_post("/api/sessions/active/fork", self._handle_session_fork)
         r.add_post("/api/sessions/{session_id}/activate", self._handle_session_activate)
         r.add_patch("/api/sessions/{session_id}", self._handle_session_patch)
         r.add_delete("/api/sessions/{session_id}", self._handle_session_delete)
@@ -400,6 +403,111 @@ class WebServer:
         session = self.agent.sessions.get_or_create(WEB_USER_KEY)
         return self._messages_response(session, request)
 
+    @staticmethod
+    def _strip_message_prefix(content: str) -> str:
+        """Drop leading [channel]/[timestamp] prefixes from a stored user message."""
+        return re.sub(r"^(?:\[[^\]\n]*\]\s*)+", "", content).strip()
+
+    def _attachments_from_refs(self, refs: list[dict]) -> list[MediaAttachment]:
+        """Rebuild photo attachments from a stored message's media refs."""
+        attachments: list[MediaAttachment] = []
+        for i, ref in enumerate(refs):
+            if (ref.get("type") or "photo") != "photo":
+                continue
+            path = ref.get("path")
+            if not path or not Path(path).is_file():
+                continue
+            try:
+                data = Path(path).read_bytes()
+            except OSError:
+                continue
+            attachments.append(MediaAttachment(
+                type="photo",
+                file_id=f"regen-{i}",
+                data=data,
+                filename=ref.get("filename") or Path(path).name,
+                mime_type=ref.get("mime") or ref.get("mime_type") or "image/jpeg",
+            ))
+        return attachments
+
+    async def _handle_session_regenerate(self, request: web.Request) -> web.Response:
+        """Rewind the active chat to before an assistant reply and re-ask.
+
+        The transcript is truncated to just before the user message that
+        produced the reply, then that message is re-dispatched through the
+        normal channel flow — so the (possibly different) current model
+        answers it again.
+        """
+        body = await request.json()
+        raw_index = body.get("raw_index")
+        session = self.agent.sessions.get_or_create(WEB_USER_KEY)
+        messages = session.messages
+        if (
+            not isinstance(raw_index, int)
+            or not 0 <= raw_index < len(messages)
+            or messages[raw_index].get("role") != "assistant"
+        ):
+            raise web.HTTPBadRequest(reason="raw_index must point at an assistant message")
+
+        user_idx = None
+        for i in range(raw_index - 1, -1, -1):
+            m = messages[i]
+            if (
+                m.get("role") == "user"
+                and not _is_technical_message(m)
+                and (m.get("metadata") or {}).get("type") != "compaction"
+            ):
+                user_idx = i
+                break
+        if user_idx is None:
+            raise web.HTTPBadRequest(reason="no user message precedes this reply")
+
+        user_msg = messages[user_idx]
+        meta = user_msg.get("metadata") or {}
+        text = meta.get("display_content") or self._strip_message_prefix(user_msg.get("content") or "")
+        if not text:
+            raise web.HTTPBadRequest(reason="original user message is empty")
+        attachments = self._attachments_from_refs(user_msg.get("media_refs") or [])
+
+        session.messages = messages[:user_idx]
+        self.agent.sessions.save(session)
+
+        await self.channel._handle_message(
+            sender_id=self.channel.SENDER_ID,
+            chat_id=self.channel.DEFAULT_CHAT_ID,
+            content=text,
+            attachments=attachments,
+            metadata={
+                "display_content": text,
+                "attachments": [{"type": a.type, "filename": a.filename} for a in attachments],
+                "regenerated": True,
+            },
+        )
+        return web.json_response({"ok": True, "truncated_to": user_idx})
+
+    async def _handle_session_fork(self, request: web.Request) -> web.Response:
+        """Copy the active chat up to (and including) a message into a new chat."""
+        import copy as copy_mod
+
+        body = await request.json()
+        raw_index = body.get("raw_index")
+        source = self.agent.sessions.get_or_create(WEB_USER_KEY)
+        if not isinstance(raw_index, int) or not 0 <= raw_index < len(source.messages):
+            raise web.HTTPBadRequest(reason="raw_index out of range")
+
+        fork = self.agent.sessions.create_new(WEB_USER_KEY)
+        fork.messages = copy_mod.deepcopy(source.messages[: raw_index + 1])
+        source_title = _session_title(source.metadata, source.messages)
+        fork.metadata["title"] = f"{source_title} (fork)"[:_TITLE_MAX]
+        self.agent.sessions.save(fork)
+
+        await self.channel.broadcast({
+            "type": "session_changed",
+            "session_id": fork.key,
+            **self._web_context_state(fork),
+        })
+        return web.json_response({"session_id": fork.key})
+
     async def _handle_session_activate(self, request: web.Request) -> web.Response:
         # Any user conversation can become the web's active chat: activation is
         # just repointing web:main's active pointer. The session keeps its own
@@ -514,9 +622,12 @@ class WebServer:
             segments = []
             turn_open = False
 
-        def append_assistant(message: dict) -> None:
+        def append_assistant(message: dict, raw_index: int | None = None) -> None:
             payload = self._display_message(session, message)
             metadata = payload["metadata"]
+            if raw_index is not None:
+                # Anchor back into the canonical transcript for regenerate/fork.
+                metadata["raw_index"] = raw_index
             if segments:
                 metadata["segments"] = list(segments)
             # Keep the older grouped fields for API compatibility. New clients
@@ -531,7 +642,7 @@ class WebServer:
             display.append(payload)
             reset_turn()
 
-        for message in session.messages:
+        for raw_index, message in enumerate(session.messages):
             role = message.get("role")
             if role not in ("user", "assistant", "tool") or _is_technical_message(message):
                 continue
@@ -549,7 +660,9 @@ class WebServer:
                     )
                     pending_media = []
                 turn_open = True
-                display.append(self._display_message(session, message))
+                payload = self._display_message(session, message)
+                payload["metadata"]["raw_index"] = raw_index
+                display.append(payload)
                 continue
 
             if role == "assistant" and message.get("media_items"):
@@ -598,7 +711,7 @@ class WebServer:
                     {"type": "media", **event} for event in pending_media
                 )
                 pending_media = []
-            append_assistant(message)
+            append_assistant(message, raw_index)
 
         # Preserve incomplete/stopped turns and standalone media sends.
         if turn_open and (intermediate or tools or media_events):

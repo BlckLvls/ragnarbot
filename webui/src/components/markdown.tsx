@@ -39,6 +39,12 @@ export const Markdown = memo(function Markdown({
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
+          // The console is an SPA — external links must not replace the app.
+          a: ({ href, children, ...props }) => (
+            <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
+              {children}
+            </a>
+          ),
           pre: ({ children }) => <>{children}</>,
           code: ({ className, children, ...props }) => {
             const inline = !className && !String(children).includes('\n')
