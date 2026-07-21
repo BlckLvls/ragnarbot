@@ -54,6 +54,14 @@ class ApiRoutes:
         r.add_patch("/api/config", self.config_set)
         r.add_get("/api/secrets", self.secrets_list)
         r.add_put("/api/secrets", self.secrets_set)
+        # models & providers
+        r.add_get("/api/models", self.models_overview)
+        r.add_get("/api/models/catalog/{provider_id}", self.models_catalog)
+        r.add_post("/api/models/select", self.models_select)
+        r.add_post("/api/models/custom", self.models_custom_add)
+        r.add_patch("/api/models/custom/{server_id}", self.models_custom_update)
+        r.add_delete("/api/models/custom/{server_id}", self.models_custom_delete)
+        r.add_post("/api/models/custom/{server_id}/probe", self.models_custom_probe)
         # cron
         r.add_get("/api/cron", self.cron_list)
         r.add_patch("/api/cron/{job_id}", self.cron_update)
@@ -171,6 +179,461 @@ class ApiRoutes:
         if not path.startswith("secrets."):
             path = f"secrets.{path}"
         return await self._config_tool_set(path, value)
+
+    # ── models & providers ───────────────────────────────────────
+
+    async def models_overview(self, request: web.Request) -> web.Response:
+        from ragnarbot.auth.credentials import load_credentials
+        from ragnarbot.config.loader import load_config
+        from ragnarbot.config.providers import (
+            PROVIDERS,
+            custom_model_id,
+            custom_provider_secret_name,
+            supports_oauth,
+        )
+
+        config = load_config()
+        creds = load_credentials()
+
+        def oauth_connected(provider_id: str) -> bool:
+            provider_creds = getattr(creds.providers, provider_id, None)
+            if provider_id == "anthropic":
+                return bool(provider_creds and provider_creds.oauth_key)
+            if provider_id == "gemini":
+                from ragnarbot.auth.gemini_oauth import is_authenticated
+                return is_authenticated()
+            if provider_id == "openai":
+                from ragnarbot.auth.openai_oauth import is_authenticated
+                return is_authenticated()
+            return False
+
+        providers = []
+        for p in PROVIDERS:
+            provider_creds = getattr(creds.providers, p["id"], None)
+            key_set = bool(provider_creds and provider_creds.api_key)
+            oauth_set = supports_oauth(p["id"]) and oauth_connected(p["id"])
+            providers.append({
+                "id": p["id"],
+                "name": p["name"],
+                "description": p["description"],
+                "api_key_url": p.get("api_key_url", ""),
+                "key_set": key_set,
+                "oauth_set": oauth_set,
+                "connected": key_set or oauth_set,
+                "oauth_supported": supports_oauth(p["id"]),
+                "models": [
+                    {
+                        "id": m["id"],
+                        "name": m["name"],
+                        "description": m.get("description", ""),
+                        "oauth": m.get("oauth", True),
+                    }
+                    for m in p["models"]
+                ],
+            })
+
+        custom = []
+        for server in config.custom_providers:
+            custom.append({
+                "id": server.id,
+                "name": server.name or server.id,
+                "base_url": server.base_url,
+                "api_key_set": bool(creds.extra.get(custom_provider_secret_name(server.id), "")),
+                "models": [
+                    {
+                        "id": m.id,
+                        "name": m.name or m.id,
+                        "vision": m.vision,
+                        "max_tokens": m.max_tokens,
+                        "full_id": custom_model_id(server.id, m.id),
+                    }
+                    for m in server.models
+                ],
+            })
+
+        defaults = config.agents.defaults
+        return web.json_response({
+            "current": {
+                "model": defaults.model,
+                "auth_method": defaults.auth_method,
+                "reasoning_level": defaults.reasoning_level,
+                "fallback_model": config.agents.fallback.model,
+            },
+            "providers": providers,
+            "custom": custom,
+        })
+
+    # Filter obvious non-chat OpenAI models out of the catalog.
+    _OPENAI_NON_CHAT = re.compile(
+        r"embedding|whisper|tts|dall-e|audio|realtime|moderation|davinci|babbage|image|transcribe|search"
+    )
+
+    async def models_catalog(self, request: web.Request) -> web.Response:
+        """Fetch the provider's live model catalog using stored credentials."""
+        import aiohttp
+
+        from ragnarbot.auth.credentials import load_credentials
+
+        provider_id = request.match_info["provider_id"]
+        creds = load_credentials()
+        pc = getattr(creds.providers, provider_id, None)
+        api_key = pc.api_key if pc else ""
+        oauth_key = pc.oauth_key if pc else ""
+
+        url: str
+        headers: dict[str, str] = {}
+        if provider_id == "openrouter":
+            url = "https://openrouter.ai/api/v1/models"
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+        elif provider_id == "anthropic":
+            url = "https://api.anthropic.com/v1/models?limit=100"
+            headers["anthropic-version"] = "2023-06-01"
+            if api_key:
+                headers["x-api-key"] = api_key
+            elif oauth_key:
+                headers["Authorization"] = f"Bearer {oauth_key}"
+                headers["anthropic-beta"] = "oauth-2025-04-20"
+            else:
+                return web.json_response({"ok": False, "error": "no Anthropic credentials configured"})
+        elif provider_id == "openai":
+            if not api_key:
+                return web.json_response({
+                    "ok": False,
+                    "error": "listing OpenAI models needs an API key (ChatGPT OAuth cannot list models)",
+                })
+            url = "https://api.openai.com/v1/models"
+            headers["Authorization"] = f"Bearer {api_key}"
+        elif provider_id == "gemini":
+            if not api_key:
+                return web.json_response({"ok": False, "error": "listing Gemini models needs an API key"})
+            url = f"https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key={api_key}"
+        else:
+            raise web.HTTPNotFound()
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=15)
+            async with aiohttp.ClientSession(timeout=timeout) as http:
+                async with http.get(url, headers=headers) as resp:
+                    if resp.status != 200:
+                        return web.json_response(
+                            {"ok": False, "error": f"provider returned HTTP {resp.status}"}
+                        )
+                    payload = await resp.json(content_type=None)
+        except Exception as e:
+            return web.json_response({"ok": False, "error": str(e)})
+
+        models: list[dict] = []
+        if provider_id == "openrouter":
+            for m in payload.get("data", []):
+                mid = m.get("id")
+                if not mid:
+                    continue
+                pricing = m.get("pricing") or {}
+                free = mid.endswith(":free") or (
+                    str(pricing.get("prompt", "1")) in ("0", "0.0")
+                    and str(pricing.get("completion", "1")) in ("0", "0.0")
+                )
+                models.append({
+                    "id": f"openrouter/{mid}",
+                    "name": m.get("name") or mid,
+                    "description": (m.get("description") or "").split(". ")[0][:120],
+                    "free": free,
+                })
+        elif provider_id == "anthropic":
+            for m in payload.get("data", []):
+                mid = m.get("id")
+                if not mid:
+                    continue
+                models.append({
+                    "id": f"anthropic/{mid}",
+                    "name": m.get("display_name") or mid,
+                    "description": "",
+                    "free": False,
+                })
+        elif provider_id == "openai":
+            for m in payload.get("data", []):
+                mid = m.get("id") or ""
+                if not mid or self._OPENAI_NON_CHAT.search(mid):
+                    continue
+                models.append({"id": f"openai/{mid}", "name": mid, "description": "", "free": False})
+            models.sort(key=lambda m: m["id"])
+        elif provider_id == "gemini":
+            for m in payload.get("models", []):
+                if "generateContent" not in (m.get("supportedGenerationMethods") or []):
+                    continue
+                mid = (m.get("name") or "").removeprefix("models/")
+                if not mid:
+                    continue
+                models.append({
+                    "id": f"gemini/{mid}",
+                    "name": m.get("displayName") or mid,
+                    "description": (m.get("description") or "")[:120],
+                    "free": False,
+                })
+
+        return web.json_response({"ok": True, "models": models})
+
+    @staticmethod
+    def _pick_auth_method(model: str, preferred: str | None) -> tuple[str | None, str | None]:
+        """Find an auth method whose credentials work for `model`.
+
+        Tries the preferred/current method first, then the alternative.
+        Returns (auth_method, None) on success or (None, error) when neither works.
+        """
+        from ragnarbot.config.validation import validate_model_auth
+
+        candidates = []
+        for method in (preferred, "oauth", "api_key"):
+            if method in ("oauth", "api_key") and method not in candidates:
+                candidates.append(method)
+        last_error = None
+        for method in candidates:
+            error = validate_model_auth(model, method)
+            if error is None:
+                return method, None
+            last_error = error
+        return None, last_error
+
+    async def models_select(self, request: web.Request) -> web.Response:
+        from ragnarbot.config.loader import load_config, save_config
+
+        body = await request.json()
+        model = body.get("model")
+        target = body.get("target", "primary")
+        if target not in ("primary", "fallback"):
+            return _json_error("target must be 'primary' or 'fallback'")
+        if model is None or (target == "primary" and not model):
+            return _json_error("model is required")
+
+        config = load_config()
+
+        if target == "fallback":
+            fallback = config.agents.fallback
+            if model:
+                auth, error = self._pick_auth_method(model, body.get("auth_method") or fallback.auth_method)
+                if auth is None:
+                    return _json_error(error or "no working credentials for this model")
+                fallback.model, fallback.auth_method = model, auth
+            else:
+                fallback.model = None  # empty string clears the fallback
+            save_config(config)
+            # Mirror the config tool's warm reload on the live agent.
+            agent = self.agent
+            if hasattr(agent, "_fallback_model"):
+                agent._fallback_model = fallback.model
+            if hasattr(agent, "_fallback_provider"):
+                agent._fallback_provider = None
+            live = getattr(agent, "_fallback_config", None)
+            if live is not None:
+                live.model, live.auth_method = fallback.model, fallback.auth_method
+            detail = "Fallback model updated." if model else "Fallback model cleared."
+            return web.json_response({"status": "applied", "detail": detail})
+
+        defaults = config.agents.defaults
+        auth, error = self._pick_auth_method(model, body.get("auth_method") or defaults.auth_method)
+        if auth is None:
+            return _json_error(error or "no working credentials for this model")
+        defaults.model, defaults.auth_method = model, auth
+        save_config(config)
+
+        # Hot-apply on the live agent; fall back to restart-required if that fails.
+        switch = getattr(self.agent, "switch_model", None)
+        switch_error = switch(model, auth) if callable(switch) else "agent unavailable"
+        if switch_error is None:
+            return web.json_response({
+                "status": "applied",
+                "detail": f"Switched to {model} — active now.",
+                "auth_method": auth,
+                "restart_required": False,
+            })
+        return web.json_response({
+            "status": "saved",
+            "detail": f"Saved, but hot reload failed ({switch_error}). Restart the gateway to apply.",
+            "auth_method": auth,
+            "restart_required": True,
+        })
+
+    @staticmethod
+    def _parse_custom_models(raw: Any) -> list[dict] | web.Response:
+        """Normalize a request's models payload into CustomModelConfig dicts."""
+        if raw is None:
+            return []
+        if not isinstance(raw, list):
+            return _json_error("models must be a list")
+        models = []
+        for item in raw:
+            if isinstance(item, str):
+                item = {"id": item}
+            if not isinstance(item, dict) or not str(item.get("id", "")).strip():
+                return _json_error("each model needs a non-empty id")
+            max_tokens = item.get("max_tokens")
+            models.append({
+                "id": str(item["id"]).strip(),
+                "name": str(item.get("name", "")).strip(),
+                "vision": bool(item.get("vision", False)),
+                "max_tokens": int(max_tokens) if max_tokens else None,
+            })
+        return models
+
+    @staticmethod
+    def _normalize_base_url(raw: str) -> str:
+        url = (raw or "").strip().rstrip("/")
+        return url
+
+    def _save_custom_api_key(self, server_id: str, api_key: Any) -> None:
+        """Persist (or clear) a custom server's API key in credentials.extra."""
+        from ragnarbot.auth.credentials import load_credentials, save_credentials
+        from ragnarbot.config.providers import custom_provider_secret_name
+
+        creds = load_credentials()
+        name = custom_provider_secret_name(server_id)
+        if api_key:
+            creds.extra[name] = str(api_key)
+        else:
+            creds.extra.pop(name, None)
+        save_credentials(creds)
+
+    async def models_custom_add(self, request: web.Request) -> web.Response:
+        from ragnarbot.config.loader import load_config, save_config
+        from ragnarbot.config.schema import CustomProviderConfig
+
+        body = await request.json()
+        name = str(body.get("name", "")).strip()
+        # Lowercase alnum + underscore only: the id is embedded in credential
+        # keys that must survive the camelCase<->snake_case config round-trip.
+        raw_id = str(body.get("id") or "").strip() or re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_]{0,63}", raw_id):
+            return _json_error("a valid server id is required (lowercase letters, digits, _)")
+        server_id = raw_id
+        base_url = self._normalize_base_url(body.get("base_url", ""))
+        if not base_url.startswith(("http://", "https://")):
+            return _json_error("base_url must start with http:// or https://")
+        models = self._parse_custom_models(body.get("models"))
+        if isinstance(models, web.Response):
+            return models
+
+        config = load_config()
+        if any(s.id == server_id for s in config.custom_providers):
+            return _json_error(f"custom server '{server_id}' already exists", 409)
+        config.custom_providers.append(CustomProviderConfig(
+            id=server_id, name=name or server_id, base_url=base_url, models=models,
+        ))
+        save_config(config)
+        if "api_key" in body:
+            self._save_custom_api_key(server_id, body.get("api_key"))
+        return web.json_response({"ok": True, "id": server_id})
+
+    async def models_custom_update(self, request: web.Request) -> web.Response:
+        from ragnarbot.config.loader import load_config, save_config
+        from ragnarbot.config.schema import CustomModelConfig
+
+        server_id = request.match_info["server_id"]
+        body = await request.json()
+        config = load_config()
+        server = next((s for s in config.custom_providers if s.id == server_id), None)
+        if server is None:
+            raise web.HTTPNotFound()
+        if "name" in body:
+            server.name = str(body["name"]).strip()
+        if "base_url" in body:
+            base_url = self._normalize_base_url(body["base_url"])
+            if not base_url.startswith(("http://", "https://")):
+                return _json_error("base_url must start with http:// or https://")
+            server.base_url = base_url
+        if "models" in body:
+            models = self._parse_custom_models(body["models"])
+            if isinstance(models, web.Response):
+                return models
+            server.models = [CustomModelConfig(**m) for m in models]
+        save_config(config)
+        if "api_key" in body:
+            self._save_custom_api_key(server_id, body.get("api_key"))
+        return web.json_response({"ok": True})
+
+    async def models_custom_delete(self, request: web.Request) -> web.Response:
+        from ragnarbot.config.loader import load_config, save_config
+
+        server_id = request.match_info["server_id"]
+        config = load_config()
+        server = next((s for s in config.custom_providers if s.id == server_id), None)
+        if server is None:
+            raise web.HTTPNotFound()
+        prefix = f"custom/{server_id}/"
+        in_use = [
+            label for label, value in (
+                ("primary model", config.agents.defaults.model),
+                ("fallback model", config.agents.fallback.model),
+            )
+            if value and value.startswith(prefix)
+        ]
+        if in_use:
+            return _json_error(
+                f"server '{server_id}' is in use as the {' and '.join(in_use)} — switch models first",
+                409,
+            )
+        config.custom_providers = [s for s in config.custom_providers if s.id != server_id]
+        save_config(config)
+        self._save_custom_api_key(server_id, None)
+        return web.json_response({"ok": True})
+
+    async def models_custom_probe(self, request: web.Request) -> web.Response:
+        """Query a custom server's /models endpoint; optionally merge new ids."""
+        import aiohttp
+
+        from ragnarbot.auth.credentials import load_credentials
+        from ragnarbot.config.loader import load_config, save_config
+        from ragnarbot.config.providers import custom_provider_secret_name
+        from ragnarbot.config.schema import CustomModelConfig
+
+        server_id = request.match_info["server_id"]
+        config = load_config()
+        server = next((s for s in config.custom_providers if s.id == server_id), None)
+        if server is None:
+            raise web.HTTPNotFound()
+
+        headers = {}
+        api_key = load_credentials().extra.get(custom_provider_secret_name(server_id), "")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as http:
+                async with http.get(f"{server.base_url}/models", headers=headers) as resp:
+                    if resp.status != 200:
+                        return web.json_response(
+                            {"ok": False, "error": f"server returned HTTP {resp.status}"}
+                        )
+                    payload = await resp.json(content_type=None)
+        except Exception as e:
+            return web.json_response({"ok": False, "error": str(e)})
+
+        raw_models = payload.get("data", payload) if isinstance(payload, dict) else payload
+        if not isinstance(raw_models, list):
+            return web.json_response({"ok": False, "error": "unexpected /models response shape"})
+        discovered = [
+            str(m["id"]) for m in raw_models
+            if isinstance(m, dict) and m.get("id")
+        ]
+
+        raw_body = await request.text()
+        try:
+            body = json.loads(raw_body) if raw_body else {}
+        except json.JSONDecodeError:
+            body = {}
+
+        added: list[str] = []
+        if isinstance(body, dict) and body.get("save"):
+            known = {m.id for m in server.models}
+            for mid in discovered:
+                if mid not in known:
+                    server.models.append(CustomModelConfig(id=mid))
+                    added.append(mid)
+            if added:
+                save_config(config)
+
+        return web.json_response({"ok": True, "models": discovered, "added": added})
 
     # ── cron ─────────────────────────────────────────────────────
 

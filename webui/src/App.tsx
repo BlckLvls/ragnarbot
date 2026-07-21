@@ -22,6 +22,7 @@ const CronPage = lazy(() => import('./pages/cron'))
 const HooksPage = lazy(() => import('./pages/hooks'))
 const AgentsPage = lazy(() => import('./pages/agents'))
 const SkillsPage = lazy(() => import('./pages/skills'))
+const ModelsPage = lazy(() => import('./pages/models'))
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 5000 } },
@@ -97,6 +98,7 @@ export default function App() {
               <Route path="/hooks" element={<HooksPage />} />
               <Route path="/agents" element={<AgentsPage />} />
               <Route path="/skills" element={<SkillsPage />} />
+              <Route path="/models" element={<ModelsPage />} />
               <Route path="/sessions" element={<Navigate to="/" replace />} />
               <Route path="/memory" element={<Navigate to="/files" replace />} />
               <Route path="/status" element={<Navigate to="/settings" replace />} />

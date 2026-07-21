@@ -130,6 +130,50 @@ export interface ModelOption {
   oauth: boolean
 }
 
+export interface ModelsOverview {
+  current: {
+    model: string
+    auth_method: 'api_key' | 'oauth'
+    reasoning_level: string
+    fallback_model: string | null
+  }
+  providers: {
+    id: string
+    name: string
+    description: string
+    api_key_url: string
+    key_set: boolean
+    oauth_set: boolean
+    connected: boolean
+    oauth_supported: boolean
+    models: { id: string; name: string; description: string; oauth: boolean }[]
+  }[]
+  custom: CustomServer[]
+}
+
+export interface CatalogModel {
+  id: string
+  name: string
+  description: string
+  free: boolean
+}
+
+export interface CustomServer {
+  id: string
+  name: string
+  base_url: string
+  api_key_set: boolean
+  models: CustomServerModel[]
+}
+
+export interface CustomServerModel {
+  id: string
+  name: string
+  vision: boolean
+  max_tokens: number | null
+  full_id: string
+}
+
 export interface SecretEntry {
   path: string
   set: boolean
