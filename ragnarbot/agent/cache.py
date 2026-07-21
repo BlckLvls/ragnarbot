@@ -57,6 +57,9 @@ class CacheManager:
     def get_provider_from_model(model: str) -> str:
         """Extract provider name from a model string."""
         lower = model.lower()
+        if lower.startswith("custom/"):
+            # Custom OpenAI-compatible servers speak the OpenAI protocol.
+            return "openai"
         if lower.startswith("openrouter/"):
             return "openrouter"
         if lower.startswith("anthropic/") or lower.startswith("claude"):

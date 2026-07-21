@@ -1,6 +1,8 @@
 """Provider and model registry for ragnarbot."""
 
-from ragnarbot.config.schema import OAUTH_SUPPORTED_PROVIDERS
+from dataclasses import dataclass
+
+from ragnarbot.config.schema import CUSTOM_PROVIDER_PREFIX, OAUTH_SUPPORTED_PROVIDERS
 
 PROVIDERS = [
     {
@@ -203,7 +205,91 @@ def get_model_info(model_id: str) -> dict | None:
 
 def model_supports_vision(model_id: str) -> bool:
     """Check if a model supports vision. Unknown models default to True."""
+    if is_custom_model(model_id):
+        resolved = resolve_custom_model(model_id)
+        # Local models rarely accept images — default to False unless declared.
+        return bool(resolved and resolved.vision)
     info = get_model_info(model_id)
     if info is None:
         return True
     return info.get("vision", True)
+
+
+# ── custom OpenAI-compatible servers ─────────────────────────────
+
+@dataclass(frozen=True)
+class ResolvedCustomModel:
+    """A custom model id resolved against the configured servers."""
+
+    provider_id: str
+    provider_name: str
+    base_url: str
+    model_id: str  # bare model id as the server knows it
+    vision: bool = False
+    max_tokens: int | None = None
+
+    @property
+    def api_key(self) -> str | None:
+        """API key for this server, if one is stored in credentials."""
+        from ragnarbot.auth.credentials import load_credentials
+
+        key = load_credentials().extra.get(custom_provider_secret_name(self.provider_id), "")
+        return key or None
+
+
+def custom_provider_secret_name(provider_id: str) -> str:
+    """Credentials `extra` key holding a custom server's API key."""
+    return f"custom_{provider_id}_api_key"
+
+
+def custom_model_id(provider_id: str, model_id: str) -> str:
+    """Build the full model identifier for a custom server model."""
+    return f"{CUSTOM_PROVIDER_PREFIX}/{provider_id}/{model_id}"
+
+
+def is_custom_model(model_id: str) -> bool:
+    """Check if a model id points at a configured custom server."""
+    return model_id.startswith(f"{CUSTOM_PROVIDER_PREFIX}/")
+
+
+def split_custom_model(model_id: str) -> tuple[str, str] | None:
+    """Split 'custom/<server>/<model>' into (server_id, bare_model_id)."""
+    if not is_custom_model(model_id):
+        return None
+    rest = model_id.split("/", 1)[1]
+    if "/" not in rest:
+        return None
+    provider_id, bare = rest.split("/", 1)
+    if not provider_id or not bare:
+        return None
+    return provider_id, bare
+
+
+def resolve_custom_model(model_id: str, config=None) -> ResolvedCustomModel | None:
+    """Resolve a 'custom/<server>/<model>' id against configured servers.
+
+    Returns None when the id is not a custom model or the server/model
+    is not configured.
+    """
+    parts = split_custom_model(model_id)
+    if parts is None:
+        return None
+    provider_id, bare = parts
+
+    if config is None:
+        from ragnarbot.config.loader import load_config
+        config = load_config()
+
+    for server in config.custom_providers:
+        if server.id != provider_id:
+            continue
+        entry = next((m for m in server.models if m.id == bare), None)
+        return ResolvedCustomModel(
+            provider_id=server.id,
+            provider_name=server.name or server.id,
+            base_url=server.base_url,
+            model_id=bare,
+            vision=bool(entry.vision) if entry else False,
+            max_tokens=entry.max_tokens if entry else None,
+        )
+    return None
