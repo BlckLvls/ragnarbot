@@ -2073,7 +2073,7 @@ requires-dist = [
     { name = "croniter", specifier = ">=2.0.0" },
     { name = "ddgs", specifier = ">=9.0.0" },
     { name = "httpx", specifier = ">=0.25.0" },
-    { name = "litellm", specifier = ">=1.0.0" },
+    { name = "litellm", specifier = ">=1.0.0,!=1.92.*" },
     { name = "loguru", specifier = ">=0.7.0" },
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "onnxruntime", specifier = ">=1.20.0" },
