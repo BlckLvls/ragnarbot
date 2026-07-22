@@ -177,15 +177,27 @@ class ConfigTool(Tool):
 
             # Validate model against known provider models
             if path in ("agents.defaults.model", "agents.fallback.model"):
-                from ragnarbot.config.providers import PROVIDERS
+                from ragnarbot.config.providers import (
+                    PROVIDERS,
+                    is_custom_model,
+                    resolve_custom_model,
+                )
 
-                all_model_ids = [
-                    m["id"] for p in PROVIDERS for m in p["models"]
-                ]
-                if new_value not in all_model_ids:
-                    set_by_path(config, path, old_value)
-                    models_list = ", ".join(all_model_ids)
-                    return f"Error: model '{new_value}' is not available. Choose from: {models_list}"
+                if is_custom_model(str(new_value)):
+                    if resolve_custom_model(str(new_value)) is None:
+                        set_by_path(config, path, old_value)
+                        return (
+                            f"Error: model '{new_value}' does not match any "
+                            "configured custom server"
+                        )
+                else:
+                    all_model_ids = [
+                        m["id"] for p in PROVIDERS for m in p["models"]
+                    ]
+                    if new_value not in all_model_ids:
+                        set_by_path(config, path, old_value)
+                        models_list = ", ".join(all_model_ids)
+                        return f"Error: model '{new_value}' is not available. Choose from: {models_list}"
 
             # Validate auth_method
             if path in ("agents.defaults.auth_method", "agents.fallback.auth_method"):
