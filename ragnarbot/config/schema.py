@@ -31,6 +31,46 @@ class ChannelsConfig(BaseModel):
 
 OAUTH_SUPPORTED_PROVIDERS = {"anthropic", "gemini", "openai"}
 
+CUSTOM_PROVIDER_PREFIX = "custom"
+
+
+class CustomModelConfig(BaseModel):
+    """A single model exposed by a custom OpenAI-compatible server."""
+    id: str = Field(
+        json_schema_extra={"reload": "warm", "label": "Model identifier on the server"},
+    )
+    name: str = Field(
+        default="",
+        json_schema_extra={"reload": "warm", "label": "Display name"},
+    )
+    vision: bool = Field(
+        default=False,
+        json_schema_extra={"reload": "warm", "label": "Model supports image input"},
+    )
+    max_tokens: int | None = Field(
+        default=None,
+        json_schema_extra={"reload": "warm", "label": "Max output tokens override"},
+    )
+
+
+class CustomProviderConfig(BaseModel):
+    """A custom OpenAI-compatible inference server (vLLM, MLC-LLM, llama.cpp, ...)."""
+    id: str = Field(
+        json_schema_extra={"reload": "warm", "label": "Server identifier (slug)"},
+    )
+    name: str = Field(
+        default="",
+        json_schema_extra={"reload": "warm", "label": "Display name"},
+    )
+    base_url: str = Field(
+        default="",
+        json_schema_extra={"reload": "warm", "label": "OpenAI-compatible base URL (e.g. http://host:8000/v1)"},
+    )
+    models: list[CustomModelConfig] = Field(
+        default_factory=list,
+        json_schema_extra={"reload": "warm", "label": "Models served by this server"},
+    )
+
 
 class AgentDefaults(BaseModel):
     """Default agent configuration."""
@@ -338,6 +378,7 @@ class Config(BaseSettings):
     """Root configuration for ragnarbot."""
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
+    custom_providers: list[CustomProviderConfig] = Field(default_factory=list)
     daemon: DaemonConfig = Field(default_factory=DaemonConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)

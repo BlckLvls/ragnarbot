@@ -177,15 +177,27 @@ class ConfigTool(Tool):
 
             # Validate model against known provider models
             if path in ("agents.defaults.model", "agents.fallback.model"):
-                from ragnarbot.config.providers import PROVIDERS
+                from ragnarbot.config.providers import (
+                    PROVIDERS,
+                    is_custom_model,
+                    resolve_custom_model,
+                )
 
-                all_model_ids = [
-                    m["id"] for p in PROVIDERS for m in p["models"]
-                ]
-                if new_value not in all_model_ids:
-                    set_by_path(config, path, old_value)
-                    models_list = ", ".join(all_model_ids)
-                    return f"Error: model '{new_value}' is not available. Choose from: {models_list}"
+                if is_custom_model(str(new_value)):
+                    if resolve_custom_model(str(new_value)) is None:
+                        set_by_path(config, path, old_value)
+                        return (
+                            f"Error: model '{new_value}' does not match any "
+                            "configured custom server"
+                        )
+                else:
+                    all_model_ids = [
+                        m["id"] for p in PROVIDERS for m in p["models"]
+                    ]
+                    if new_value not in all_model_ids:
+                        set_by_path(config, path, old_value)
+                        models_list = ", ".join(all_model_ids)
+                        return f"Error: model '{new_value}' is not available. Choose from: {models_list}"
 
             # Validate auth_method
             if path in ("agents.defaults.auth_method", "agents.fallback.auth_method"):
@@ -413,7 +425,23 @@ class ConfigTool(Tool):
 
     def _apply_warm_reload(self, path: str, value: Any) -> str | None:
         """Apply warm-reloadable fallback config changes without restart."""
+        from ragnarbot.config.loader import load_config
+
         agent = self._agent
+
+        switch = getattr(agent, "switch_model", None)
+
+        if path == "agents.defaults.model" and callable(switch):
+            auth_method = load_config().agents.defaults.auth_method
+            if switch(str(value), auth_method) is None:
+                return f"Model switched to {value} — active now."
+            return None  # fall back to "restart required"
+
+        if path == "agents.defaults.auth_method" and callable(switch):
+            model = load_config().agents.defaults.model
+            if switch(model, str(value)) is None:
+                return f"Auth method switched to {value} — active now."
+            return None
 
         if path == "agents.fallback.model":
             agent._fallback_model = str(value) if value else None

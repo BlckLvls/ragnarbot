@@ -18,7 +18,9 @@ classifiers = [
 
 dependencies = [
     "typer>=0.9.0",
-    "litellm>=1.0.0",
+    # 1.92.x imports litellm.proxy (needs fastapi/orjson/...) on the OpenRouter
+    # tool-calling path, breaking every OpenRouter chat; fixed in 1.93.0.
+    "litellm>=1.0.0,!=1.92.*",
     "anthropic>=0.40.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",

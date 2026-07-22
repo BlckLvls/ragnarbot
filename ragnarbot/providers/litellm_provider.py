@@ -80,22 +80,39 @@ class LiteLLMProvider(LLMProvider):
             LLMResponse with content and/or tool calls.
         """
         model = model or self.default_model
+
+        # Custom OpenAI-compatible servers (vLLM, MLC-LLM, llama.cpp, ...):
+        # resolve base_url/key from config and speak plain OpenAI protocol.
+        custom = None
+        if model.startswith("custom/"):
+            from ragnarbot.config.providers import resolve_custom_model
+            custom = resolve_custom_model(model)
+            if custom is None or not custom.base_url:
+                return LLMResponse(
+                    content=f"Error calling LLM: custom server for '{model}' is not configured",
+                    finish_reason="error",
+                )
+
         reasoning = resolve_reasoning(model, reasoning_level)
         lightning = resolve_lightning(model, "api_key", lightning_mode)
         if max_tokens is None:
             # OpenAI GPT-5.x accepts up to 128k output tokens; Gemini/OpenRouter
             # models vary and may reject a value above their own ceiling, so keep
             # the conservative default for them.
-            max_tokens = MAX_OUTPUT_TOKENS if model.startswith("openai/") else DEFAULT_MAX_TOKENS
+            if custom is not None:
+                max_tokens = custom.max_tokens or DEFAULT_MAX_TOKENS
+            else:
+                max_tokens = MAX_OUTPUT_TOKENS if model.startswith("openai/") else DEFAULT_MAX_TOKENS
 
         is_openrouter = model.startswith("openrouter/")
 
-        # For Gemini, ensure gemini/ prefix if not already present (skip for OpenRouter)
-        if not is_openrouter and "gemini" in model.lower() and not model.startswith("gemini/"):
+        # For Gemini, ensure gemini/ prefix if not already present (skip for
+        # OpenRouter/custom — a local model name may contain 'gemini' too)
+        if custom is None and not is_openrouter and "gemini" in model.lower() and not model.startswith("gemini/"):
             model = f"gemini/{model}"
 
-        # Inject cache_control for Anthropic and Gemini models (skip for OpenRouter)
-        if not is_openrouter and ("anthropic" in model or "gemini" in model.lower()):
+        # Inject cache_control for Anthropic and Gemini models (skip for OpenRouter/custom)
+        if custom is None and not is_openrouter and ("anthropic" in model or "gemini" in model.lower()):
             messages = self._inject_cache_control(messages)
 
         kwargs: dict[str, Any] = {
@@ -103,6 +120,11 @@ class LiteLLMProvider(LLMProvider):
             "messages": messages,
             "max_tokens": max_tokens,
         }
+        if custom is not None:
+            # Route through LiteLLM's generic OpenAI-compatible transport.
+            kwargs["model"] = f"openai/{custom.model_id}"
+            kwargs["api_base"] = custom.base_url
+            kwargs["api_key"] = custom.api_key or "not-needed"
         if temperature is not None:
             kwargs["temperature"] = temperature
         if reasoning.reasoning_effort is not None:

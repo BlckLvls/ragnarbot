@@ -701,7 +701,78 @@ function TurnContent({
   )
 }
 
-const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMessage }) {
+function messageCopyText(msg: ChatMessage): string {
+  if (msg.content) return msg.content
+  const meta = (msg.metadata ?? {}) as Record<string, any>
+  const segments = Array.isArray(meta.segments) ? meta.segments : []
+  return segments
+    .filter((s: any) => s.type === 'text' && typeof s.content === 'string')
+    .map((s: any) => s.content)
+    .join('\n\n')
+}
+
+function MessageActions({
+  msg,
+  onRegenerate,
+  onFork,
+}: {
+  msg: ChatMessage
+  onRegenerate?: (msg: ChatMessage) => void
+  onFork?: (msg: ChatMessage) => void
+}) {
+  const processing = useChat((s) => s.processing)
+  const [copied, setCopied] = useState(false)
+  const meta = (msg.metadata ?? {}) as Record<string, any>
+  const anchored = typeof meta.raw_index === 'number'
+  const text = messageCopyText(msg)
+
+  const copy = () => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }
+
+  return (
+    <div className="mt-1 flex items-center gap-3 font-mono text-[9.5px] text-faint">
+      {text && (
+        <button onClick={copy} className="hover:text-ink" title="Copy reply">
+          {copied ? 'copied ✓' : 'copy'}
+        </button>
+      )}
+      {anchored && onRegenerate && (
+        <button
+          onClick={() => onRegenerate(msg)}
+          disabled={processing}
+          className="hover:text-ink disabled:opacity-40"
+          title="Re-ask with the current model (switch model first to compare)"
+        >
+          regen
+        </button>
+      )}
+      {anchored && onFork && (
+        <button
+          onClick={() => onFork(msg)}
+          disabled={processing}
+          className="hover:text-ink disabled:opacity-40"
+          title="Copy the chat up to this reply into a new chat"
+        >
+          fork
+        </button>
+      )}
+    </div>
+  )
+}
+
+const MessageRow = memo(function MessageRow({
+  msg,
+  onRegenerate,
+  onFork,
+}: {
+  msg: ChatMessage
+  onRegenerate?: (msg: ChatMessage) => void
+  onFork?: (msg: ChatMessage) => void
+}) {
   const meta = (msg.metadata ?? {}) as Record<string, any>
   if (meta.type === 'compaction') {
     return (
@@ -772,6 +843,7 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMessage }) {
       <TurnContent segments={segments} tools={tools} finalText={finalText} />
       {meta.stopped && <div className="mt-1 font-mono text-[9.5px] text-warn">stopped by user</div>}
       {msg.usage && <UsageLine usage={msg.usage} />}
+      <MessageActions msg={msg} onRegenerate={onRegenerate} onFork={onFork} />
     </div>
   )
 })
@@ -799,7 +871,21 @@ function LiveTurnView({ turn }: { turn: LiveTurn }) {
       const finalLength = Array.from(turn.currentText?.content || '').length
       const minimumDwell = Math.min(1600, Math.max(420, 260 + finalLength * 4))
       const remaining = Math.max(0, minimumDwell - (Date.now() - (turn.finalizedAt || 0)))
-      const timer = window.setTimeout(commitLiveTurn, remaining)
+      // Committing swaps the live DOM for a stored message row, which would
+      // wipe an in-progress text selection. Wait until the user is done.
+      const selectionInsideLiveTurn = () => {
+        const sel = window.getSelection()
+        if (!sel || sel.isCollapsed) return false
+        const host = document.querySelector('[data-live-turn]')
+        return !!host && (host.contains(sel.anchorNode) || host.contains(sel.focusNode))
+      }
+      let timer = window.setTimeout(function attempt() {
+        if (selectionInsideLiveTurn()) {
+          timer = window.setTimeout(attempt, 1000)
+          return
+        }
+        commitLiveTurn()
+      }, remaining)
       return () => window.clearTimeout(timer)
     }
   }, [
@@ -1373,6 +1459,45 @@ export default function ChatPage({
     return () => observer.disconnect()
   }, [scrollToBottom])
 
+  const onRegenerate = useCallback(async (msg: ChatMessage) => {
+    const state = useChat.getState()
+    const rawIndex = (msg.metadata as Record<string, any> | undefined)?.raw_index
+    if (typeof rawIndex !== 'number' || state.processing) return
+    // Trim the visible transcript back to before the user message that
+    // produced this reply — the server truncates and re-dispatches it.
+    const pos = state.messages.indexOf(msg)
+    if (pos >= 0) {
+      let userPos = -1
+      for (let i = pos - 1; i >= 0; i--) {
+        const m = state.messages[i]
+        if (m.role === 'user' && (m.metadata as Record<string, any> | undefined)?.type !== 'compaction') {
+          userPos = i
+          break
+        }
+      }
+      if (userPos >= 0) useChat.setState({ messages: state.messages.slice(0, userPos), processing: true })
+    }
+    try {
+      await api.post('/api/sessions/active/regenerate', { raw_index: rawIndex })
+    } catch (e: any) {
+      setToast(e?.message || 'regenerate failed')
+      qc.invalidateQueries({ queryKey: ['messages'] })
+      useChat.setState({ processing: false })
+    }
+  }, [qc, setToast])
+
+  const onFork = useCallback(async (msg: ChatMessage) => {
+    const rawIndex = (msg.metadata as Record<string, any> | undefined)?.raw_index
+    if (typeof rawIndex !== 'number') return
+    try {
+      await api.post<{ session_id: string }>('/api/sessions/active/fork', { raw_index: rawIndex })
+      qc.invalidateQueries({ queryKey: ['sessions', 'user'] })
+      setToast('Forked into a new chat')
+    } catch (e: any) {
+      setToast(e?.message || 'fork failed')
+    }
+  }, [qc, setToast])
+
   const onDrop = async (e: React.DragEvent) => {
     e.preventDefault()
     setDragOver(false)
@@ -1510,7 +1635,7 @@ export default function ChatPage({
               ) : (
                 <div className="mx-auto max-w-[720px] py-4">
                   {s.messages.map((m, i) => (
-                    <MessageRow key={i} msg={m} />
+                    <MessageRow key={i} msg={m} onRegenerate={onRegenerate} onFork={onFork} />
                   ))}
                   {s.liveTurn && <LiveTurnView turn={s.liveTurn} />}
                   {s.processing && !s.liveTurn && (

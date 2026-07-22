@@ -21,6 +21,21 @@ def validate_model_auth(model: str, auth_method: str, creds=None) -> str | None:
         creds = load_credentials()
 
     provider_name = model.split("/")[0] if "/" in model else "anthropic"
+
+    if provider_name == "custom":
+        from ragnarbot.config.providers import resolve_custom_model
+
+        if auth_method == "oauth":
+            return "OAuth is not supported for custom servers. Use api_key."
+        resolved = resolve_custom_model(model)
+        if resolved is None:
+            return (
+                f"Unknown custom server for model '{model}'. "
+                "Add the server in the web console Models tab first."
+            )
+        if not resolved.base_url:
+            return f"Custom server '{resolved.provider_id}' has no base URL configured."
+        return None  # API key is optional for custom servers
     provider_creds = getattr(creds.providers, provider_name, None)
 
     if auth_method == "oauth":

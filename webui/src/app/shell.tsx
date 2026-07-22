@@ -14,6 +14,7 @@ export const NAV_ITEMS = [
   { label: 'Skills', path: '/skills' },
   { label: 'Cron', path: '/cron' },
   { label: 'Agents', path: '/agents' },
+  { label: 'Models', path: '/models' },
   { label: 'Settings', path: '/settings' },
 ] as const
 
@@ -71,7 +72,7 @@ export function TabBar({ onMore }: { onMore: () => void }) {
   const location = useLocation()
   const navigate = useNavigate()
   const mainPaths: Record<string, string> = { Chat: '/', Files: '/files', Skills: '/skills' }
-  const morePaths = ['/cron', '/agents', '/settings', '/hooks']
+  const morePaths = ['/cron', '/agents', '/models', '/settings', '/hooks']
 
   return (
     <div className="flex h-[calc(64px+env(safe-area-inset-bottom))] min-h-[calc(64px+env(safe-area-inset-bottom))] items-start border-t border-line bg-panel px-2 pb-[calc(6px+env(safe-area-inset-bottom))] pt-3 lg:hidden">
