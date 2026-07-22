@@ -513,8 +513,8 @@ class ApiRoutes:
 
         body = await request.json()
         name = str(body.get("name", "")).strip()
-        # Lowercase alnum + underscore only: the id is embedded in credential
-        # keys that must survive the camelCase<->snake_case config round-trip.
+        # Lowercase alnum + underscore only: the id is embedded in model ids
+        # (custom/<id>/<model>) and credential key names.
         raw_id = str(body.get("id") or "").strip() or re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
         if not re.fullmatch(r"[a-z0-9][a-z0-9_]{0,63}", raw_id):
             return _json_error("a valid server id is required (lowercase letters, digits, _)")
@@ -638,6 +638,12 @@ class ApiRoutes:
 
         added: list[str] = []
         if isinstance(body, dict) and body.get("save"):
+            # The probe held the config across a network await — reload so the
+            # save doesn't clobber concurrent config writes.
+            config = load_config()
+            server = next((s for s in config.custom_providers if s.id == server_id), None)
+            if server is None:
+                raise web.HTTPNotFound()
             known = {m.id for m in server.models}
             for mid in discovered:
                 if mid not in known:

@@ -498,6 +498,7 @@ function ServerCard({
         })),
       }),
     onSuccess: () => onChanged(),
+    onError: (error) => setProbeResult((error as ApiError)?.message ?? 'Could not update vision flag.'),
   })
 
   if (editing) {
