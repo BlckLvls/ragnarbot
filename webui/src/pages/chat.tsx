@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { create } from 'zustand'
 import { api, ChatMessage, MediaItem, SessionInfo, UploadResult, mediaUrl } from '../lib/api'
 import { LiveTurn, MediaEvent, TextSegment, ToolEvent, TurnSegment, useChat } from '../lib/ws'
 import { copyText } from '../lib/clipboard'
@@ -400,11 +401,21 @@ function useSmoothText(
   return { visible, settled }
 }
 
-// Inline artifact preview for .md / .html files the agent sends into chat.
+// Artifact preview (.md / .html) in a resizable side panel.
 const ARTIFACT_MD = /\.(md|markdown)$/i
 const ARTIFACT_HTML = /\.html?$/i
 
-function ArtifactPreview({ item }: { item: MediaItem }) {
+const useArtifact = create<{
+  item: MediaItem | null
+  open: (item: MediaItem) => void
+  close: () => void
+}>((set) => ({
+  item: null,
+  open: (item) => set({ item }),
+  close: () => set({ item: null }),
+}))
+
+function ArtifactPreview({ item, muted = false }: { item: MediaItem; muted?: boolean }) {
   const url = mediaUrl(item.path)
   const isHtml = ARTIFACT_HTML.test(item.filename)
   const text = useQuery({
@@ -421,33 +432,138 @@ function ArtifactPreview({ item }: { item: MediaItem }) {
 
   if (isHtml) {
     // Sandboxed without allow-same-origin: scripts run in an opaque origin
-    // and cannot reach the console's API or cookies.
+    // and cannot reach the console's API or cookies. pointer-events are
+    // muted while the panel divider is being dragged so the iframe does not
+    // swallow the drag.
     return (
       <iframe
         src={url}
         sandbox="allow-scripts"
         title={item.filename}
-        className="h-[440px] w-full rounded-[4px] border border-line bg-white"
+        className={`h-full w-full border-0 bg-white ${muted ? 'pointer-events-none' : ''}`}
       />
     )
   }
   if (text.isLoading) {
-    return <div className="px-1 py-2 font-mono text-[10px] text-muted">loading…</div>
+    return <div className="px-3 py-3 font-mono text-[10px] text-muted">loading…</div>
   }
   if (text.error || typeof text.data !== 'string') {
-    return <div className="px-1 py-2 font-mono text-[10px] text-err">preview failed</div>
+    return <div className="px-3 py-3 font-mono text-[10px] text-err">preview failed</div>
   }
   return (
-    <div className="max-h-[440px] overflow-y-auto rounded-[4px] border border-line bg-inset px-3.5 py-3">
+    <div className="h-full overflow-y-auto px-4 py-3">
       <Markdown>{text.data}</Markdown>
     </div>
+  )
+}
+
+function ArtifactPanelBody({ item, muted }: { item: MediaItem; muted: boolean }) {
+  const close = useArtifact((s) => s.close)
+  const url = mediaUrl(item.path)
+  return (
+    <>
+      <div className="flex min-h-[44px] flex-none items-center gap-2 border-b border-line px-3">
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-mist" title={item.path}>
+          {item.filename}
+        </span>
+        {ARTIFACT_HTML.test(item.filename) && (
+          <a href={url} target="_blank" rel="noopener noreferrer" className="font-mono text-[10px] text-acc hover:opacity-80">
+            open ↗
+          </a>
+        )}
+        <a href={url} download={item.filename} className="font-mono text-[10px] text-acc hover:opacity-80">
+          download
+        </a>
+        <button
+          onClick={close}
+          className="flex h-8 w-8 items-center justify-center rounded-[4px] bg-raised2 text-[16px] leading-none text-muted hover:text-ink"
+          aria-label="Close preview"
+        >
+          ×
+        </button>
+      </div>
+      <div className="min-h-0 flex-1">
+        <ArtifactPreview item={item} muted={muted} />
+      </div>
+    </>
+  )
+}
+
+const ARTIFACT_W_KEY = 'rb-artifact-w'
+
+function ArtifactPanel() {
+  const item = useArtifact((s) => s.item)
+  const close = useArtifact((s) => s.close)
+  const [width, setWidth] = useState(() => {
+    const stored = Number(localStorage.getItem(ARTIFACT_W_KEY))
+    return Number.isFinite(stored) && stored >= 300 ? stored : 480
+  })
+  const [dragging, setDragging] = useState(false)
+
+  useEffect(() => {
+    localStorage.setItem(ARTIFACT_W_KEY, String(width))
+  }, [width])
+
+  useEffect(() => {
+    if (!item) return
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') close()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [item, close])
+
+  const startDrag = (e: React.PointerEvent) => {
+    e.preventDefault()
+    setDragging(true)
+    const onMove = (ev: PointerEvent) => {
+      const w = Math.min(
+        Math.max(window.innerWidth - ev.clientX, 300),
+        Math.round(window.innerWidth * 0.75),
+      )
+      setWidth(w)
+    }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      setDragging(false)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
+
+  if (!item) return null
+
+  return (
+    <>
+      {/* desktop: resizable right column */}
+      <div className="hidden min-h-0 flex-none lg:flex" style={{ width }}>
+        <div
+          onPointerDown={startDrag}
+          className={`w-[5px] flex-none cursor-col-resize border-l border-line hover:bg-acc/40 ${
+            dragging ? 'bg-acc/60' : ''
+          }`}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize preview panel"
+        />
+        <div className="flex min-w-0 flex-1 flex-col bg-panel">
+          <ArtifactPanelBody item={item} muted={dragging} />
+        </div>
+      </div>
+      {/* mobile: full-screen overlay */}
+      <div className="fixed inset-0 z-40 flex flex-col bg-panel pt-safe lg:hidden">
+        <ArtifactPanelBody item={item} muted={false} />
+      </div>
+    </>
   )
 }
 
 // Media rendering, telegram-style: photos inline (compressed view, click for
 // original), video/audio get players, everything else — a file card.
 function MediaItemView({ item, flush = false }: { item: MediaItem; flush?: boolean }) {
-  const [previewOpen, setPreviewOpen] = useState(false)
+  const openArtifact = useArtifact((s) => s.open)
+  const activeArtifact = useArtifact((s) => s.item)
   const url = mediaUrl(item.path)
   const spacing = flush ? '' : 'mt-2'
   if (item.kind === 'photo') {
@@ -473,40 +589,38 @@ function MediaItemView({ item, flush = false }: { item: MediaItem; flush?: boole
   }
   const ext = (item.filename.split('.').pop() ?? 'f').slice(0, 4)
   const canPreview = ARTIFACT_MD.test(item.filename) || ARTIFACT_HTML.test(item.filename)
+  const isOpen = activeArtifact?.path === item.path
   return (
-    <div className={`${spacing} ${previewOpen ? 'w-full' : 'w-fit'} max-w-full`}>
-      <div className="flex w-fit max-w-full items-center gap-2.5 rounded-[4px] border border-line bg-raised px-3 py-2.5">
-        <span className="flex h-[30px] w-[30px] items-center justify-center rounded-[3px] bg-raised2 font-mono text-[8.5px] uppercase text-soft">
-          {ext}
-        </span>
-        <span className="min-w-0">
-          <span className="block truncate text-[12px] text-ink">{item.filename}</span>
-          <span className="flex items-center gap-2 font-mono text-[9.5px] text-faint">
-            {item.size != null && <span>{fmtBytes(item.size)}</span>}
-            {canPreview && (
-              <button
-                onClick={() => setPreviewOpen(!previewOpen)}
-                className="text-acc hover:opacity-80"
-              >
-                {previewOpen ? 'hide' : 'preview'}
-              </button>
-            )}
-            <a href={url} download={item.filename} className="text-acc hover:opacity-80">
-              download
+    <div
+      className={`${spacing} flex w-fit max-w-full items-center gap-2.5 rounded-[4px] border px-3 py-2.5 ${
+        isOpen ? 'border-acc/50 bg-raised' : 'border-line bg-raised'
+      }`}
+    >
+      <span className="flex h-[30px] w-[30px] items-center justify-center rounded-[3px] bg-raised2 font-mono text-[8.5px] uppercase text-soft">
+        {ext}
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate text-[12px] text-ink">{item.filename}</span>
+        <span className="flex items-center gap-2 font-mono text-[9.5px] text-faint">
+          {item.size != null && <span>{fmtBytes(item.size)}</span>}
+          {canPreview && (
+            <button
+              onClick={() => (isOpen ? useArtifact.getState().close() : openArtifact(item))}
+              className="text-acc hover:opacity-80"
+            >
+              {isOpen ? 'hide' : 'preview'}
+            </button>
+          )}
+          <a href={url} download={item.filename} className="text-acc hover:opacity-80">
+            download
+          </a>
+          {ARTIFACT_HTML.test(item.filename) && (
+            <a href={url} target="_blank" rel="noopener noreferrer" className="text-acc hover:opacity-80">
+              open ↗
             </a>
-            {ARTIFACT_HTML.test(item.filename) && (
-              <a href={url} target="_blank" rel="noopener noreferrer" className="text-acc hover:opacity-80">
-                open ↗
-              </a>
-            )}
-          </span>
+          )}
         </span>
-      </div>
-      {previewOpen && (
-        <div className="mt-2">
-          <ArtifactPreview item={item} />
-        </div>
-      )}
+      </span>
     </div>
   )
 }
@@ -1465,6 +1579,7 @@ export default function ChatPage({
   useEffect(() => {
     stickToBottomRef.current = true
     setShowScrollDown(false)
+    useArtifact.getState().close()
   }, [s.sessionId])
 
   useEffect(() => {
@@ -1738,6 +1853,8 @@ export default function ChatPage({
 
         <Composer />
       </div>
+
+      <ArtifactPanel />
 
       {/* drag overlay */}
       {dragOver && (
