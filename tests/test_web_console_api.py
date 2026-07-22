@@ -714,3 +714,21 @@ def test_live_turn_snapshot_replays_in_flight_progress():
 
     track({"type": "final"})
     assert channel.live_turn_snapshot() is None
+
+
+def test_live_turn_snapshot_includes_pending_user_messages():
+    """User messages persist server-side only at end of turn — the snapshot carries them."""
+    channel = WebChannel(SimpleNamespace(), MessageBus())
+    track = channel._track_live_turn
+    track({"type": "user_message", "message": {"role": "user", "content": "вопрос"}})
+    snap = channel.live_turn_snapshot()
+    assert snap["user_messages"] == [{"role": "user", "content": "вопрос"}]
+    assert snap["turn_id"] is None  # debounce window: sent but not started
+
+    track({"type": "turn_started", "turn_id": "t1"})
+    snap = channel.live_turn_snapshot()
+    assert snap["turn_id"] == "t1"
+    assert snap["user_messages"] == [{"role": "user", "content": "вопрос"}]
+
+    track({"type": "turn_ended"})
+    assert channel.live_turn_snapshot() is None

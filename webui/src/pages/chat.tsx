@@ -1077,6 +1077,9 @@ function LiveTurnView({ turn }: { turn: LiveTurn }) {
 
   return (
     <div className="my-3" data-live-turn={turn.turnId || 'active'}>
+      {(turn.pendingUsers ?? []).map((m, i) => (
+        <MessageRow key={`pending-${i}`} msg={m} />
+      ))}
       <TurnContent
         segments={turn.segments}
         tools={turn.tools}

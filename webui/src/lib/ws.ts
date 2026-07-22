@@ -37,6 +37,9 @@ export interface LiveTurn {
   finalMessage?: ChatMessage
   finalizedAt?: number
   system?: boolean
+  // User messages of this turn restored from a reconnect snapshot — they are
+  // not yet in `messages` (the server persists them at end of turn).
+  pendingUsers?: ChatMessage[]
 }
 
 export interface MediaEvent {
@@ -189,6 +192,7 @@ function turnFromSnapshot(raw: any): LiveTurn {
       : null,
     draftText: '',
     tools: (raw.tools ?? []).map((tool: any) => ({ done: false, ...tool })),
+    pendingUsers: (raw.user_messages ?? []) as ChatMessage[],
   }
 }
 
@@ -197,7 +201,11 @@ function commitPendingTurn(state: ChatState): Pick<ChatState, 'messages' | 'live
     return { messages: state.messages, liveTurn: state.liveTurn }
   }
   return {
-    messages: [...state.messages, state.liveTurn.finalMessage],
+    messages: [
+      ...state.messages,
+      ...(state.liveTurn.pendingUsers ?? []),
+      state.liveTurn.finalMessage,
+    ],
     liveTurn: null,
   }
 }
@@ -233,7 +241,11 @@ export const useChat = create<ChatState>((set, get) => ({
   commitLiveTurn: () => set((s) => {
     if (!s.liveTurn?.finalMessage) return s
     return {
-      messages: [...s.messages, s.liveTurn.finalMessage],
+      messages: [
+        ...s.messages,
+        ...(s.liveTurn.pendingUsers ?? []),
+        s.liveTurn.finalMessage,
+      ],
       liveTurn: null,
       processing: false,
     }
@@ -385,10 +397,23 @@ export function connectWs(onNotification?: (n: Notification) => void) {
       }
       case 'user_message': {
         const pending = commitPendingTurn(s)
-        useChat.setState({
-          messages: [...pending.messages, ev.message as ChatMessage],
-          liveTurn: pending.liveTurn,
-        })
+        if (pending.liveTurn?.pendingUsers) {
+          // Snapshot-restored turn: keep this turn's user messages in the
+          // pending buffer (mirrors the server) so the commit stays ordered
+          // and nothing duplicates.
+          useChat.setState({
+            messages: pending.messages,
+            liveTurn: {
+              ...pending.liveTurn,
+              pendingUsers: [...pending.liveTurn.pendingUsers, ev.message as ChatMessage],
+            },
+          })
+        } else {
+          useChat.setState({
+            messages: [...pending.messages, ev.message as ChatMessage],
+            liveTurn: pending.liveTurn,
+          })
+        }
         break
       }
       case 'media': {
@@ -474,7 +499,7 @@ export function connectWs(onNotification?: (n: Notification) => void) {
             metadata: { stopped: true },
           })
           useChat.setState({
-            messages: [...s.messages, message],
+            messages: [...s.messages, ...(s.liveTurn.pendingUsers ?? []), message],
           })
         }
         // NOTE: the final message arrives AFTER turn_ended (it carries its own

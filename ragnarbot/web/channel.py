@@ -69,6 +69,9 @@ class WebChannel(BaseChannel):
         # (re)connect mid-turn — otherwise a page refresh loses the tool
         # timeline and intermediate text until the next event arrives.
         self._live_turn: dict[str, Any] | None = None
+        # User messages of the in-flight turn: the agent persists them only at
+        # end of turn, so mid-turn reconnects need them replayed too.
+        self._pending_users: list[dict[str, Any]] = []
         # Replaced by WebServer with the UploadStore resolver
         self.attachment_resolver: Callable[[str], MediaAttachment | None] = lambda _aid: None
 
@@ -115,6 +118,15 @@ class WebChannel(BaseChannel):
     def _track_live_turn(self, event: dict[str, Any]) -> None:
         """Mirror the client's live-turn accumulation server-side."""
         etype = event.get("type")
+        if etype == "user_message":
+            message = event.get("message")
+            if message:
+                self._pending_users.append(dict(message))
+            return
+        if etype == "session_changed":
+            self._live_turn = None
+            self._pending_users = []
+            return
         if etype == "turn_started":
             self._live_turn = {
                 "turn_id": event.get("turn_id"),
@@ -161,18 +173,30 @@ class WebChannel(BaseChannel):
             })
         elif etype in ("final", "turn_ended"):
             self._live_turn = None
+            self._pending_users = []
 
     def live_turn_snapshot(self) -> dict[str, Any] | None:
         """Client-shaped snapshot of the in-flight turn, or None when idle."""
         turn = self._live_turn
-        if turn is None:
+        if turn is None and not self._pending_users:
             return None
+        if turn is None:
+            # Sent but not yet picked up (debounce window) — still show it.
+            return {
+                "turn_id": None,
+                "system": False,
+                "tools": [],
+                "segments": [],
+                "current_text": "",
+                "user_messages": [dict(m) for m in self._pending_users],
+            }
         return {
             "turn_id": turn["turn_id"],
             "system": turn["system"],
             "tools": [dict(t) for t in turn["tools"]],
             "segments": [dict(s) for s in turn["segments"]],
             "current_text": turn["text"],
+            "user_messages": [dict(m) for m in self._pending_users],
         }
 
     async def broadcast(self, event: dict[str, Any]) -> None:
