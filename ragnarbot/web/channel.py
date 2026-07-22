@@ -65,6 +65,13 @@ class WebChannel(BaseChannel):
         super().__init__(config, bus)
         self._clients: set[web.WebSocketResponse] = set()
         self._stopped: asyncio.Event = asyncio.Event()
+        # Accumulated progress of the in-flight turn, replayed to clients that
+        # (re)connect mid-turn — otherwise a page refresh loses the tool
+        # timeline and intermediate text until the next event arrives.
+        self._live_turn: dict[str, Any] | None = None
+        # User messages of the in-flight turn: the agent persists them only at
+        # end of turn, so mid-turn reconnects need them replayed too.
+        self._pending_users: list[dict[str, Any]] = []
         # Replaced by WebServer with the UploadStore resolver
         self.attachment_resolver: Callable[[str], MediaAttachment | None] = lambda _aid: None
 
@@ -101,7 +108,99 @@ class WebChannel(BaseChannel):
         if event:
             await self.broadcast(event)
 
+    def _flush_live_text(self) -> None:
+        turn = self._live_turn
+        if turn and turn["text"].strip():
+            turn["segments"].append({"type": "text", "content": turn["text"]})
+        if turn:
+            turn["text"] = ""
+
+    def _track_live_turn(self, event: dict[str, Any]) -> None:
+        """Mirror the client's live-turn accumulation server-side."""
+        etype = event.get("type")
+        if etype == "user_message":
+            message = event.get("message")
+            if message:
+                self._pending_users.append(dict(message))
+            return
+        if etype == "session_changed":
+            self._live_turn = None
+            self._pending_users = []
+            return
+        if etype == "turn_started":
+            self._live_turn = {
+                "turn_id": event.get("turn_id"),
+                "system": bool(event.get("system")),
+                "tools": [],
+                "segments": [],
+                "text": "",
+            }
+            return
+        turn = self._live_turn
+        if turn is None:
+            return
+        if etype == "delta":
+            turn["text"] += event.get("text") or ""
+        elif etype == "tool_start":
+            self._flush_live_text()
+            turn["tools"].append({
+                "turn_id": event.get("turn_id"),
+                "tool": event.get("tool"),
+                "args_preview": event.get("args_preview"),
+                "done": False,
+            })
+        elif etype == "tool_end":
+            for tool in reversed(turn["tools"]):
+                if tool["tool"] == event.get("tool") and not tool["done"]:
+                    tool.update(
+                        done=True,
+                        status=event.get("status"),
+                        duration_ms=event.get("duration_ms"),
+                    )
+                    break
+        elif etype == "intermediate":
+            self._flush_live_text()
+            content = (event.get("message") or {}).get("content") or ""
+            if content.strip():
+                turn["segments"].append({"type": "text", "content": content})
+        elif etype == "media":
+            self._flush_live_text()
+            message = event.get("message") or {}
+            turn["segments"].append({
+                "type": "media",
+                "content": message.get("content") or "",
+                "media_items": message.get("media_items") or [],
+            })
+        elif etype in ("final", "turn_ended"):
+            self._live_turn = None
+            self._pending_users = []
+
+    def live_turn_snapshot(self) -> dict[str, Any] | None:
+        """Client-shaped snapshot of the in-flight turn, or None when idle."""
+        turn = self._live_turn
+        if turn is None and not self._pending_users:
+            return None
+        if turn is None:
+            # Sent but not yet picked up (debounce window) — still show it.
+            return {
+                "turn_id": None,
+                "system": False,
+                "tools": [],
+                "segments": [],
+                "current_text": "",
+                "user_messages": [dict(m) for m in self._pending_users],
+            }
+        return {
+            "turn_id": turn["turn_id"],
+            "system": turn["system"],
+            "tools": [dict(t) for t in turn["tools"]],
+            "segments": [dict(s) for s in turn["segments"]],
+            "current_text": turn["text"],
+            "user_messages": [dict(m) for m in self._pending_users],
+        }
+
     async def broadcast(self, event: dict[str, Any]) -> None:
+        self._track_live_turn(event)
         if not self._clients:
             return
         payload = json.dumps(event, ensure_ascii=False)

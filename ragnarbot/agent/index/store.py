@@ -217,6 +217,13 @@ class Store:
         )
         self._conn.commit()
 
+    async def delete_state(self, key: str) -> None:
+        await self._call(self._delete_state, key)
+
+    def _delete_state(self, key: str) -> None:
+        self._conn.execute("DELETE FROM index_state WHERE key=?", (key,))
+        self._conn.commit()
+
     # ── hybrid search ───────────────────────────────────────────────
     async def hybrid_search(
         self,

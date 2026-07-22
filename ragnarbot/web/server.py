@@ -228,9 +228,13 @@ class WebServer:
         agent = self.agent
         session = agent.sessions.get_or_create(WEB_USER_KEY)
         context = self._web_context_state(session)
+        channel = getattr(self, "channel", None)
+        live_turn = channel.live_turn_snapshot() if channel is not None else None
         return {
             "session_id": session.key,
             "session_title": _session_title(session.metadata, session.messages),
+            "processing": live_turn is not None,
+            "live_turn": live_turn,
             "model": agent.model,
             "reasoning_level": agent.reasoning_level,
             "context_mode": agent.context_mode,
@@ -539,6 +543,11 @@ class WebServer:
         deleted = self.agent.sessions.delete(session_id)
         if not deleted:
             raise web.HTTPNotFound()
+        # Deleting a chat must also forget it: purge its recall-index chunks
+        # so the agent can no longer surface the deleted conversation.
+        index = getattr(self.agent, "index", None)
+        if index is not None and hasattr(index, "purge_dialogue"):
+            await index.purge_dialogue(session_id)
         return web.json_response({"ok": True})
 
     def _get_session_or_404(self, request: web.Request):
@@ -700,8 +709,16 @@ class WebServer:
                 step = tool_by_id.get(message.get("tool_call_id"))
                 if step is not None:
                     result = message.get("content") or ""
+                    if isinstance(result, list):
+                        # Multimodal tool result (e.g. a browser screenshot):
+                        # status comes from its text blocks.
+                        result = " ".join(
+                            block.get("text", "")
+                            for block in result
+                            if isinstance(block, dict) and block.get("type") == "text"
+                        )
                     step["done"] = True
-                    step["status"] = "error" if result.startswith("Error") else "ok"
+                    step["status"] = "error" if str(result).startswith("Error") else "ok"
                 continue
 
             # A normal assistant message closes the visible turn.

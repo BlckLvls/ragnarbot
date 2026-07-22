@@ -655,3 +655,80 @@ async def test_web_file_upload_keeps_display_text_and_adds_agent_download_marker
         "type": "file",
         "filename": "brief.pdf",
     }]
+
+
+def test_web_transcript_handles_multimodal_tool_results():
+    """Tool results with list content (e.g. screenshots) must not crash the transcript."""
+    session = SimpleNamespace(
+        key="web_main_test",
+        metadata={},
+        messages=[
+            {"role": "user", "content": "screenshot something", "metadata": {}},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "t1", "function": {"name": "browser", "arguments": {}}}],
+                "metadata": {},
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "t1",
+                "content": [
+                    {"type": "text", "text": "Screenshot captured"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}},
+                ],
+                "metadata": {},
+            },
+            {"role": "assistant", "content": "Вот скриншот.", "metadata": {}},
+        ],
+    )
+    server = object.__new__(WebServer)
+    server.media_manager = None
+
+    messages = server._display_messages(session)
+
+    final = messages[-1]
+    assert final["content"] == "Вот скриншот."
+    tools = final["metadata"]["tools"]
+    assert tools[0]["done"] is True and tools[0]["status"] == "ok"
+
+
+def test_live_turn_snapshot_replays_in_flight_progress():
+    """Clients that reconnect mid-turn get the accumulated tool timeline back."""
+    channel = WebChannel(SimpleNamespace(), MessageBus())
+    track = channel._track_live_turn
+    track({"type": "turn_started", "turn_id": "t1"})
+    track({"type": "delta", "text": "думаю... "})
+    track({"type": "tool_start", "tool": "web_search", "args_preview": "q=news"})
+    track({"type": "tool_end", "tool": "web_search", "status": "ok", "duration_ms": 1200})
+    track({"type": "delta", "text": "нашла: "})
+
+    snap = channel.live_turn_snapshot()
+    assert snap["turn_id"] == "t1"
+    assert snap["tools"] == [{
+        "turn_id": None, "tool": "web_search", "args_preview": "q=news",
+        "done": True, "status": "ok", "duration_ms": 1200,
+    }]
+    assert snap["segments"] == [{"type": "text", "content": "думаю... "}]
+    assert snap["current_text"] == "нашла: "
+
+    track({"type": "final"})
+    assert channel.live_turn_snapshot() is None
+
+
+def test_live_turn_snapshot_includes_pending_user_messages():
+    """User messages persist server-side only at end of turn — the snapshot carries them."""
+    channel = WebChannel(SimpleNamespace(), MessageBus())
+    track = channel._track_live_turn
+    track({"type": "user_message", "message": {"role": "user", "content": "вопрос"}})
+    snap = channel.live_turn_snapshot()
+    assert snap["user_messages"] == [{"role": "user", "content": "вопрос"}]
+    assert snap["turn_id"] is None  # debounce window: sent but not started
+
+    track({"type": "turn_started", "turn_id": "t1"})
+    snap = channel.live_turn_snapshot()
+    assert snap["turn_id"] == "t1"
+    assert snap["user_messages"] == [{"role": "user", "content": "вопрос"}]
+
+    track({"type": "turn_ended"})
+    assert channel.live_turn_snapshot() is None

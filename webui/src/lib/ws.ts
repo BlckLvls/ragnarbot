@@ -37,6 +37,9 @@ export interface LiveTurn {
   finalMessage?: ChatMessage
   finalizedAt?: number
   system?: boolean
+  // User messages of this turn restored from a reconnect snapshot — they are
+  // not yet in `messages` (the server persists them at end of turn).
+  pendingUsers?: ChatMessage[]
 }
 
 export interface MediaEvent {
@@ -157,12 +160,52 @@ function messageFromTurn(turn: LiveTurn, message: ChatMessage): ChatMessage {
   }
 }
 
+function turnFromSnapshot(raw: any): LiveTurn {
+  // Server-side accumulation of the in-flight turn, replayed on (re)connect
+  // so a page refresh keeps the tool timeline and intermediate replies.
+  const segments: TurnSegment[] = (raw.segments ?? []).map((segment: any, i: number) =>
+    segment.type === 'media'
+      ? {
+          type: 'media' as const,
+          id: `snap-${raw.turn_id ?? 'turn'}-${i}`,
+          content: segment.content || '',
+          media_items: segment.media_items || [],
+        }
+      : {
+          type: 'text' as const,
+          id: `snap-${raw.turn_id ?? 'turn'}-${i}`,
+          content: segment.content || '',
+          complete: true,
+        },
+  )
+  return {
+    turnId: raw.turn_id ?? null,
+    system: !!raw.system,
+    segments,
+    currentText: raw.current_text
+      ? {
+          type: 'text',
+          id: `snap-${raw.turn_id ?? 'turn'}-current`,
+          content: raw.current_text,
+          complete: false,
+        }
+      : null,
+    draftText: '',
+    tools: (raw.tools ?? []).map((tool: any) => ({ done: false, ...tool })),
+    pendingUsers: (raw.user_messages ?? []) as ChatMessage[],
+  }
+}
+
 function commitPendingTurn(state: ChatState): Pick<ChatState, 'messages' | 'liveTurn'> {
   if (!state.liveTurn?.finalMessage) {
     return { messages: state.messages, liveTurn: state.liveTurn }
   }
   return {
-    messages: [...state.messages, state.liveTurn.finalMessage],
+    messages: [
+      ...state.messages,
+      ...(state.liveTurn.pendingUsers ?? []),
+      state.liveTurn.finalMessage,
+    ],
     liveTurn: null,
   }
 }
@@ -198,7 +241,11 @@ export const useChat = create<ChatState>((set, get) => ({
   commitLiveTurn: () => set((s) => {
     if (!s.liveTurn?.finalMessage) return s
     return {
-      messages: [...s.messages, s.liveTurn.finalMessage],
+      messages: [
+        ...s.messages,
+        ...(s.liveTurn.pendingUsers ?? []),
+        s.liveTurn.finalMessage,
+      ],
       liveTurn: null,
       processing: false,
     }
@@ -261,7 +308,11 @@ export function connectWs(onNotification?: (n: Notification) => void) {
           steering: !!ev.steering,
           processing: !!ev.processing,
           messages: sessionChanged ? [] : s.messages,
-          liveTurn: sessionChanged ? null : s.liveTurn,
+          liveTurn: sessionChanged
+            ? null
+            : ev.live_turn
+              ? turnFromSnapshot(ev.live_turn)
+              : s.liveTurn,
         })
         break
       case 'processing':
@@ -346,10 +397,23 @@ export function connectWs(onNotification?: (n: Notification) => void) {
       }
       case 'user_message': {
         const pending = commitPendingTurn(s)
-        useChat.setState({
-          messages: [...pending.messages, ev.message as ChatMessage],
-          liveTurn: pending.liveTurn,
-        })
+        if (pending.liveTurn?.pendingUsers) {
+          // Snapshot-restored turn: keep this turn's user messages in the
+          // pending buffer (mirrors the server) so the commit stays ordered
+          // and nothing duplicates.
+          useChat.setState({
+            messages: pending.messages,
+            liveTurn: {
+              ...pending.liveTurn,
+              pendingUsers: [...pending.liveTurn.pendingUsers, ev.message as ChatMessage],
+            },
+          })
+        } else {
+          useChat.setState({
+            messages: [...pending.messages, ev.message as ChatMessage],
+            liveTurn: pending.liveTurn,
+          })
+        }
         break
       }
       case 'media': {
@@ -435,7 +499,7 @@ export function connectWs(onNotification?: (n: Notification) => void) {
             metadata: { stopped: true },
           })
           useChat.setState({
-            messages: [...s.messages, message],
+            messages: [...s.messages, ...(s.liveTurn.pendingUsers ?? []), message],
           })
         }
         // NOTE: the final message arrives AFTER turn_ended (it carries its own
