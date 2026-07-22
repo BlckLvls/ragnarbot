@@ -1588,12 +1588,13 @@ export default function ChatPage({
       history &&
       s.sessionId &&
       history.session_id === s.sessionId &&
-      appliedHistoryRef.current !== dataUpdatedAt &&
-      !s.processing
+      appliedHistoryRef.current !== dataUpdatedAt
     ) {
-      // A fetch that raced an in-flight turn can be older than what live
-      // events already committed — never let stale history wipe newer
-      // messages; the post-turn refetch below brings the fresh copy.
+      // Apply even while a turn is streaming — after a mid-turn refresh the
+      // page must show prior history under the live turn. The only guard:
+      // a fetch that raced live events can be older than what they already
+      // committed — never let stale history wipe newer messages; the
+      // post-turn refetch below brings the fresh copy.
       const local = useChat.getState().messages
       if (history.messages.length >= local.length) {
         appliedHistoryRef.current = dataUpdatedAt
