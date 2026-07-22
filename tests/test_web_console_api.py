@@ -655,3 +655,39 @@ async def test_web_file_upload_keeps_display_text_and_adds_agent_download_marker
         "type": "file",
         "filename": "brief.pdf",
     }]
+
+
+def test_web_transcript_handles_multimodal_tool_results():
+    """Tool results with list content (e.g. screenshots) must not crash the transcript."""
+    session = SimpleNamespace(
+        key="web_main_test",
+        metadata={},
+        messages=[
+            {"role": "user", "content": "screenshot something", "metadata": {}},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "t1", "function": {"name": "browser", "arguments": {}}}],
+                "metadata": {},
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "t1",
+                "content": [
+                    {"type": "text", "text": "Screenshot captured"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}},
+                ],
+                "metadata": {},
+            },
+            {"role": "assistant", "content": "Вот скриншот.", "metadata": {}},
+        ],
+    )
+    server = object.__new__(WebServer)
+    server.media_manager = None
+
+    messages = server._display_messages(session)
+
+    final = messages[-1]
+    assert final["content"] == "Вот скриншот."
+    tools = final["metadata"]["tools"]
+    assert tools[0]["done"] is True and tools[0]["status"] == "ok"

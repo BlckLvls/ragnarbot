@@ -700,8 +700,16 @@ class WebServer:
                 step = tool_by_id.get(message.get("tool_call_id"))
                 if step is not None:
                     result = message.get("content") or ""
+                    if isinstance(result, list):
+                        # Multimodal tool result (e.g. a browser screenshot):
+                        # status comes from its text blocks.
+                        result = " ".join(
+                            block.get("text", "")
+                            for block in result
+                            if isinstance(block, dict) and block.get("type") == "text"
+                        )
                     step["done"] = True
-                    step["status"] = "error" if result.startswith("Error") else "ok"
+                    step["status"] = "error" if str(result).startswith("Error") else "ok"
                 continue
 
             # A normal assistant message closes the visible turn.

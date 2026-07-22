@@ -1575,6 +1575,7 @@ export default function ChatPage({
   })
 
   const appliedHistoryRef = useRef(0)
+  const prevProcessingRef = useRef(false)
 
   useEffect(() => {
     stickToBottomRef.current = true
@@ -1588,12 +1589,32 @@ export default function ChatPage({
       s.sessionId &&
       history.session_id === s.sessionId &&
       appliedHistoryRef.current !== dataUpdatedAt &&
-      !useChat.getState().processing
+      !s.processing
     ) {
-      appliedHistoryRef.current = dataUpdatedAt
-      useChat.setState({ messages: history.messages, sessionTitle: history.title })
+      // A fetch that raced an in-flight turn can be older than what live
+      // events already committed — never let stale history wipe newer
+      // messages; the post-turn refetch below brings the fresh copy.
+      const local = useChat.getState().messages
+      if (history.messages.length >= local.length) {
+        appliedHistoryRef.current = dataUpdatedAt
+        useChat.setState({ messages: history.messages, sessionTitle: history.title })
+      }
     }
-  }, [history, dataUpdatedAt, s.sessionId])
+  }, [history, dataUpdatedAt, s.sessionId, s.processing])
+
+  // The server persists the session a couple of seconds after turn_ended, so
+  // refetch shortly after a turn settles to reconcile with what was saved.
+  useEffect(() => {
+    const was = prevProcessingRef.current
+    prevProcessingRef.current = s.processing
+    if (was && !s.processing && s.sessionId) {
+      const timer = window.setTimeout(
+        () => qc.invalidateQueries({ queryKey: ['messages', s.sessionId] }),
+        4000,
+      )
+      return () => window.clearTimeout(timer)
+    }
+  }, [s.processing, s.sessionId, qc])
 
   useEffect(() => {
     qc.invalidateQueries({ queryKey: ['sessions', 'user'] })
