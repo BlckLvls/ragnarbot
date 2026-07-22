@@ -400,9 +400,54 @@ function useSmoothText(
   return { visible, settled }
 }
 
+// Inline artifact preview for .md / .html files the agent sends into chat.
+const ARTIFACT_MD = /\.(md|markdown)$/i
+const ARTIFACT_HTML = /\.html?$/i
+
+function ArtifactPreview({ item }: { item: MediaItem }) {
+  const url = mediaUrl(item.path)
+  const isHtml = ARTIFACT_HTML.test(item.filename)
+  const text = useQuery({
+    queryKey: ['artifact-text', item.path],
+    queryFn: async () => {
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return res.text()
+    },
+    enabled: !isHtml,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  })
+
+  if (isHtml) {
+    // Sandboxed without allow-same-origin: scripts run in an opaque origin
+    // and cannot reach the console's API or cookies.
+    return (
+      <iframe
+        src={url}
+        sandbox="allow-scripts"
+        title={item.filename}
+        className="h-[440px] w-full rounded-[4px] border border-line bg-white"
+      />
+    )
+  }
+  if (text.isLoading) {
+    return <div className="px-1 py-2 font-mono text-[10px] text-muted">loading…</div>
+  }
+  if (text.error || typeof text.data !== 'string') {
+    return <div className="px-1 py-2 font-mono text-[10px] text-err">preview failed</div>
+  }
+  return (
+    <div className="max-h-[440px] overflow-y-auto rounded-[4px] border border-line bg-inset px-3.5 py-3">
+      <Markdown>{text.data}</Markdown>
+    </div>
+  )
+}
+
 // Media rendering, telegram-style: photos inline (compressed view, click for
 // original), video/audio get players, everything else — a file card.
 function MediaItemView({ item, flush = false }: { item: MediaItem; flush?: boolean }) {
+  const [previewOpen, setPreviewOpen] = useState(false)
   const url = mediaUrl(item.path)
   const spacing = flush ? '' : 'mt-2'
   if (item.kind === 'photo') {
@@ -427,22 +472,42 @@ function MediaItemView({ item, flush = false }: { item: MediaItem; flush?: boole
     )
   }
   const ext = (item.filename.split('.').pop() ?? 'f').slice(0, 4)
+  const canPreview = ARTIFACT_MD.test(item.filename) || ARTIFACT_HTML.test(item.filename)
   return (
-    <a
-      href={url}
-      download={item.filename}
-      className={`${spacing} flex w-fit max-w-full items-center gap-2.5 rounded-[4px] border border-line bg-raised px-3 py-2.5 hover:bg-raised2`}
-    >
-      <span className="flex h-[30px] w-[30px] items-center justify-center rounded-[3px] bg-raised2 font-mono text-[8.5px] uppercase text-soft">
-        {ext}
-      </span>
-      <span className="min-w-0">
-        <span className="block truncate text-[12px] text-ink">{item.filename}</span>
-        <span className="font-mono text-[9.5px] text-faint">
-          {fmtBytes(item.size)}{item.size != null ? ' · ' : ''}download
+    <div className={`${spacing} ${previewOpen ? 'w-full' : 'w-fit'} max-w-full`}>
+      <div className="flex w-fit max-w-full items-center gap-2.5 rounded-[4px] border border-line bg-raised px-3 py-2.5">
+        <span className="flex h-[30px] w-[30px] items-center justify-center rounded-[3px] bg-raised2 font-mono text-[8.5px] uppercase text-soft">
+          {ext}
         </span>
-      </span>
-    </a>
+        <span className="min-w-0">
+          <span className="block truncate text-[12px] text-ink">{item.filename}</span>
+          <span className="flex items-center gap-2 font-mono text-[9.5px] text-faint">
+            {item.size != null && <span>{fmtBytes(item.size)}</span>}
+            {canPreview && (
+              <button
+                onClick={() => setPreviewOpen(!previewOpen)}
+                className="text-acc hover:opacity-80"
+              >
+                {previewOpen ? 'hide' : 'preview'}
+              </button>
+            )}
+            <a href={url} download={item.filename} className="text-acc hover:opacity-80">
+              download
+            </a>
+            {ARTIFACT_HTML.test(item.filename) && (
+              <a href={url} target="_blank" rel="noopener noreferrer" className="text-acc hover:opacity-80">
+                open ↗
+              </a>
+            )}
+          </span>
+        </span>
+      </div>
+      {previewOpen && (
+        <div className="mt-2">
+          <ArtifactPreview item={item} />
+        </div>
+      )}
+    </div>
   )
 }
 

@@ -269,6 +269,8 @@ function FileViewer({
   const isVideo = entry.kind === 'video'
   const isMedia = isImage || isVideo
   const isMarkdown = /\.md$/i.test(entry.path)
+  const isHtml = /\.html?$/i.test(entry.path)
+  const [htmlView, setHtmlView] = useState<'rendered' | 'source'>('rendered')
   const dirty = !isMedia && content !== original
 
   const fileQuery = useQuery({
@@ -362,6 +364,16 @@ function FileViewer({
         </div>
 
         <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
+          {isHtml && mode === 'view' && !err && (
+            <button
+              type="button"
+              onClick={() => setHtmlView(htmlView === 'rendered' ? 'source' : 'rendered')}
+              className="min-h-8 rounded-[4px] border border-line bg-raised px-2.5 font-mono text-[9.5px] text-soft hover:border-line2 hover:text-ink"
+              aria-pressed={htmlView === 'rendered'}
+            >
+              {htmlView === 'rendered' ? 'Source' : 'Rendered'}
+            </button>
+          )}
           {!isMedia && mode === 'view' && (
             <button
               type="button"
@@ -476,6 +488,15 @@ function FileViewer({
           <article className={`mx-auto min-h-full max-w-4xl px-5 py-6 lg:px-10 lg:py-8 ${wrap ? '' : 'min-w-max max-w-none'}`}>
             <Markdown>{content}</Markdown>
           </article>
+        ) : isHtml && htmlView === 'rendered' ? (
+          // Sandboxed without allow-same-origin: page scripts run in an opaque
+          // origin and cannot reach the console's API or cookies.
+          <iframe
+            srcDoc={content}
+            sandbox="allow-scripts"
+            title={entry.path}
+            className="h-full min-h-[420px] w-full border-0 bg-white"
+          />
         ) : (
           <pre className={`min-h-full p-4 font-mono text-[11.5px] leading-[1.7] text-body lg:p-5 ${wrap ? 'whitespace-pre-wrap break-words' : 'min-w-max whitespace-pre'}`}>
             {content || <span className="text-faint">This file is empty.</span>}
