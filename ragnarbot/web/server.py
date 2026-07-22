@@ -228,9 +228,13 @@ class WebServer:
         agent = self.agent
         session = agent.sessions.get_or_create(WEB_USER_KEY)
         context = self._web_context_state(session)
+        channel = getattr(self, "channel", None)
+        live_turn = channel.live_turn_snapshot() if channel is not None else None
         return {
             "session_id": session.key,
             "session_title": _session_title(session.metadata, session.messages),
+            "processing": live_turn is not None,
+            "live_turn": live_turn,
             "model": agent.model,
             "reasoning_level": agent.reasoning_level,
             "context_mode": agent.context_mode,

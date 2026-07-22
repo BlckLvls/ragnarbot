@@ -157,6 +157,41 @@ function messageFromTurn(turn: LiveTurn, message: ChatMessage): ChatMessage {
   }
 }
 
+function turnFromSnapshot(raw: any): LiveTurn {
+  // Server-side accumulation of the in-flight turn, replayed on (re)connect
+  // so a page refresh keeps the tool timeline and intermediate replies.
+  const segments: TurnSegment[] = (raw.segments ?? []).map((segment: any, i: number) =>
+    segment.type === 'media'
+      ? {
+          type: 'media' as const,
+          id: `snap-${raw.turn_id ?? 'turn'}-${i}`,
+          content: segment.content || '',
+          media_items: segment.media_items || [],
+        }
+      : {
+          type: 'text' as const,
+          id: `snap-${raw.turn_id ?? 'turn'}-${i}`,
+          content: segment.content || '',
+          complete: true,
+        },
+  )
+  return {
+    turnId: raw.turn_id ?? null,
+    system: !!raw.system,
+    segments,
+    currentText: raw.current_text
+      ? {
+          type: 'text',
+          id: `snap-${raw.turn_id ?? 'turn'}-current`,
+          content: raw.current_text,
+          complete: false,
+        }
+      : null,
+    draftText: '',
+    tools: (raw.tools ?? []).map((tool: any) => ({ done: false, ...tool })),
+  }
+}
+
 function commitPendingTurn(state: ChatState): Pick<ChatState, 'messages' | 'liveTurn'> {
   if (!state.liveTurn?.finalMessage) {
     return { messages: state.messages, liveTurn: state.liveTurn }
@@ -261,7 +296,11 @@ export function connectWs(onNotification?: (n: Notification) => void) {
           steering: !!ev.steering,
           processing: !!ev.processing,
           messages: sessionChanged ? [] : s.messages,
-          liveTurn: sessionChanged ? null : s.liveTurn,
+          liveTurn: sessionChanged
+            ? null
+            : ev.live_turn
+              ? turnFromSnapshot(ev.live_turn)
+              : s.liveTurn,
         })
         break
       case 'processing':

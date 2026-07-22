@@ -691,3 +691,26 @@ def test_web_transcript_handles_multimodal_tool_results():
     assert final["content"] == "Вот скриншот."
     tools = final["metadata"]["tools"]
     assert tools[0]["done"] is True and tools[0]["status"] == "ok"
+
+
+def test_live_turn_snapshot_replays_in_flight_progress():
+    """Clients that reconnect mid-turn get the accumulated tool timeline back."""
+    channel = WebChannel(SimpleNamespace(), MessageBus())
+    track = channel._track_live_turn
+    track({"type": "turn_started", "turn_id": "t1"})
+    track({"type": "delta", "text": "думаю... "})
+    track({"type": "tool_start", "tool": "web_search", "args_preview": "q=news"})
+    track({"type": "tool_end", "tool": "web_search", "status": "ok", "duration_ms": 1200})
+    track({"type": "delta", "text": "нашла: "})
+
+    snap = channel.live_turn_snapshot()
+    assert snap["turn_id"] == "t1"
+    assert snap["tools"] == [{
+        "turn_id": None, "tool": "web_search", "args_preview": "q=news",
+        "done": True, "status": "ok", "duration_ms": 1200,
+    }]
+    assert snap["segments"] == [{"type": "text", "content": "думаю... "}]
+    assert snap["current_text"] == "нашла: "
+
+    track({"type": "final"})
+    assert channel.live_turn_snapshot() is None
