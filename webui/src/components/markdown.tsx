@@ -1,16 +1,17 @@
 import { memo, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { copyText } from '../lib/clipboard'
 
 function CodeBlock({ className, children }: { className?: string; children?: React.ReactNode }) {
   const [copied, setCopied] = useState(false)
   const lang = /language-(\w+)/.exec(className || '')?.[1] ?? ''
   const text = String(children ?? '').replace(/\n$/, '')
-  const copy = () => {
-    navigator.clipboard.writeText(text).then(() => {
+  const copy = async () => {
+    if (await copyText(text)) {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
-    })
+    }
   }
   return (
     <div className="my-2 overflow-hidden rounded-[4px] bg-deep">

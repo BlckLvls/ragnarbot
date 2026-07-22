@@ -12,6 +12,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ChatMessage, MediaItem, SessionInfo, UploadResult, mediaUrl } from '../lib/api'
 import { LiveTurn, MediaEvent, TextSegment, ToolEvent, TurnSegment, useChat } from '../lib/ws'
+import { copyText } from '../lib/clipboard'
 import { fmtBytes, fmtTokens } from '../lib/format'
 import { Markdown } from '../components/markdown'
 import {
@@ -721,23 +722,21 @@ function MessageActions({
   onFork?: (msg: ChatMessage) => void
 }) {
   const processing = useChat((s) => s.processing)
-  const [copied, setCopied] = useState(false)
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
   const meta = (msg.metadata ?? {}) as Record<string, any>
   const anchored = typeof meta.raw_index === 'number'
   const text = messageCopyText(msg)
 
-  const copy = () => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    })
+  const copy = async () => {
+    setCopyState((await copyText(text)) ? 'copied' : 'failed')
+    setTimeout(() => setCopyState('idle'), 1500)
   }
 
   return (
     <div className="mt-1 flex items-center gap-3 font-mono text-[9.5px] text-faint">
       {text && (
         <button onClick={copy} className="hover:text-ink" title="Copy reply">
-          {copied ? 'copied ✓' : 'copy'}
+          {copyState === 'copied' ? 'copied ✓' : copyState === 'failed' ? 'copy failed' : 'copy'}
         </button>
       )}
       {anchored && onRegenerate && (
