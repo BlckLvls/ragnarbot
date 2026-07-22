@@ -2,10 +2,13 @@
 
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
 
+from ragnarbot.agent.loop import AgentLoop
+from ragnarbot.agent.tools.config_tool import ConfigTool
 from ragnarbot.auth.credentials import load_credentials, save_credentials
 from ragnarbot.config.loader import load_config, save_config
 from ragnarbot.config.providers import (
@@ -15,7 +18,12 @@ from ragnarbot.config.providers import (
     resolve_custom_model,
     split_custom_model,
 )
-from ragnarbot.config.schema import Config, CustomModelConfig, CustomProviderConfig
+from ragnarbot.config.schema import (
+    Config,
+    CustomModelConfig,
+    CustomProviderConfig,
+    ExecToolConfig,
+)
 from ragnarbot.config.validation import validate_model_auth
 from ragnarbot.web.api import ApiRoutes
 
@@ -276,4 +284,258 @@ def test_custom_api_key_persists_in_extra():
     creds = load_credentials()
     creds.extra[custom_provider_secret_name("jetson")] = "abc"
     save_credentials(creds)
-    assert load_credentials().extra["custom_jetson_api_key"] == "abc"
+    assert load_credentials().extra["custom-jetson-api-key"] == "abc"
+
+
+def test_custom_api_key_round_trips_for_awkward_ids():
+    """Ids with digit/letter boundaries or underscores must survive save/load.
+
+    The camelCase<->snake_case conversion in credentials persistence is lossy
+    for keys like custom_gpu2x_api_key — the hyphenated secret name sidesteps
+    it entirely.
+    """
+    creds = load_credentials()
+    for server_id in ("gpu2x", "llama_3", "mistral_7b", "srv_"):
+        creds.extra[custom_provider_secret_name(server_id)] = f"key-{server_id}"
+    save_credentials(creds)
+    reloaded = load_credentials()
+    for server_id in ("gpu2x", "llama_3", "mistral_7b", "srv_"):
+        assert reloaded.extra[custom_provider_secret_name(server_id)] == f"key-{server_id}"
+
+
+def test_custom_secret_names_do_not_collide():
+    """Ids differing only in underscores must map to distinct secret names."""
+    ids = ("ab", "ab_", "a_b", "a__b")
+    names = {custom_provider_secret_name(i) for i in ids}
+    assert len(names) == len(ids)
+
+
+# ── probe happy-path (HTTP mocked) ───────────────────────────────
+
+class _FakeProbeResponse:
+    """Stand-in for an aiohttp response used as an async context manager."""
+
+    def __init__(self, *, status=200, json_value=None, json_error=None):
+        self.status = status
+        self._json_value = json_value
+        self._json_error = json_error
+
+    async def json(self, content_type=None):
+        if self._json_error is not None:
+            raise self._json_error
+        return self._json_value
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakeProbeSession:
+    """Stand-in for aiohttp.ClientSession that hands back a fixed response."""
+
+    def __init__(self, response):
+        self._response = response
+
+    def get(self, url, headers=None):
+        return self._response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+def _patch_probe_http(monkeypatch, response):
+    """Replace aiohttp.ClientSession so the probe never touches the network."""
+    monkeypatch.setattr(
+        "aiohttp.ClientSession", lambda *a, **k: _FakeProbeSession(response)
+    )
+
+
+@pytest.mark.asyncio
+async def test_probe_reports_models_without_saving(monkeypatch):
+    """Probe returns discovered ids and leaves the config untouched by default."""
+    routes = make_routes()
+    await _add_jetson(routes)
+    _patch_probe_http(monkeypatch, _FakeProbeResponse(
+        json_value={"data": [{"id": "m1"}, {"id": "m2"}]},
+    ))
+
+    resp = await routes.models_custom_probe(
+        JsonRequest(body={}, match_info={"server_id": "jetson"})
+    )
+    payload = json.loads(resp.text)
+    assert payload["ok"] is True
+    assert payload["models"] == ["m1", "m2"]
+    assert payload["added"] == []
+    # Nothing persisted — the server still lists only its seed model.
+    assert [m.id for m in load_config().custom_providers[0].models] == [QWEN]
+
+
+@pytest.mark.asyncio
+async def test_probe_save_merges_new_models_without_duplicates(monkeypatch):
+    """save=True appends only unknown ids and persists them."""
+    routes = make_routes()
+    await routes.models_custom_add(JsonRequest(body={
+        "id": "jetson", "base_url": "http://127.0.0.1:8000/v1",
+        "models": [QWEN, "m1"],
+    }))
+    _patch_probe_http(monkeypatch, _FakeProbeResponse(
+        json_value={"data": [{"id": "m1"}, {"id": "m2"}]},
+    ))
+
+    resp = await routes.models_custom_probe(
+        JsonRequest(body={"save": True}, match_info={"server_id": "jetson"})
+    )
+    payload = json.loads(resp.text)
+    assert payload["ok"] is True
+    assert payload["models"] == ["m1", "m2"]
+    assert payload["added"] == ["m2"]  # m1 already known, not duplicated
+    reloaded = load_config().custom_providers[0]
+    assert [m.id for m in reloaded.models] == [QWEN, "m1", "m2"]
+
+
+@pytest.mark.asyncio
+async def test_probe_rejects_non_list_shape(monkeypatch):
+    """A non-list `data` field yields an explicit shape error."""
+    routes = make_routes()
+    await _add_jetson(routes)
+    _patch_probe_http(monkeypatch, _FakeProbeResponse(json_value={"data": "oops"}))
+
+    resp = await routes.models_custom_probe(
+        JsonRequest(body={}, match_info={"server_id": "jetson"})
+    )
+    payload = json.loads(resp.text)
+    assert payload["ok"] is False
+    assert "unexpected /models response shape" in payload["error"]
+
+
+@pytest.mark.asyncio
+async def test_probe_reports_error_when_body_not_json(monkeypatch):
+    """A response body that isn't JSON surfaces as ok=False with an error."""
+    routes = make_routes()
+    await _add_jetson(routes)
+    _patch_probe_http(monkeypatch, _FakeProbeResponse(
+        json_error=ValueError("Attempt to decode JSON with unexpected mimetype"),
+    ))
+
+    resp = await routes.models_custom_probe(
+        JsonRequest(body={}, match_info={"server_id": "jetson"})
+    )
+    payload = json.loads(resp.text)
+    assert payload["ok"] is False
+    assert payload["error"]
+
+
+# ── AgentLoop.switch_model hot swap ──────────────────────────────
+
+def _make_switchable_agent(tmp_path):
+    """Build a real AgentLoop wired to a factory that returns a fresh provider."""
+    old_model = "openai/gpt-5.6-sol"
+    primary = MagicMock()
+    primary.get_default_model.return_value = old_model
+    new_provider = MagicMock(name="switched-provider")
+    provider_factory = MagicMock(return_value=new_provider)
+
+    bus = MagicMock()
+    bus.publish_outbound = AsyncMock()
+    bus.publish_inbound = AsyncMock()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    agent = AgentLoop(
+        bus=bus,
+        provider=primary,
+        workspace=workspace,
+        model=old_model,
+        exec_config=ExecToolConfig(),
+        auth_method="oauth",
+        provider_factory=provider_factory,
+    )
+    # Simulate an active fallback so success can be shown to reset it.
+    agent._fallback_state.save = MagicMock()
+    agent._fallback_state.consecutive_failures = 3
+    agent._fallback_state.fallback_mode = True
+    return agent, primary, new_provider, provider_factory, old_model
+
+
+def test_switch_model_repoints_every_component(tmp_path):
+    """A successful switch rebuilds the provider and repoints all consumers."""
+    agent, primary, new_provider, _, _ = _make_switchable_agent(tmp_path)
+    new_model = "anthropic/claude-opus-4-8"
+
+    assert agent.switch_model(new_model, "api_key") is None
+
+    assert agent.provider is new_provider
+    assert agent.model == new_model
+    assert agent.auth_method == "api_key"
+    assert agent.compactor.provider is new_provider
+    assert agent.compactor.model == new_model
+    assert agent.context.model == new_model
+    assert agent.subagents.provider is new_provider
+    assert agent.subagents.model == new_model
+    # A switch is a fresh start for failover bookkeeping.
+    assert agent._fallback_state.consecutive_failures == 0
+    assert agent._fallback_state.fallback_mode is False
+
+
+def test_switch_model_keeps_old_provider_when_factory_raises(tmp_path):
+    """A factory failure returns an error and leaves every consumer untouched."""
+    agent, primary, _, _, old_model = _make_switchable_agent(tmp_path)
+
+    def boom(model, auth):
+        raise RuntimeError("no route to host")
+
+    agent._provider_factory = boom
+
+    result = agent.switch_model("anthropic/claude-opus-4-8", "api_key")
+    assert result and "no route to host" in result
+
+    assert agent.provider is primary
+    assert agent.model == old_model
+    assert agent.auth_method == "oauth"
+    assert agent.compactor.provider is primary
+    assert agent.compactor.model == old_model
+    assert agent.context.model == old_model
+    assert agent.subagents.provider is primary
+    assert agent.subagents.model == old_model
+
+
+# ── config_tool custom-model gate ────────────────────────────────
+
+def _config_tool() -> ConfigTool:
+    return ConfigTool(agent=MagicMock())
+
+
+@pytest.mark.asyncio
+async def test_config_tool_accepts_known_custom_model(monkeypatch):
+    """Setting the primary model to a configured custom id passes the gate."""
+    config = make_config()
+    monkeypatch.setattr("ragnarbot.config.loader.load_config", lambda *a, **k: config)
+    monkeypatch.setattr("ragnarbot.config.loader.save_config", lambda *a, **k: None)
+
+    result = await _config_tool().execute(
+        action="set",
+        path="agents.defaults.model",
+        value=custom_model_id("jetson", QWEN),
+    )
+    assert "is not available" not in result
+    assert "does not match any configured custom server" not in result
+
+
+@pytest.mark.asyncio
+async def test_config_tool_rejects_unknown_custom_server(monkeypatch):
+    """A custom id for a non-configured server is rejected with a clear error."""
+    config = make_config()
+    monkeypatch.setattr("ragnarbot.config.loader.load_config", lambda *a, **k: config)
+    monkeypatch.setattr("ragnarbot.config.loader.save_config", lambda *a, **k: None)
+
+    result = await _config_tool().execute(
+        action="set",
+        path="agents.defaults.model",
+        value="custom/unknown/x",
+    )
+    assert "does not match any configured custom server" in result
