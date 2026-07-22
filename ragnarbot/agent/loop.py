@@ -751,6 +751,8 @@ class AgentLoop:
         self.compactor.provider = provider
         self.compactor.model = model
         self.context.model = model
+        self.subagents.provider = provider
+        self.subagents.model = model
         read_tool = self.tools.get("file_read")
         if read_tool is not None and hasattr(read_tool, "_model"):
             read_tool._model = model
