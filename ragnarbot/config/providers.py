@@ -238,8 +238,13 @@ class ResolvedCustomModel:
 
 
 def custom_provider_secret_name(provider_id: str) -> str:
-    """Credentials `extra` key holding a custom server's API key."""
-    return f"custom_{provider_id}_api_key"
+    """Credentials `extra` key holding a custom server's API key.
+
+    Extra keys pass through the camelCase<->snake_case conversion in
+    save/load_credentials, which is only the identity for strings without
+    underscores or uppercase — hence hyphens.
+    """
+    return f"custom-{provider_id.replace('_', '-')}-api-key"
 
 
 def custom_model_id(provider_id: str, model_id: str) -> str:
