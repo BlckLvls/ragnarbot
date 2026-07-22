@@ -539,6 +539,11 @@ class WebServer:
         deleted = self.agent.sessions.delete(session_id)
         if not deleted:
             raise web.HTTPNotFound()
+        # Deleting a chat must also forget it: purge its recall-index chunks
+        # so the agent can no longer surface the deleted conversation.
+        index = getattr(self.agent, "index", None)
+        if index is not None and hasattr(index, "purge_dialogue"):
+            await index.purge_dialogue(session_id)
         return web.json_response({"ok": True})
 
     def _get_session_or_404(self, request: web.Request):

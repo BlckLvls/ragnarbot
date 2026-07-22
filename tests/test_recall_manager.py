@@ -67,3 +67,40 @@ def test_on_memory_written_disabled_is_noop(tmp_path):
     # disabled -> returns before scheduling any task (no running loop needed)
     mgr.on_memory_written("daily", "2026-06-28")
     assert mgr._mem_tasks == set()
+
+
+def test_purge_dialogue_removes_chunks_and_state(tmp_path):
+    """Deleting a chat purges its recall chunks and index cursor."""
+    import asyncio
+
+    import numpy as np
+
+    from ragnarbot.agent.index import EMBED_DIM
+    from ragnarbot.agent.index.manager import IndexManager
+    from ragnarbot.agent.index.store import Store
+
+    async def go():
+        store = Store(tmp_path / "recall.db")
+        await store.open()
+        vec = np.ones(EMBED_DIM, dtype=np.float32)
+        await store.upsert([dict(
+            corpus="chat", source_id="dead_chat", chunk_hash="h1",
+            body="secret talk", embedding=vec,
+            day_start="2026-07-22", day_end="2026-07-22",
+        )])
+        await store.set_state("chat:dead_chat", indexed_upto=5)
+
+        mgr = IndexManager.__new__(IndexManager)
+        mgr._store = store
+        mgr._embedder = object()  # available() -> True
+
+        async def ready():
+            return True
+        mgr._ensure_ready = ready
+
+        assert await mgr.purge_dialogue("dead_chat") == 1
+        assert await store.get_state("chat:dead_chat") is None
+        assert await mgr.purge_dialogue("dead_chat") == 0  # idempotent
+        await store.close()
+
+    asyncio.run(go())

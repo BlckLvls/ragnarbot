@@ -157,6 +157,24 @@ class IndexManager:
         except Exception as exc:
             logger.warning("recall start_chat_jobs failed: {}", exc)
 
+    async def purge_dialogue(self, session_key: str) -> int:
+        """Remove a deleted chat's chunks and index cursor from the recall store.
+
+        Best-effort: returns the number of chunks removed, 0 when the index
+        is unavailable.
+        """
+        try:
+            if not await self._ensure_ready() or self._store is None:
+                return 0
+            removed = await self._store.delete_source("chat", session_key)
+            await self._store.delete_state(f"chat:{session_key}")
+            if removed:
+                logger.info("recall: purged {} chunk(s) of deleted chat {}", removed, session_key)
+            return removed
+        except Exception as exc:
+            logger.warning("recall purge_dialogue failed for {}: {}", session_key, exc)
+            return 0
+
     async def _run_chat_job(self, session_key: str, job_id: str) -> None:
         if not await self._ensure_ready():
             return  # stays pending; retried by next trigger/backfill

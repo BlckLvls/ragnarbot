@@ -125,3 +125,15 @@ def test_empty_db_returns_empty(tmp_path, scope):
         assert await st.hybrid_search(_unit(1), "anything", scope=scope, top_k=5) == []
         await st.close()
     asyncio.run(go())
+
+
+def test_delete_state_removes_cursor(tmp_path):
+    async def go():
+        st = await _fresh_store(tmp_path)
+        await st.set_state("chat:dead_session", indexed_upto=42)
+        assert (await st.get_state("chat:dead_session"))["indexed_upto"] == 42
+        await st.delete_state("chat:dead_session")
+        assert await st.get_state("chat:dead_session") is None
+        await st.delete_state("chat:never_existed")  # idempotent
+        await st.close()
+    asyncio.run(go())
